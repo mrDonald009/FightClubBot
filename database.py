@@ -122,7 +122,7 @@ class Database:
                 ('Грэпплинг/БЖЖ', 'Тренировки по грэпплингу и бразильскому джиу-джитсу', 90, 12, 6000, 'Взрослые'),
 
                 # Бокс
-                ('Бокс (утренние тренировки)', 'Утренние тренировки по боксу', 90, 10, 6000, 'Взрослые'),
+                ('Бокс (утренние тренировки)', 'Утренние тренировки по боксу', 90, 10, 6000, 'Взрослыe'),
 
                 # Комбинированные
                 (
@@ -205,6 +205,48 @@ class Database:
         finally:
             conn.close()
 
+    def add_test_schedule(self):
+        """Добавляет тестовое расписание на ближайшие 3 дня"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Очищаем старые тестовые данные (опционально)
+            cursor.execute("DELETE FROM schedule WHERE date >= date('now')")
+
+            today = datetime.datetime.now().date()
+
+            # Добавляем тренировки на сегодня, завтра, послезавтра
+            for i in range(3):
+                date = today + datetime.timedelta(days=i)
+
+                # Тайский бокс вечером
+                cursor.execute('''
+                    INSERT INTO schedule (workout_type_id, trainer_id, date, time, available_slots)
+                    VALUES (3, 1, ?, '19:00', 5)
+                ''', (date,))
+
+                # ММА вечером
+                cursor.execute('''
+                    INSERT INTO schedule (workout_type_id, trainer_id, date, time, available_slots)
+                    VALUES (6, 1, ?, '20:30', 3)
+                ''', (date,))
+
+                # Детская группа днем (только в будни)
+                if date.weekday() < 5:  # Пн-Пт
+                    cursor.execute('''
+                        INSERT INTO schedule (workout_type_id, trainer_id, date, time, available_slots)
+                        VALUES (2, 1, ?, '17:00', 8)
+                    ''', (date,))
+
+            conn.commit()
+            print("✅ Тестовое расписание добавлено на 3 дня")
+
+        except Exception as e:
+            print(f"❌ Ошибка добавления тестового расписания: {e}")
+        finally:
+            conn.close()
+
     def add_user(self, telegram_id, username, full_name, phone=None):
         """Добавляет пользователя в базу"""
         conn = self.get_connection()
@@ -261,5 +303,293 @@ class Database:
                 LIMIT ?
             ''', (days * 3,))
             return cursor.fetchall()
+        finally:
+            conn.close()
+
+    # НОВЫЕ МЕТОДЫ ДЛЯ ФУНКЦИОНАЛА БОТА
+
+    def get_workouts_by_date(self, date):
+        """Получить тренировки на определенную дату"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                SELECT 
+                    s.id, 
+                    s.time, 
+                    wt.name as type, 
+                    t.name as trainer, 
+                    s.available_slots,
+                    wt.category
+                FROM schedule s
+                JOIN workout_types wt ON s.workout_type_id = wt.id
+                JOIN trainers t ON s.trainer_id = t.id
+                WHERE s.date = ? AND s.available_slots > 0
+                ORDER BY s.time
+            ''', (date,))
+
+            workouts = []
+            for row in cursor.fetchall():
+                workouts.append({
+                    'id': row[0],
+                    'time': row[1],
+                    'type': row[2],
+                    'trainer': row[3],
+                    'available_slots': row[4],
+                    'category': row[5]
+                })
+
+            return workouts
+
+        except Exception as e:
+            print(f"Ошибка получения тренировок: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def book_workout(self, user_id, schedule_id):
+        """Записать пользователя на тренировку"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Получаем user_id из users таблицы по telegram_id
+            cursor.execute('SELECT id FROM users WHERE telegram_id = ?', (user_id,))
+            user_row = cursor.fetchone()
+
+            if not user_row:
+                print(f"Пользователь {user_id} не найден")
+                return False
+
+            user_db_id = user_row[0]
+
+            # Проверяем доступность слотов
+            cursor.execute('SELECT available_slots FROM schedule WHERE id = ?', (schedule_id,))
+            schedule_row = cursor.fetchone()
+
+            if not schedule_row or schedule_row[0] <= 0:
+                print(f"Нет свободных мест для тренировки {schedule_id}")
+                return False
+
+            # Создаем бронирование
+            cursor.execute('''
+                INSERT INTO bookings (user_id, schedule_id, status)
+                VALUES (?, ?, 'active')
+            ''', (user_db_id, schedule_id))
+
+            # Уменьшаем количество доступных слотов
+            cursor.execute('''
+                UPDATE schedule 
+                SET available_slots = available_slots - 1 
+                WHERE id = ?
+            ''', (schedule_id,))
+
+            conn.commit()
+            print(f"✅ Пользователь {user_id} записан на тренировку {schedule_id}")
+            return True
+
+        except Exception as e:
+            print(f"Ошибка бронирования: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def get_user_stats(self, telegram_id):
+        """Получить статистику пользователя"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Получаем user_id
+            cursor.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
+            user_row = cursor.fetchone()
+
+            if not user_row:
+                return {'total_workouts': 0, 'current_streak': 0}
+
+            user_db_id = user_row[0]
+
+            # Общее количество посещенных тренировок
+            cursor.execute('''
+                SELECT COUNT(*) FROM bookings 
+                WHERE user_id = ? AND status = 'attended'
+            ''', (user_db_id,))
+            total_workouts = cursor.fetchone()[0] or 0
+
+            # Текущая серия посещений (упрощенная версия)
+            cursor.execute('''
+                SELECT COUNT(*) FROM (
+                    SELECT DISTINCT date(s.date) 
+                    FROM bookings b
+                    JOIN schedule s ON b.schedule_id = s.id
+                    WHERE b.user_id = ? AND b.status = 'attended'
+                    ORDER BY s.date DESC 
+                    LIMIT 7
+                )
+            ''', (user_db_id,))
+            current_streak = cursor.fetchone()[0] or 0
+
+            return {
+                'total_workouts': total_workouts,
+                'current_streak': current_streak
+            }
+
+        except Exception as e:
+            print(f"Ошибка получения статистики: {e}")
+            return {'total_workouts': 0, 'current_streak': 0}
+        finally:
+            conn.close()
+
+    def get_user_profile(self, telegram_id):
+        """Получить профиль пользователя"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                SELECT username, full_name, phone, registration_date 
+                FROM users WHERE telegram_id = ?
+            ''', (telegram_id,))
+
+            row = cursor.fetchone()
+
+            if row:
+                return {
+                    'username': row[0] or 'Не указан',
+                    'full_name': row[1] or 'Не указано',
+                    'phone': row[2] or 'Не указан',
+                    'registration_date': row[3]
+                }
+            else:
+                return {
+                    'username': 'Не указан',
+                    'full_name': 'Не указано',
+                    'phone': 'Не указан',
+                    'registration_date': 'Неизвестно'
+                }
+
+        except Exception as e:
+            print(f"Ошибка получения профиля: {e}")
+            return {
+                'username': 'Ошибка',
+                'full_name': 'Ошибка',
+                'phone': 'Ошибка',
+                'registration_date': 'Ошибка'
+            }
+        finally:
+            conn.close()
+
+    def get_user_bookings(self, telegram_id):
+        """Получить активные бронирования пользователя"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('''
+                SELECT 
+                    b.id,
+                    s.date,
+                    s.time, 
+                    wt.name,
+                    t.name
+                FROM bookings b
+                JOIN schedule s ON b.schedule_id = s.id
+                JOIN workout_types wt ON s.workout_type_id = wt.id
+                JOIN trainers t ON s.trainer_id = t.id
+                JOIN users u ON b.user_id = u.id
+                WHERE u.telegram_id = ? AND b.status = 'active' AND s.date >= date('now')
+                ORDER BY s.date, s.time
+            ''', (telegram_id,))
+
+            bookings = []
+            for row in cursor.fetchall():
+                bookings.append({
+                    'id': row[0],
+                    'date': row[1],
+                    'time': row[2],
+                    'workout_name': row[3],
+                    'trainer': row[4]
+                })
+
+            return bookings
+
+        except Exception as e:
+            print(f"Ошибка получения бронирований: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def cancel_booking(self, booking_id, telegram_id):
+        """Отменить бронирование"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Получаем user_id
+            cursor.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
+            user_row = cursor.fetchone()
+
+            if not user_row:
+                return False
+
+            user_db_id = user_row[0]
+
+            # Отменяем бронирование
+            cursor.execute('''
+                UPDATE bookings 
+                SET status = 'cancelled' 
+                WHERE id = ? AND user_id = ?
+            ''', (booking_id, user_db_id))
+
+            # Возвращаем слот в расписание
+            cursor.execute('''
+                UPDATE schedule 
+                SET available_slots = available_slots + 1 
+                WHERE id = (
+                    SELECT schedule_id FROM bookings WHERE id = ?
+                )
+            ''', (booking_id,))
+
+            conn.commit()
+            return cursor.rowcount > 0
+
+        except Exception as e:
+            print(f"Ошибка отмены бронирования: {e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def mark_attendance(self, booking_id, telegram_id):
+        """Отметить посещение тренировки"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            # Получаем user_id
+            cursor.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
+            user_row = cursor.fetchone()
+
+            if not user_row:
+                return False
+
+            user_db_id = user_row[0]
+
+            # Отмечаем посещение
+            cursor.execute('''
+                UPDATE bookings 
+                SET status = 'attended' 
+                WHERE id = ? AND user_id = ?
+            ''', (booking_id, user_db_id))
+
+            conn.commit()
+            return cursor.rowcount > 0
+
+        except Exception as e:
+            print(f"Ошибка отметки посещения: {e}")
+            conn.rollback()
+            return False
         finally:
             conn.close()
