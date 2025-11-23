@@ -109,6 +109,41 @@ class FightClubBot:
         def handle_back(call):
             self.handle_back_callback(call)
 
+        @self.bot.callback_query_handler(func=lambda call: call.data == "contacts_back_to_main")
+        def handle_contacts_back_to_main(call):
+            """Обработчик кнопки Назад в меню из раздела контактов"""
+            try:
+                self.bot.answer_callback_query(call.id)
+
+                # Удаляем сообщение с контактами
+                self.bot.delete_message(call.message.chat.id, call.message.message_id)
+
+                # Удаляем предыдущее сообщение с меню (если есть)
+                try:
+                    self.bot.delete_message(call.message.chat.id, call.message.message_id - 1)
+                except:
+                    pass  # Игнорируем ошибку если сообщения нет
+
+                # Отправляем новое сообщение со стартовым меню
+                welcome_text = "💪 *Добро пожаловать в FightClubManager!*\n\nЯ — ваш цифровой помощник в мире единоборств! Выберите нужный раздел:"
+                self.bot.send_message(
+                    call.message.chat.id,
+                    welcome_text,
+                    parse_mode='Markdown',
+                    reply_markup=self.main_menu()
+                )
+
+            except Exception as e:
+                logger.error(f"Ошибка возврата из контактов в главное меню: {e}")
+                # Fallback: если не удалось удалить, просто отправляем новое меню
+                welcome_text = "💪 *Добро пожаловать в FightClubManager!*\n\nЯ — ваш цифровой помощник в мире единоборств! Выберите нужный раздел:"
+                self.bot.send_message(
+                    call.message.chat.id,
+                    welcome_text,
+                    parse_mode='Markdown',
+                    reply_markup=self.main_menu()
+                )
+
         @self.bot.message_handler(func=lambda message: message.text in [
             "📅 Сегодня", "📅 Завтра", "📅 Послезавтра", "🔙 Назад в меню"
         ])
@@ -414,26 +449,55 @@ class FightClubBot:
         self._return_to_main_menu(message.chat.id)
 
     def send_contacts_info(self, message):
-        """Показ контактов"""
+        """Показ контактов с инлайн-кнопками"""
         contacts_text = f"""
-📞 *Контакты клуба:*
+    📞 *Контакты клуба:*
 
-📍 *Адрес:*
-{self.config.GYM_ADDRESS}
+    📍 *Адрес:*
+    {self.config.GYM_ADDRESS}
 
-📱 *Телефон:*
-{self.config.GYM_PHONE}
+    📱 *Телефон:*
+    {self.config.GYM_PHONE}
 
-💬 *Telegram:*
-{self.config.ADMIN_CONTACT}
+    🕒 *Режим работы:*
+    Пн-Пт: 17:00 - 21:00
+    Сб: 10:00 - 14:00
+    Вс: Выходной
 
-🕒 *Режим работы:*
-Пн-Пт: 17:00 - 21:00
-Сб: 10:00 - 14:00
-Вс: Выходной"""
+    💪 *Первая тренировка - БЕСПЛАТНО!*"""
 
-        self.bot.send_message(message.chat.id, contacts_text, parse_mode='Markdown')
-        self._return_to_main_menu(message.chat.id)
+        # Создаем инлайн-клавиатуру с кнопками-ссылками
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(
+            InlineKeyboardButton("💬 Telegram", url="https://t.me/Zimin03"),
+            InlineKeyboardButton("📱 WhatsApp", url="https://wa.me/79251506975")
+        )
+        keyboard.add(
+            InlineKeyboardButton("📷 Instagram", url="https://www.instagram.com/luber.fight.club"),
+            InlineKeyboardButton("🗺️ На картах",
+                                 url="https://yandex.ru/maps/?ll=37.884696,55.700928&z=17&pt=37.884696,55.700928,pm2grm")
+        )
+        keyboard.add(
+            InlineKeyboardButton("🔙 Назад в меню", callback_data="contacts_back_to_main")
+        )
+
+        # Если это callback (нажатие из меню), редактируем сообщение
+        if hasattr(message, 'message_id'):
+            self.bot.edit_message_text(
+                contacts_text,
+                message.chat.id,
+                message.message_id,
+                parse_mode='Markdown',
+                reply_markup=keyboard
+            )
+        else:
+            # Если обычное сообщение, отправляем новое
+            self.bot.send_message(
+                message.chat.id,
+                contacts_text,
+                parse_mode='Markdown',
+                reply_markup=keyboard
+            )
 
     def send_help_info(self, message):
         """Показ помощи"""
