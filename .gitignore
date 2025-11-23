@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Database files
+*.db
+*.sqlite3
+*.db-journal
+
+# Lock files
+*.lock
+bot.lock
+
+# Environment variables
+.env
+.env.local
+
+# IDE files
+.vscode/
+.idea/
