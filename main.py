@@ -89,7 +89,7 @@ class FightClubBot:
     def setup_handlers(self):
         """Настройка обработчиков сообщений"""
 
-        @self.bot.message_handler(commands=['start'])
+        @self.bot.message_handler(commands=['start', 'menu'])
         def send_welcome(message):
             self.handle_start(message)
 
@@ -97,62 +97,63 @@ class FightClubBot:
         def handle_commands(message):
             self.handle_quick_commands(message)
 
-        @self.bot.callback_query_handler(func=lambda call: call.data.startswith('menu_'))
-        def handle_main_menu(call):
-            self.handle_menu_callback(call)
-
-        @self.bot.callback_query_handler(func=lambda call: call.data.startswith('book_'))
-        def handle_booking(call):
-            self.handle_booking_callback(call)
-
-        @self.bot.callback_query_handler(func=lambda call: call.data == "back_to_days")
-        def handle_back(call):
-            self.handle_back_callback(call)
-
-        @self.bot.callback_query_handler(func=lambda call: call.data == "contacts_back_to_main")
-        def handle_contacts_back_to_main(call):
-            """Обработчик кнопки Назад в меню из раздела контактов"""
-            try:
-                self.bot.answer_callback_query(call.id)
-
-                # Удаляем сообщение с контактами
-                self.bot.delete_message(call.message.chat.id, call.message.message_id)
-
-                # Удаляем предыдущее сообщение с меню (если есть)
-                try:
-                    self.bot.delete_message(call.message.chat.id, call.message.message_id - 1)
-                except:
-                    pass  # Игнорируем ошибку если сообщения нет
-
-                # Отправляем новое сообщение со стартовым меню
-                welcome_text = "💪 *Добро пожаловать в FightClubManager!*\n\nЯ — ваш цифровой помощник в мире единоборств! Выберите нужный раздел:"
-                self.bot.send_message(
-                    call.message.chat.id,
-                    welcome_text,
-                    parse_mode='Markdown',
-                    reply_markup=self.main_menu()
-                )
-
-            except Exception as e:
-                logger.error(f"Ошибка возврата из контактов в главное меню: {e}")
-                # Fallback: если не удалось удалить, просто отправляем новое меню
-                welcome_text = "💪 *Добро пожаловать в FightClubManager!*\n\nЯ — ваш цифровой помощник в мире единоборств! Выберите нужный раздел:"
-                self.bot.send_message(
-                    call.message.chat.id,
-                    welcome_text,
-                    parse_mode='Markdown',
-                    reply_markup=self.main_menu()
-                )
-
-        @self.bot.message_handler(func=lambda message: message.text in [
-            "📅 Сегодня", "📅 Завтра", "📅 Послезавтра", "🔙 Назад в меню"
-        ])
-        def handle_days(message):
-            self.handle_day_selection(message)
+        @self.bot.callback_query_handler(func=lambda call: True)
+        def handle_all_callbacks(call):
+            self.handle_callback_queries(call)
 
         @self.bot.message_handler(content_types=['text'])
         def handle_unknown(message):
             self.handle_unknown_message(message)
+
+    def handle_callback_queries(self, call):
+        """Централизованный обработчик всех callback запросов"""
+        try:
+            if call.data.startswith('menu_'):
+                self.handle_menu_callback(call)
+            elif call.data.startswith('book_'):
+                self.handle_booking_callback(call)
+            elif call.data == "back_to_days":
+                self.handle_back_callback(call)
+            elif call.data == "contacts_back_to_main":
+                self.handle_contacts_back_to_main(call)
+            elif call.data == "return_to_main_menu":
+                self.handle_return_to_main_menu(call)
+            elif call.data.startswith('select_day_'):
+                self.handle_day_selection_callback(call)
+            else:
+                logger.warning(f"Неизвестный callback: {call.data}")
+                self.bot.answer_callback_query(call.id, "❌ Неизвестная команда")
+
+        except Exception as e:
+            logger.error(f"Ошибка обработки callback: {e}")
+            self.bot.answer_callback_query(call.id, "❌ Ошибка")
+
+    def handle_return_to_main_menu(self, call):
+        """Универсальный обработчик возврата в главное меню"""
+        try:
+            self.bot.answer_callback_query(call.id)
+
+            # Пытаемся отредактировать сообщение, если это возможно
+            try:
+                self.bot.edit_message_text(
+                    "💪 *Добро пожаловать в FightClubManager!*\n\nВыберите нужный раздел:",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    parse_mode='Markdown',
+                    reply_markup=self.main_menu()
+                )
+            except:
+                # Если не удалось отредактировать, отправляем новое сообщение
+                self.bot.send_message(
+                    call.message.chat.id,
+                    "💪 *Добро пожаловать в FightClubManager!*\n\nВыберите нужный раздел:",
+                    parse_mode='Markdown',
+                    reply_markup=self.main_menu()
+                )
+
+        except Exception as e:
+            logger.error(f"Ошибка возврата в меню: {e}")
+            self.send_main_menu(call.message.chat.id)
 
     def run(self):
         """Запуск бота"""
@@ -202,31 +203,70 @@ class FightClubBot:
 
         return keyboard
 
-    def days_keyboard(self):
-        """Клавиатура выбора дня"""
-        keyboard = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    def days_selection_keyboard(self):
+        """Инлайн-клавиатура для выбора дня (как в контактах)"""
+        today = datetime.datetime.now()
+        tomorrow = today + datetime.timedelta(days=1)
+        day_after_tomorrow = today + datetime.timedelta(days=2)
+
+        keyboard = InlineKeyboardMarkup(row_width=1)
+
+        # Добавляем кнопки выбора дней
         keyboard.add(
-            KeyboardButton("📅 Сегодня"),
-            KeyboardButton("📅 Завтра"),
-            KeyboardButton("📅 Послезавтра"),
-            KeyboardButton("🔙 Назад в меню")
+            InlineKeyboardButton(
+                f"📅 Сегодня ({today.strftime('%d.%m')})",
+                callback_data="select_day_0"
+            ),
+            InlineKeyboardButton(
+                f"📅 Завтра ({tomorrow.strftime('%d.%m')})",
+                callback_data="select_day_1"
+            ),
+            InlineKeyboardButton(
+                f"📅 Послезавтра ({day_after_tomorrow.strftime('%d.%m')})",
+                callback_data="select_day_2"
+            )
         )
+
+        # Кнопка возврата в меню
+        keyboard.add(
+            InlineKeyboardButton("🔙 Главное меню", callback_data="return_to_main_menu")
+        )
+
         return keyboard
 
-    # Обработчики
+    def back_to_menu_keyboard(self):
+        """Клавиатура с кнопкой возврата в меню"""
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton("🔙 Главное меню", callback_data="return_to_main_menu"))
+        return keyboard
+
+    def back_to_days_keyboard(self):
+        """Клавиатура для возврата к выбору дня"""
+        keyboard = InlineKeyboardMarkup()
+        keyboard.add(InlineKeyboardButton("🔙 Выбрать другой день", callback_data="menu_booking"))
+        return keyboard
+
+    # Основные обработчики
     def handle_start(self, message):
-        """Обработчик команды /start"""
+        """Обработчик команды /start и /menu"""
         try:
             user = message.from_user
             self.db.add_user(user.id, user.username, f"{user.first_name} {user.last_name or ''}")
 
-            welcome_text = self.config.MESSAGES['welcome'].format(gym_name=self.config.GYM_NAME)
-            self.bot.send_message(message.chat.id, welcome_text,
-                                  parse_mode='Markdown', reply_markup=self.main_menu())
+            self.send_main_menu(message.chat.id)
 
         except Exception as e:
             logger.error(f"Ошибка в /start: {e}")
             self.bot.reply_to(message, "❌ Произошла ошибка. Попробуйте позже.")
+
+    def send_main_menu(self, chat_id, welcome_text=None):
+        """Отправляет главное меню (универсальный метод)"""
+        if welcome_text is None:
+            welcome_text = "💪 *Добро пожаловать в FightClubManager!*\n\nЯ — ваш цифровой помощник в мире единоборств! Выберите нужный раздел:"
+
+        self.bot.send_message(chat_id, welcome_text,
+                              parse_mode='Markdown',
+                              reply_markup=self.main_menu())
 
     def handle_menu_callback(self, call):
         """Обработчик главного меню"""
@@ -252,6 +292,7 @@ class FightClubBot:
         except Exception as e:
             logger.error(f"Ошибка обработки меню: {e}")
             self.bot.answer_callback_query(call.id, "❌ Ошибка")
+            self.send_main_menu(call.message.chat.id)
 
     def handle_quick_commands(self, message):
         """Обработчик быстрых команд"""
@@ -265,23 +306,76 @@ class FightClubBot:
 
         if command in handlers:
             handlers[command](message)
+        else:
+            self.send_main_menu(message.chat.id)
 
     def show_booking_days(self, message):
-        """Показ выбора дней для записи"""
-        self.bot.send_message(message.chat.id, "🗓️ Выберите день:", reply_markup=self.days_keyboard())
+        """Показ выбора дней для записи через инлайн-кнопки"""
+        booking_text = "🗓️ *Выберите день для записи на тренировку:*\n\n💡 Доступны ближайшие 3 дня:"
+
+        # Если это callback (нажатие из меню), редактируем сообщение
+        if hasattr(message, 'message_id'):
+            self.bot.edit_message_text(
+                booking_text,
+                message.chat.id,
+                message.message_id,
+                parse_mode='Markdown',
+                reply_markup=self.days_selection_keyboard()
+            )
+        else:
+            # Если обычное сообщение, отправляем новое
+            self.bot.send_message(
+                message.chat.id,
+                booking_text,
+                parse_mode='Markdown',
+                reply_markup=self.days_selection_keyboard()
+            )
+
+    def handle_day_selection_callback(self, call):
+        """Обработчик выбора дня через инлайн-кнопки"""
+        try:
+            self.bot.answer_callback_query(call.id)
+
+            # Получаем смещение дней из callback_data
+            days_offset = int(call.data.replace('select_day_', ''))
+            selected_date = datetime.datetime.now() + datetime.timedelta(days=days_offset)
+            date_str = selected_date.strftime('%Y-%m-%d')
+
+            workouts = self.db.get_workouts_by_date(date_str)
+
+            if not workouts:
+                self._send_no_workouts_message(call.message, selected_date)
+                return
+
+            self._send_workouts_list(call.message, workouts, selected_date)
+
+        except Exception as e:
+            logger.error(f"Ошибка выбора дня: {e}")
+            self.bot.answer_callback_query(call.id, "❌ Ошибка выбора дня")
+            self.send_main_menu(call.message.chat.id)
 
     def show_progress_info(self, message):
         """Показ прогресса пользователя"""
         try:
             stats = self.db.get_user_stats(message.from_user.id)
             progress_text = self._format_progress_text(stats)
-            self.bot.send_message(message.chat.id, progress_text, parse_mode='Markdown')
-            self._return_to_main_menu(message.chat.id)
+
+            if hasattr(message, 'message_id'):
+                self.bot.edit_message_text(
+                    progress_text,
+                    message.chat.id,
+                    message.message_id,
+                    parse_mode='Markdown',
+                    reply_markup=self.back_to_menu_keyboard()
+                )
+            else:
+                self.bot.send_message(message.chat.id, progress_text, parse_mode='Markdown',
+                                      reply_markup=self.back_to_menu_keyboard())
 
         except Exception as e:
             logger.error(f"Ошибка загрузки прогресса: {e}")
             self.bot.send_message(message.chat.id, "❌ Ошибка загрузки прогресса")
-            self._return_to_main_menu(message.chat.id)
+            self.send_main_menu(message.chat.id)
 
     def _format_progress_text(self, stats):
         """Форматирует текст прогресса"""
@@ -316,8 +410,17 @@ class FightClubBot:
 
 💪 *Участвуйте и получайте бонусы!*"""
 
-        self.bot.send_message(message.chat.id, challenges_text, parse_mode='Markdown')
-        self._return_to_main_menu(message.chat.id)
+        if hasattr(message, 'message_id'):
+            self.bot.edit_message_text(
+                challenges_text,
+                message.chat.id,
+                message.message_id,
+                parse_mode='Markdown',
+                reply_markup=self.back_to_menu_keyboard()
+            )
+        else:
+            self.bot.send_message(message.chat.id, challenges_text, parse_mode='Markdown',
+                                  reply_markup=self.back_to_menu_keyboard())
 
     def show_profile_info(self, message):
         """Показ профиля пользователя"""
@@ -335,13 +438,22 @@ class FightClubBot:
 {self.config.GYM_ADDRESS}
 {self.config.GYM_PHONE}"""
 
-            self.bot.send_message(message.chat.id, profile_text, parse_mode='Markdown')
-            self._return_to_main_menu(message.chat.id)
+            if hasattr(message, 'message_id'):
+                self.bot.edit_message_text(
+                    profile_text,
+                    message.chat.id,
+                    message.message_id,
+                    parse_mode='Markdown',
+                    reply_markup=self.back_to_menu_keyboard()
+                )
+            else:
+                self.bot.send_message(message.chat.id, profile_text, parse_mode='Markdown',
+                                      reply_markup=self.back_to_menu_keyboard())
 
         except Exception as e:
             logger.error(f"Ошибка загрузки профиля: {e}")
             self.bot.send_message(message.chat.id, "❌ Ошибка загрузки профиля")
-            self._return_to_main_menu(message.chat.id)
+            self.send_main_menu(message.chat.id)
 
     def show_leaderboard_info(self, message):
         """Показ таблицы лидеров"""
@@ -357,8 +469,17 @@ class FightClubBot:
 
 💪 *Следующая цель:* 15 тренировок в месяце"""
 
-        self.bot.send_message(message.chat.id, leaderboard_text, parse_mode='Markdown')
-        self._return_to_main_menu(message.chat.id)
+        if hasattr(message, 'message_id'):
+            self.bot.edit_message_text(
+                leaderboard_text,
+                message.chat.id,
+                message.message_id,
+                parse_mode='Markdown',
+                reply_markup=self.back_to_menu_keyboard()
+            )
+        else:
+            self.bot.send_message(message.chat.id, leaderboard_text, parse_mode='Markdown',
+                                  reply_markup=self.back_to_menu_keyboard())
 
     def show_my_bookings_info(self, message):
         """Показ активных записей пользователя"""
@@ -367,25 +488,31 @@ class FightClubBot:
             bookings = self.db.get_user_bookings(user_id)
 
             if not bookings:
-                self.bot.send_message(message.chat.id, "📭 *У вас нет активных записей на тренировки*",
-                                      parse_mode='Markdown')
-                self._return_to_main_menu(message.chat.id)
-                return
+                bookings_text = "📭 *У вас нет активных записей на тренировки*"
+            else:
+                bookings_text = "📅 *ВАШИ ЗАПИСИ:*\n\n"
+                for booking in bookings:
+                    bookings_text += f"📅 *{booking['date']}* в *{booking['time']}*\n"
+                    bookings_text += f"🥊 {booking['workout_name']}\n"
+                    bookings_text += f"👨‍🏫 Тренер: {booking['trainer']}\n"
+                    bookings_text += "─" * 25 + "\n\n"
 
-            bookings_text = "📅 *ВАШИ ЗАПИСИ:*\n\n"
-            for booking in bookings:
-                bookings_text += f"📅 *{booking['date']}* в *{booking['time']}*\n"
-                bookings_text += f"🥊 {booking['workout_name']}\n"
-                bookings_text += f"👨‍🏫 Тренер: {booking['trainer']}\n"
-                bookings_text += "─" * 25 + "\n\n"
-
-            self.bot.send_message(message.chat.id, bookings_text, parse_mode='Markdown')
-            self._return_to_main_menu(message.chat.id)
+            if hasattr(message, 'message_id'):
+                self.bot.edit_message_text(
+                    bookings_text,
+                    message.chat.id,
+                    message.message_id,
+                    parse_mode='Markdown',
+                    reply_markup=self.back_to_menu_keyboard()
+                )
+            else:
+                self.bot.send_message(message.chat.id, bookings_text, parse_mode='Markdown',
+                                      reply_markup=self.back_to_menu_keyboard())
 
         except Exception as e:
             logger.error(f"Ошибка получения записей: {e}")
             self.bot.send_message(message.chat.id, "❌ Ошибка загрузки записей")
-            self._return_to_main_menu(message.chat.id)
+            self.send_main_menu(message.chat.id)
 
     def show_schedule_info(self, message):
         """Показ расписания"""
@@ -420,8 +547,17 @@ class FightClubBot:
 
 💡 *Первая тренировка - БЕСПЛАТНО!*"""
 
-        self.bot.send_message(message.chat.id, schedule_text, parse_mode='Markdown')
-        self._return_to_main_menu(message.chat.id)
+        if hasattr(message, 'message_id'):
+            self.bot.edit_message_text(
+                schedule_text,
+                message.chat.id,
+                message.message_id,
+                parse_mode='Markdown',
+                reply_markup=self.back_to_menu_keyboard()
+            )
+        else:
+            self.bot.send_message(message.chat.id, schedule_text, parse_mode='Markdown',
+                                  reply_markup=self.back_to_menu_keyboard())
 
     def send_prices_info(self, message):
         """Показ цен"""
@@ -445,28 +581,36 @@ class FightClubBot:
 
 💪 *Первая тренировка - БЕСПЛАТНО!*"""
 
-        self.bot.send_message(message.chat.id, prices_text, parse_mode='Markdown')
-        self._return_to_main_menu(message.chat.id)
+        if hasattr(message, 'message_id'):
+            self.bot.edit_message_text(
+                prices_text,
+                message.chat.id,
+                message.message_id,
+                parse_mode='Markdown',
+                reply_markup=self.back_to_menu_keyboard()
+            )
+        else:
+            self.bot.send_message(message.chat.id, prices_text, parse_mode='Markdown',
+                                  reply_markup=self.back_to_menu_keyboard())
 
     def send_contacts_info(self, message):
         """Показ контактов с инлайн-кнопками"""
         contacts_text = f"""
-    📞 *Контакты клуба:*
+📞 *Контакты клуба:*
 
-    📍 *Адрес:*
-    {self.config.GYM_ADDRESS}
+📍 *Адрес:*
+{self.config.GYM_ADDRESS}
 
-    📱 *Телефон:*
-    {self.config.GYM_PHONE}
+📱 *Телефон:*
+{self.config.GYM_PHONE}
 
-    🕒 *Режим работы:*
-    Пн-Пт: 17:00 - 21:00
-    Сб: 10:00 - 14:00
-    Вс: Выходной
+🕒 *Режим работы:*
+Пн-Пт: 17:00 - 21:00
+Сб: 10:00 - 14:00
+Вс: Выходной
 
-    💪 *Первая тренировка - БЕСПЛАТНО!*"""
+💪 *Первая тренировка - БЕСПЛАТНО!*"""
 
-        # Создаем инлайн-клавиатуру с кнопками-ссылками
         keyboard = InlineKeyboardMarkup()
         keyboard.add(
             InlineKeyboardButton("💬 Telegram", url="https://t.me/Zimin03"),
@@ -478,10 +622,9 @@ class FightClubBot:
                                  url="https://yandex.ru/maps/?ll=37.884696,55.700928&z=17&pt=37.884696,55.700928,pm2grm")
         )
         keyboard.add(
-            InlineKeyboardButton("🔙 Назад в меню", callback_data="contacts_back_to_main")
+            InlineKeyboardButton("🔙 Главное меню", callback_data="return_to_main_menu")
         )
 
-        # Если это callback (нажатие из меню), редактируем сообщение
         if hasattr(message, 'message_id'):
             self.bot.edit_message_text(
                 contacts_text,
@@ -491,7 +634,6 @@ class FightClubBot:
                 reply_markup=keyboard
             )
         else:
-            # Если обычное сообщение, отправляем новое
             self.bot.send_message(
                 message.chat.id,
                 contacts_text,
@@ -512,6 +654,7 @@ class FightClubBot:
 
 *Команды:*
 /start - Главное меню
+/menu - Показать меню
 /schedule - Расписание тренировок
 /price - Цены и абонементы
 /contacts - Контакты клуба
@@ -521,38 +664,38 @@ class FightClubBot:
 
 💡 *Первая тренировка - БЕСПЛАТНО!*"""
 
-        self.bot.send_message(message.chat.id, help_text, parse_mode='Markdown')
-        self._return_to_main_menu(message.chat.id)
+        if hasattr(message, 'message_id'):
+            self.bot.edit_message_text(
+                help_text,
+                message.chat.id,
+                message.message_id,
+                parse_mode='Markdown',
+                reply_markup=self.back_to_menu_keyboard()
+            )
+        else:
+            self.bot.send_message(message.chat.id, help_text, parse_mode='Markdown',
+                                  reply_markup=self.back_to_menu_keyboard())
 
-    def handle_day_selection(self, message):
-        """Обработчик выбора дня"""
-        if message.text == "🔙 Назад в меню":
-            self._return_to_main_menu(message.chat.id)
-            return
-
-        day_map = {"📅 Сегодня": 0, "📅 Завтра": 1, "📅 Послезавтра": 2}
-        days_offset = day_map[message.text]
-        selected_date = datetime.datetime.now() + datetime.timedelta(days=days_offset)
-        date_str = selected_date.strftime('%Y-%m-%d')
-
-        workouts = self.db.get_workouts_by_date(date_str)
-
-        if not workouts:
-            self._send_no_workouts_message(message.chat.id, selected_date)
-            return
-
-        self._send_workouts_list(message.chat.id, workouts, selected_date)
-
-    def _send_no_workouts_message(self, chat_id, selected_date):
+    def _send_no_workouts_message(self, message, selected_date):
         """Отправляет сообщение об отсутствии тренировок"""
         text = f"❌ На *{selected_date.strftime('%d.%m.%Y')}* нет доступных тренировок\n\n"
         text += "💡 *Что можно сделать:*\n• Выбрать другой день\n"
         text += f"• Обратиться к тренеру: {self.config.ADMIN_CONTACT}\n"
         text += f"• Позвонить: {self.config.GYM_PHONE}"
 
-        self.bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=self.main_menu())
+        if hasattr(message, 'message_id'):
+            self.bot.edit_message_text(
+                text,
+                message.chat.id,
+                message.message_id,
+                parse_mode='Markdown',
+                reply_markup=self.back_to_days_keyboard()
+            )
+        else:
+            self.bot.send_message(message.chat.id, text, parse_mode='Markdown',
+                                  reply_markup=self.back_to_days_keyboard())
 
-    def _send_workouts_list(self, chat_id, workouts, selected_date):
+    def _send_workouts_list(self, message, workouts, selected_date):
         """Отправляет список доступных тренировок"""
         workouts_text = f"🎯 *{selected_date.strftime('%d.%m.%Y')}*\n\n📍 *Доступные тренировки:*\n\n"
         keyboard = InlineKeyboardMarkup()
@@ -566,10 +709,21 @@ class FightClubBot:
             workouts_text += f"   👨‍🏫 Тренер: {workout['trainer']}\n"
             workouts_text += f"   ✅ Свободно: {workout['available_slots']} мест\n\n"
 
-        keyboard.add(InlineKeyboardButton("🔙 Назад к выбору дня", callback_data="back_to_days"))
+        keyboard.add(InlineKeyboardButton("🔙 Выбрать другой день", callback_data="menu_booking"))
+        keyboard.add(InlineKeyboardButton("🔙 Главное меню", callback_data="return_to_main_menu"))
 
-        self.bot.send_message(chat_id, workouts_text, parse_mode='Markdown')
-        self.bot.send_message(chat_id, "👇 *Выберите тренировку:*", parse_mode='Markdown', reply_markup=keyboard)
+        if hasattr(message, 'message_id'):
+            self.bot.edit_message_text(
+                workouts_text,
+                message.chat.id,
+                message.message_id,
+                parse_mode='Markdown',
+                reply_markup=keyboard
+            )
+        else:
+            self.bot.send_message(message.chat.id, workouts_text, parse_mode='Markdown')
+            self.bot.send_message(message.chat.id, "👇 *Выберите тренировку:*",
+                                  parse_mode='Markdown', reply_markup=keyboard)
 
     def handle_booking_callback(self, call):
         """Обработчик подтверждения записи"""
@@ -585,7 +739,7 @@ class FightClubBot:
                     call.message.message_id,
                     parse_mode='Markdown'
                 )
-                self._return_to_main_menu(call.message.chat.id)
+                self.send_main_menu(call.message.chat.id, "✅ Запись успешно оформлена! Что дальше?")
             else:
                 self.bot.answer_callback_query(call.id, "❌ Не удалось записаться")
                 self._send_booking_error(call.message.chat.id)
@@ -599,7 +753,7 @@ class FightClubBot:
         """Отправляет сообщение об ошибке записи"""
         error_text = "❌ Не удалось завершить запись.\n"
         error_text += f"Попробуйте позже или свяжитесь с тренером: {self.config.ADMIN_CONTACT}"
-        self.bot.send_message(chat_id, error_text, reply_markup=self.main_menu())
+        self.bot.send_message(chat_id, error_text, reply_markup=self.back_to_menu_keyboard())
 
     def handle_back_callback(self, call):
         """Обработчик возврата к выбору дня"""
@@ -609,21 +763,23 @@ class FightClubBot:
                 call.message.chat.id,
                 call.message.message_id
             )
-            self.bot.send_message(call.message.chat.id, "Выберите день:", reply_markup=self.days_keyboard())
+            self.show_booking_days(call.message)
         except Exception as e:
             logger.error(f"Ошибка возврата: {e}")
 
+    def handle_contacts_back_to_main(self, call):
+        """Обработчик возврата из контактов в главное меню"""
+        try:
+            self.bot.answer_callback_query(call.id)
+            self.send_main_menu(call.message.chat.id)
+        except Exception as e:
+            logger.error(f"Ошибка возврата из контактов: {e}")
+            self.send_main_menu(call.message.chat.id)
+
     def handle_unknown_message(self, message):
         """Обработчик неизвестных сообщений"""
-        self.bot.send_message(
-            message.chat.id,
-            "🤖 Используйте меню ниже или команды для навигации\n/start - открыть главное меню",
-            reply_markup=self.main_menu()
-        )
-
-    def _return_to_main_menu(self, chat_id):
-        """Возврат в главное меню"""
-        self.bot.send_message(chat_id, "Выберите действие:", reply_markup=self.main_menu())
+        self.send_main_menu(message.chat.id,
+                            "🤖 Используйте меню ниже для навигации\n\n💡 Доступные команды:\n/start - главное меню\n/menu - показать меню")
 
 
 if __name__ == '__main__':
