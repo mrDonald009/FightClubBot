@@ -1,9 +1,12 @@
+import logging
 from keyboards import back_to_menu_keyboard
+
+logger = logging.getLogger(__name__)
 
 def send_prices_info(bot, config, message):
     """Показ цен"""
     prices_text = """
-💳 *Стоимость абонементов:*
+💳 *СТОИМОСТЬ АБОНЕМЕНТОВ:*
 
 *👶 ДЕТСКИЕ ГРУППЫ:*
 • Тайский бокс дети - *6 000 ₽/мес*
@@ -22,14 +25,10 @@ def send_prices_info(bot, config, message):
 
 💪 *Первая тренировка - БЕСПЛАТНО!*"""
 
-    if hasattr(message, 'message_id'):
-        bot.send_message(
-            prices_text,
-            message.chat.id,
-            message.message_id,
-            parse_mode='Markdown',
-            reply_markup=back_to_menu_keyboard()
-        )
-    else:
-        bot.send_message(message.chat.id, prices_text, parse_mode='Markdown',
-                         reply_markup=back_to_menu_keyboard())
+    # Всегда отправляем новое сообщение для сохранения истории
+    bot.send_message(
+        message.chat.id,
+        prices_text,
+        parse_mode='Markdown',
+        reply_markup=back_to_menu_keyboard()
+    )

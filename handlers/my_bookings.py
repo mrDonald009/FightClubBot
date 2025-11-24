@@ -11,7 +11,7 @@ def show_my_bookings_info(bot, db, message):
         bookings = db.get_user_bookings(user_id)
 
         if not bookings:
-            bookings_text = "📭 *У вас нет активных записей на тренировки*"
+            bookings_text = "📭 *У вас нет активных записей на тренировки*\n\n💡 Запишитесь на тренировку через раздел '🥊 Записаться на тренировку'"
         else:
             bookings_text = "📅 *ВАШИ ЗАПИСИ:*\n\n"
             for booking in bookings:
@@ -20,17 +20,13 @@ def show_my_bookings_info(bot, db, message):
                 bookings_text += f"👨‍🏫 Тренер: {booking['trainer']}\n"
                 bookings_text += "─" * 25 + "\n\n"
 
-        if hasattr(message, 'message_id'):
-            bot.send_message(
-                bookings_text,
-                message.chat.id,
-                message.message_id,
-                parse_mode='Markdown',
-                reply_markup=back_to_menu_keyboard()
-            )
-        else:
-            bot.send_message(message.chat.id, bookings_text, parse_mode='Markdown',
-                             reply_markup=back_to_menu_keyboard())
+        # Всегда отправляем новое сообщение для сохранения истории
+        bot.send_message(
+            message.chat.id,
+            bookings_text,
+            parse_mode='Markdown',
+            reply_markup=back_to_menu_keyboard()
+        )
 
     except Exception as e:
         logger.error(f"Ошибка получения записей: {e}")
