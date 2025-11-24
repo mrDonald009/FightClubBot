@@ -19,18 +19,21 @@ def show_challenges_info(bot, message):
 
 🏆 *МАРАФОН 30 ДНЕЙ*
 Посещайте тренировки 30 дней подряд
-🎁 *Награда:* Месячный абонемент в подарок
+🎁 *Награда:* Фирменная футболка клуба
 
 💪 *Участвуйте и получайте бонусы!*"""
 
     if hasattr(message, 'message_id'):
         bot.send_message(
-            challenges_text,
             message.chat.id,
-            message.message_id,
+            challenges_text,
             parse_mode='Markdown',
             reply_markup=back_to_menu_keyboard()
         )
     else:
-        bot.send_message(message.chat.id, challenges_text, parse_mode='Markdown',
-                         reply_markup=back_to_menu_keyboard())
+        bot.send_message(
+            message.chat.id,
+            challenges_text,
+            parse_mode='Markdown',
+            reply_markup=back_to_menu_keyboard()
+        )
