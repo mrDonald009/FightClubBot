@@ -41,7 +41,11 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_schedule_date ON schedule(date)",
             "CREATE INDEX IF NOT EXISTS idx_bookings_user ON bookings(user_id)",
             "CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status)",
-            "CREATE INDEX IF NOT EXISTS idx_workouts_category ON workout_types(category)"
+            "CREATE INDEX IF NOT EXISTS idx_workouts_category ON workout_types(category)",
+            "CREATE INDEX IF NOT EXISTS idx_qr_codes_token ON user_qr_codes(qr_token)",
+            "CREATE INDEX IF NOT EXISTS idx_qr_codes_user ON user_qr_codes(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_access_logs_user ON access_logs(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_access_logs_time ON access_logs(access_time)"
         ]
 
         with self.get_connection() as conn:
@@ -107,6 +111,32 @@ class Database:
                     FOREIGN KEY (schedule_id) REFERENCES schedule (id),
                     UNIQUE(user_id, schedule_id)
                 )
+            ''',
+            'user_qr_codes': '''
+                CREATE TABLE IF NOT EXISTS user_qr_codes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    qr_token TEXT UNIQUE NOT NULL,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP,
+                    last_used TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users (id)
+                )
+            ''',
+            'access_logs': '''
+                CREATE TABLE IF NOT EXISTS access_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    qr_token TEXT NOT NULL,
+                    access_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    access_type TEXT CHECK(access_type IN ('entry', 'exit')),
+                    verified_by INTEGER,
+                    status TEXT CHECK(status IN ('granted', 'denied', 'suspicious')),
+                    reason TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users (id),
+                    FOREIGN KEY (verified_by) REFERENCES trainers (id)
+                )
             '''
         }
 
@@ -129,8 +159,9 @@ class Database:
                     ('Тайский бокс (дети 5-8 лет)', 'Группа для детей от 5 лет', 60, 10, 6000, 'Дети'),
                     ('Тайский бокс (дети 9-14 лет)', 'Группа для детей от 9 лет', 60, 12, 6000, 'Дети'),
                     (
-                    'Тайский бокс (взрослые от 15 лет)', 'Тренировки для подростков от 15 лет и взрослых', 90, 15, 6000,
-                    'Взрослые'),
+                        'Тайский бокс (взрослые от 15 лет)', 'Тренировки для подростков от 15 лет и взрослых', 90, 15,
+                        6000,
+                        'Взрослые'),
                     ('Тайский бокс (женская группа)', 'Отдельная женская группа по тайскому боксу', 90, 12, 6000,
                      'Взрослые'),
                     ('ММА (дети)', 'Тренировки по ММА для детей', 60, 10, 6000, 'Дети'),
@@ -437,6 +468,106 @@ class Database:
             except Exception as e:
                 logger.error(f"Error marking attendance: {e}")
                 return False
+
+    # QR-код методы
+    def create_user_qr_code(self, user_id: int, qr_token: str, expires_at: datetime.datetime) -> bool:
+        """Создает новый QR-код для пользователя"""
+        with self.get_connection() as conn:
+            try:
+                # Деактивируем старые QR-коды пользователя
+                conn.execute(
+                    'UPDATE user_qr_codes SET is_active = 0 WHERE user_id = ?',
+                    (user_id,)
+                )
+
+                # Создаем новый QR-код
+                conn.execute(
+                    'INSERT INTO user_qr_codes (user_id, qr_token, expires_at) VALUES (?, ?, ?)',
+                    (user_id, qr_token, expires_at)
+                )
+                return True
+            except Exception as e:
+                logger.error(f"Error creating QR code: {e}")
+                return False
+
+    def get_active_qr_code(self, user_id: int):
+        """Получает активный QR-код пользователя"""
+        with self.get_connection() as conn:
+            try:
+                result = conn.execute('''
+                    SELECT * FROM user_qr_codes 
+                    WHERE user_id = ? AND is_active = 1 AND expires_at > CURRENT_TIMESTAMP
+                    ORDER BY created_at DESC LIMIT 1
+                ''', (user_id,)).fetchone()
+                return result
+            except Exception as e:
+                logger.error(f"Error getting QR code: {e}")
+                return None
+
+    def verify_qr_token(self, qr_token: str):
+        """Проверяет валидность QR-токена"""
+        with self.get_connection() as conn:
+            try:
+                result = conn.execute('''
+                    SELECT uqc.*, u.full_name, u.telegram_id 
+                    FROM user_qr_codes uqc
+                    JOIN users u ON uqc.user_id = u.telegram_id
+                    WHERE uqc.qr_token = ? AND uqc.is_active = 1 AND uqc.expires_at > CURRENT_TIMESTAMP
+                ''', (qr_token,)).fetchone()
+
+                if result:
+                    # Обновляем время последнего использования
+                    conn.execute(
+                        'UPDATE user_qr_codes SET last_used = CURRENT_TIMESTAMP WHERE id = ?',
+                        (result['id'],)
+                    )
+                    return True, dict(result)
+                else:
+                    return False, "Недействительный QR-код"
+
+            except Exception as e:
+                logger.error(f"Error verifying QR token: {e}")
+                return False, "Ошибка проверки QR-кода"
+
+    def log_access_attempt(self, user_id: int, qr_token: str, access_type: str, status: str, verified_by: int = None,
+                           reason: str = None):
+        """Логирует попытку доступа"""
+        with self.get_connection() as conn:
+            try:
+                conn.execute('''
+                    INSERT INTO access_logs 
+                    (user_id, qr_token, access_type, status, verified_by, reason) 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user_id, qr_token, access_type, status, verified_by, reason))
+                return True
+            except Exception as e:
+                logger.error(f"Error logging access attempt: {e}")
+                return False
+
+    def get_user_access_logs(self, user_id: int, limit: int = 10):
+        """Получает историю доступа пользователя"""
+        with self.get_connection() as conn:
+            try:
+                cursor = conn.execute('''
+                    SELECT access_time, access_type, status, reason 
+                    FROM access_logs 
+                    WHERE user_id = ? 
+                    ORDER BY access_time DESC 
+                    LIMIT ?
+                ''', (user_id, limit))
+
+                logs = []
+                for row in cursor.fetchall():
+                    logs.append({
+                        'access_time': row['access_time'],
+                        'access_type': row['access_type'],
+                        'status': row['status'],
+                        'reason': row['reason']
+                    })
+                return logs
+            except Exception as e:
+                logger.error(f"Error getting access logs: {e}")
+                return []
 
     def backup_database(self):
         backup_file = f"{config.config.BACKUP_PATH}backup_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
