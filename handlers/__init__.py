@@ -16,6 +16,9 @@ from .schedule import show_schedule_info
 from .prices import send_prices_info
 from .contacts import send_contacts_info
 from .help import send_help_info
+from .qr_code import show_qr_code
+from .trainer.auth import handle_trainer_command
+from .trainer.dashboard import show_trainer_dashboard
 
 __all__ = [
     'handle_start',
@@ -35,5 +38,8 @@ __all__ = [
     'show_schedule_info',
     'send_prices_info',
     'send_contacts_info',
-    'send_help_info'
+    'send_help_info',
+    'show_qr_code',
+    'handle_trainer_command',
+    'show_trainer_dashboard'
 ]

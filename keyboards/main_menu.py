@@ -8,6 +8,7 @@ def main_menu():
         ("📊 Мой прогресс", "menu_progress"),
         ("🎯 Челенджи и бонусы", "menu_challenges"),
         ("👤 Мой профиль", "menu_profile"),
+        ("🎫 Мой QR-код", "menu_qr_code"),  # НОВАЯ КНОПКА
         ("🏆 Таблица лидеров", "menu_leaderboard"),
         ("📅 Мои записи", "menu_my_bookings"),
         ("📋 Расписание", "menu_schedule"),

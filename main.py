@@ -1,4 +1,3 @@
-#import
 import telebot
 import os
 import sys
@@ -19,6 +18,33 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 logger.info("🚀 Инициализация бота...")
+
+# ... существующий код ...
+
+try:
+    import config
+    logger.info("✅ Конфигурация загружена")
+except ImportError as e:
+    logger.error(f"❌ Ошибка загрузки конфигурации: {e}")
+    sys.exit(1)
+
+# Импортируем остальные модули
+try:
+    from database import Database
+    from handlers import (
+        handle_start, send_main_menu, show_booking_days, handle_day_selection_callback,
+        handle_booking_callback, show_progress_info, show_challenges_info,
+        show_profile_info, show_leaderboard_info, show_my_bookings_info,
+        show_schedule_info, send_prices_info, send_contacts_info, send_help_info,
+        show_qr_code  # ДОБАВЛЯЕМ ЭТОТ ИМПОРТ
+    )
+    from keyboards import main_menu, back_to_menu_keyboard
+    from handlers.trainer.auth import handle_trainer_command  # ДОБАВЛЯЕМ ЭТОТ ИМПОРТ
+
+    logger.info("✅ Все модули успешно импортированы")
+except ImportError as e:
+    logger.error(f"❌ Ошибка импорта модулей: {e}")
+    sys.exit(1)
 
 
 def check_environment():
@@ -92,19 +118,96 @@ class FightClubBot:
         self.setup_handlers()
         logger.info("✅ FightClubBot инициализирован")
 
+    def handle_trainer_callback(self, call):
+        """Обработчик тренерского меню"""
+        try:
+            action = call.data.replace('trainer_', '')
+            logger.info(f"👨‍🏫 Тренерский callback: {action}")
+
+            if action == "qr_scanner":
+                self.bot.answer_callback_query(call.id)
+                self.bot.send_message(
+                    call.message.chat.id,
+                    "🔧 *Сканер QR-кодов в разработке*\n\n"
+                    "Эта функция будет доступна в ближайшем обновлении.\n\n"
+                    "📱 *Планируемый функционал:*\n"
+                    "• Сканирование QR-кодов участников\n"
+                    "• Автоматическая отметка посещений\n"
+                    "• Проверка статуса абонемента",
+                    parse_mode='Markdown'
+                )
+            elif action == "groups":
+                self.bot.answer_callback_query(call.id)
+                self.bot.send_message(
+                    call.message.chat.id,
+                    "🔧 *Мои группы в разработке*\n\n"
+                    "Эта функция будет доступна в ближайшем обновлении.\n\n"
+                    "👥 *Планируемый функционал:*\n"
+                    "• Просмотр списка участников групп\n"
+                    "• Статистика посещаемости\n"
+                    "• Контактная информация",
+                    parse_mode='Markdown'
+                )
+            elif action == "attendance":
+                self.bot.answer_callback_query(call.id)
+                self.bot.send_message(
+                    call.message.chat.id,
+                    "🔧 *Отметка посещений в разработке*\n\n"
+                    "Эта функция будет доступна в ближайшем обновлении.\n\n"
+                    "✅ *Планируемый функционал:*\n"
+                    "• Ручная отметка присутствующих\n"
+                    "• Учет посещений тренировок\n"
+                    "• Формирование отчетов",
+                    parse_mode='Markdown'
+                )
+            elif action == "schedule":
+                self.bot.answer_callback_query(call.id)
+                self.bot.send_message(
+                    call.message.chat.id,
+                    "🔧 *Расписание тренера в разработке*\n\n"
+                    "Эта функция будет доступна в ближайшем обновлении.\n\n"
+                    "📅 *Планируемый функционал:*\n"
+                    "• Личное расписание тренировок\n"
+                    "• Управление занятиями\n"
+                    "• Уведомления об изменениях",
+                    parse_mode='Markdown'
+                )
+            elif action == "analytics":
+                self.bot.answer_callback_query(call.id)
+                self.bot.send_message(
+                    call.message.chat.id,
+                    "🔧 *Статистика в разработке*\n\n"
+                    "Эта функция будет доступна в ближайшем обновлении.\n\n"
+                    "📊 *Планируемый функционал:*\n"
+                    "• Аналитика посещаемости\n"
+                    "• Прогресс участников\n"
+                    "• Финансовые отчеты",
+                    parse_mode='Markdown'
+                )
+            else:
+                self.bot.answer_callback_query(call.id, "❌ Неизвестная команда тренера")
+
+        except Exception as e:
+            logger.error(f"Ошибка обработки тренерского callback: {e}")
+            self.bot.answer_callback_query(call.id, "❌ Ошибка")
+
     def setup_database(self):
         """Инициализация базы данных"""
         try:
             self.db = Database()
             logger.info("✅ База данных подключена")
 
-            # Проверяем и инициализируем данные если нужно
-            test_date = datetime.datetime.now().strftime('%Y-%m-%d')
-            workouts = self.db.get_workouts_by_date(test_date)
+            # ПРИНУДИТЕЛЬНО ПЕРЕИНИЦИАЛИЗИРУЕМ БАЗУ ДАННЫХ
+            logger.info("🔄 Принудительная инициализация базы данных...")
+            self.db.initialize_real_data()
 
-            if len(workouts) == 0:
-                logger.info("🔄 Инициализируем базу данных с реальными данными...")
-                self.db.initialize_real_data()
+            # Проверяем тренеров после инициализации
+            with self.db.get_connection() as conn:
+                trainers = conn.execute('SELECT * FROM trainers').fetchall()
+                logger.info(f"🔍 Найдено тренеров в базе: {len(trainers)}")
+                for trainer in trainers:
+                    logger.info(
+                        f"👨‍🏫 Тренер: ID={trainer['telegram_id']}, Name={trainer['name']}, Active={trainer['is_active']}")
 
         except Exception as e:
             logger.error(f"❌ Ошибка настройки базы данных: {e}")
@@ -133,6 +236,12 @@ class FightClubBot:
             # Очищаем ВСЕ старые состояния
             self.clear_old_keyboards(message.chat.id)
             handle_start(self.bot, self.db, message)
+
+        @self.bot.message_handler(commands=['trainer'])  # ДОБАВЛЯЕМ ЭТОТ ОБРАБОТЧИК
+        def handle_trainer_command(message):
+            logger.info(f"📨 Команда /trainer от пользователя {message.from_user.id}")
+            from handlers.trainer.auth import handle_trainer_command as trainer_handler
+            trainer_handler(self.bot, self.db, message)
 
         @self.bot.message_handler(commands=['schedule', 'price', 'contacts', 'help'])
         def handle_commands(message):
@@ -167,6 +276,8 @@ class FightClubBot:
                 self.handle_menu_callback(call)
             elif call.data.startswith('book_'):
                 handle_booking_callback(self.bot, self.db, self.config, call)
+            elif call.data.startswith('trainer_'):  # ДОБАВЛЯЕМ ЭТУ СТРОЧКУ
+                self.handle_trainer_callback(call)
             elif call.data == "back_to_days":
                 self.handle_back_callback(call)
             elif call.data == "contacts_back_to_main":
@@ -211,6 +322,7 @@ class FightClubBot:
                 'progress': lambda: show_progress_info(self.bot, self.db, call.message),
                 'challenges': lambda: show_challenges_info(self.bot, call.message),
                 'profile': lambda: show_profile_info(self.bot, self.db, call.message),
+                'qr_code': lambda: show_qr_code(self.bot, self.db, call.message),  # ДОБАВЛЯЕМ ЭТУ СТРОЧКУ
                 'leaderboard': lambda: show_leaderboard_info(self.bot, call.message),
                 'my_bookings': lambda: show_my_bookings_info(self.bot, self.db, call.message),
                 'schedule': lambda: show_schedule_info(self.bot, call.message),
