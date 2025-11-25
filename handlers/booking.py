@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 def show_booking_days(bot, message):
     """Показ выбора дней для записи через инлайн-кнопки"""
-    booking_text = "🗓️ *Выберите день для записи на тренировку:*\n\n💡 Доступны ближайшие 3 дня:"
+    booking_text = "🗓️ *Выберите день для записи на тренировку:*\n\n💡 Доступны ближайшие 7 дней:"
 
     # Всегда отправляем новое сообщение вместо редактирования
     bot.send_message(
@@ -30,7 +30,13 @@ def handle_day_selection_callback(bot, db, config, call):
         selected_date = datetime.datetime.now() + datetime.timedelta(days=days_offset)
         date_str = selected_date.strftime('%Y-%m-%d')
 
+        # ДОБАВИМ ОТЛАДОЧНУЮ ИНФОРМАЦИЮ
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"🔍 ОБРАБОТКА ВЫБОРА ДНЯ: offset={days_offset}, date={date_str}")
+
         workouts = db.get_workouts_by_date(date_str)
+        logger.info(f"🔍 НАЙДЕНО ТРЕНИРОВОК: {len(workouts)} для даты {date_str}")
 
         if not workouts:
             _send_no_workouts_message(bot, config, call.message, selected_date)
@@ -42,7 +48,6 @@ def handle_day_selection_callback(bot, db, config, call):
         logger.error(f"Ошибка выбора дня: {e}")
         bot.answer_callback_query(call.id, "❌ Ошибка выбора дня")
         send_main_menu(bot, call.message.chat.id)
-
 
 def _send_no_workouts_message(bot, config, message, selected_date):
     """Отправляет сообщение об отсутствии тренировок"""
@@ -91,13 +96,42 @@ def handle_booking_callback(bot, db, config, call):
 
         if success:
             bot.answer_callback_query(call.id, "✅ Запись подтверждена!")
-            # Отправляем новое сообщение о успешной записи
+
+            # Получаем информацию о записанной тренировке для подробного сообщения
+            with db.get_connection() as conn:
+                workout_info = conn.execute('''
+                    SELECT s.date, s.time, wt.name as workout_name, t.name as trainer_name
+                    FROM schedule s
+                    JOIN workout_types wt ON s.workout_type_id = wt.id
+                    JOIN trainers t ON s.trainer_id = t.id
+                    WHERE s.id = ?
+                ''', (workout_id,)).fetchone()
+
+                if workout_info:
+                    booking_text = f"""🎉 *ЗАПИСЬ ПОДТВЕРЖДЕНА!*
+
+📅 *Дата:* {workout_info['date']}
+⏰ *Время:* {workout_info['time']}
+🥊 *Тренировка:* {workout_info['workout_name']}
+👨‍🏫 *Тренер:* {workout_info['trainer_name']}
+
+💡 *Что дальше:*
+• Придите за 10-15 минут до начала
+• Возьмите сменную обувь
+• Сообщите тренеру о записи через бота
+
+🏋️ *Готовьтесь к тренировке и ждем вас в зале!*"""
+                else:
+                    booking_text = config.MESSAGES['workout_booked']
+
+            # Отправляем сообщение о успешной записи НЕ возвращая в главное меню
             bot.send_message(
                 call.message.chat.id,
-                config.MESSAGES['workout_booked'],
-                parse_mode='Markdown'
+                booking_text,
+                parse_mode='Markdown',
+                reply_markup=back_to_menu_keyboard()  # Просто кнопка возврата в меню
             )
-            send_main_menu(bot, call.message.chat.id, "✅ Запись успешно оформлена! Что дальше?")
+
         else:
             bot.answer_callback_query(call.id, "❌ Не удалось записаться")
             _send_booking_error(bot, config, call.message.chat.id)

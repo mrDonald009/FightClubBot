@@ -19,33 +19,6 @@ logger = logging.getLogger(__name__)
 
 logger.info("🚀 Инициализация бота...")
 
-# ... существующий код ...
-
-try:
-    import config
-    logger.info("✅ Конфигурация загружена")
-except ImportError as e:
-    logger.error(f"❌ Ошибка загрузки конфигурации: {e}")
-    sys.exit(1)
-
-# Импортируем остальные модули
-try:
-    from database import Database
-    from handlers import (
-        handle_start, send_main_menu, show_booking_days, handle_day_selection_callback,
-        handle_booking_callback, show_progress_info, show_challenges_info,
-        show_profile_info, show_leaderboard_info, show_my_bookings_info,
-        show_schedule_info, send_prices_info, send_contacts_info, send_help_info,
-        show_qr_code  # ДОБАВЛЯЕМ ЭТОТ ИМПОРТ
-    )
-    from keyboards import main_menu, back_to_menu_keyboard
-    from handlers.trainer.auth import handle_trainer_command  # ДОБАВЛЯЕМ ЭТОТ ИМПОРТ
-
-    logger.info("✅ Все модули успешно импортированы")
-except ImportError as e:
-    logger.error(f"❌ Ошибка импорта модулей: {e}")
-    sys.exit(1)
-
 
 def check_environment():
     """Проверяет настройки окружения для безопасности"""
@@ -99,9 +72,11 @@ try:
         handle_start, send_main_menu, show_booking_days, handle_day_selection_callback,
         handle_booking_callback, show_progress_info, show_challenges_info,
         show_profile_info, show_leaderboard_info, show_my_bookings_info,
-        show_schedule_info, send_prices_info, send_contacts_info, send_help_info
+        show_schedule_info, send_prices_info, send_contacts_info, send_help_info,
+        show_qr_code
     )
     from keyboards import main_menu, back_to_menu_keyboard
+    from handlers.trainer.auth import handle_trainer_command
 
     logger.info("✅ Все модули успешно импортированы")
 except ImportError as e:
@@ -117,6 +92,142 @@ class FightClubBot:
         self.bot = telebot.TeleBot(self.config.TOKEN)
         self.setup_handlers()
         logger.info("✅ FightClubBot инициализирован")
+
+    def setup_database(self):
+        """Инициализация базы данных"""
+        try:
+            self.db = Database()
+            logger.info("✅ База данных подключена")
+
+            # ВЫВЕДЕМ ПУТЬ К БАЗЕ ДАННЫХ ДЛЯ ПРОВЕРКИ
+            db_path = os.path.abspath(self.config.DB_PATH)
+            logger.info(f"📁 Используется файл базы данных: {db_path}")
+            logger.info(
+                f"📁 Размер файла: {os.path.getsize(db_path) if os.path.exists(db_path) else 'Файл не существует'} байт")
+
+            # Проверяем и инициализируем данные если нужно
+            test_date = datetime.datetime.now().strftime('%Y-%m-%d')
+            workouts = self.db.get_workouts_by_date(test_date)
+
+            if len(workouts) == 0:
+                logger.info("🔄 Инициализируем базу данных с реальными данными...")
+                self.db.initialize_real_data()
+
+            # ДЕТАЛЬНАЯ ПРОВЕРКА 01.12.2025
+            test_date_future = "2025-12-01"
+            workouts_future = self.db.get_workouts_by_date(test_date_future)
+            logger.info(f"🔍 ФИНАЛЬНАЯ ПРОВЕРКА В БОТЕ: На 01.12.2025 найдено {len(workouts_future)} тренировок")
+
+            # Если тренировки не найдены, проверим базу напрямую
+            if len(workouts_future) == 0:
+                logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Тренировки в базе есть, но метод get_workouts_by_date возвращает 0")
+                self._debug_database_directly(test_date_future)
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка настройки базы данных: {e}")
+            sys.exit(1)
+
+    def _debug_database_directly(self, date):
+        """Прямая проверка базы данных в обход методов"""
+        try:
+            with self.db.get_connection() as conn:
+                # Проверим напрямую
+                direct_result = conn.execute('''
+                    SELECT s.id, s.time, wt.name, t.name as trainer, s.available_slots
+                    FROM schedule s
+                    JOIN workout_types wt ON s.workout_type_id = wt.id
+                    JOIN trainers t ON s.trainer_id = t.id
+                    WHERE s.date = ? AND s.available_slots > 0
+                ''', (date,)).fetchall()
+
+                logger.info(f"🔍 ПРЯМАЯ ПРОВЕРКА БАЗЫ: На {date} найдено {len(direct_result)} записей")
+
+                for row in direct_result:
+                    logger.info(f"🔍 Прямая запись: {row['time']} - {row['name']}")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка прямой проверки базы: {e}")
+
+    def clear_old_keyboards(self, chat_id):
+        """Принудительно очищает все старые клавиатуры"""
+        try:
+            # Отправляем сообщение с удалением клавиатуры
+            self.bot.send_message(
+                chat_id,
+                "🔄 Очистка интерфейса...",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            time.sleep(0.3)
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось очистить старые клавиатуры: {e}")
+
+    def setup_handlers(self):
+        """Настройка обработчиков сообщений"""
+        logger.info("🔄 Настройка обработчиков...")
+
+        @self.bot.message_handler(commands=['start', 'menu', 'reset'])
+        def send_welcome(message):
+            logger.info(f"📨 Команда {message.text} от пользователя {message.from_user.id}")
+            # Очищаем ВСЕ старые состояния
+            self.clear_old_keyboards(message.chat.id)
+            handle_start(self.bot, self.db, message)
+
+        @self.bot.message_handler(commands=['trainer'])
+        def handle_trainer_command(message):
+            logger.info(f"📨 Команда /trainer от пользователя {message.from_user.id}")
+            from handlers.trainer.auth import handle_trainer_command as trainer_handler
+            trainer_handler(self.bot, self.db, message)
+
+        @self.bot.message_handler(commands=['schedule', 'price', 'contacts', 'help'])
+        def handle_commands(message):
+            logger.info(f"📨 Команда {message.text} от пользователя {message.from_user.id}")
+            self.handle_quick_commands(message)
+
+        # СПЕЦИАЛЬНЫЙ обработчик для старых сообщений "Выберите день"
+        @self.bot.message_handler(func=lambda message:
+        "Выберите день" in message.text or
+        message.text in ["🗓️ Выберите день:", "📅 Сегодня", "📅 Завтра", "📅 Послезавтра"])
+        def handle_old_messages(message):
+            logger.info(f"🔄 Обработка старого сообщения: {message.text}")
+            self.clear_old_keyboards(message.chat.id)
+            send_main_menu(self.bot, message.chat.id, "🔄 Обновляем интерфейс...")
+
+        @self.bot.callback_query_handler(func=lambda call: True)
+        def handle_all_callbacks(call):
+            logger.info(f"🖱️ Callback: {call.data} от пользователя {call.from_user.id}")
+            self.handle_callback_queries(call)
+
+        @self.bot.message_handler(content_types=['text'])
+        def handle_unknown(message):
+            logger.info(f"📨 Неизвестное сообщение: {message.text} от пользователя {message.from_user.id}")
+            self.handle_unknown_message(message)
+
+        logger.info("✅ Обработчики настроены")
+
+    def handle_callback_queries(self, call):
+        """Централизованный обработчик всех callback запросов"""
+        try:
+            if call.data.startswith('menu_'):
+                self.handle_menu_callback(call)
+            elif call.data.startswith('book_'):
+                handle_booking_callback(self.bot, self.db, self.config, call)
+            elif call.data.startswith('trainer_'):
+                self.handle_trainer_callback(call)
+            elif call.data == "back_to_days":
+                self.handle_back_callback(call)
+            elif call.data == "contacts_back_to_main":
+                self.handle_contacts_back_to_main(call)
+            elif call.data == "return_to_main_menu":
+                self.handle_return_to_main_menu(call)
+            elif call.data.startswith('select_day_'):
+                handle_day_selection_callback(self.bot, self.db, self.config, call)
+            else:
+                logger.warning(f"Неизвестный callback: {call.data}")
+                self.bot.answer_callback_query(call.id, "❌ Неизвестная команда")
+
+        except Exception as e:
+            logger.error(f"Ошибка обработки callback: {e}")
+            self.bot.answer_callback_query(call.id, "❌ Ошибка")
 
     def handle_trainer_callback(self, call):
         """Обработчик тренерского меню"""
@@ -191,109 +302,6 @@ class FightClubBot:
             logger.error(f"Ошибка обработки тренерского callback: {e}")
             self.bot.answer_callback_query(call.id, "❌ Ошибка")
 
-    def setup_database(self):
-        """Инициализация базы данных"""
-        try:
-            self.db = Database()
-            logger.info("✅ База данных подключена")
-
-            # ПРИНУДИТЕЛЬНО ПЕРЕИНИЦИАЛИЗИРУЕМ БАЗУ ДАННЫХ
-            logger.info("🔄 Принудительная инициализация базы данных...")
-            self.db.initialize_real_data()
-
-            # Проверяем тренеров после инициализации
-            with self.db.get_connection() as conn:
-                trainers = conn.execute('SELECT * FROM trainers').fetchall()
-                logger.info(f"🔍 Найдено тренеров в базе: {len(trainers)}")
-                for trainer in trainers:
-                    logger.info(
-                        f"👨‍🏫 Тренер: ID={trainer['telegram_id']}, Name={trainer['name']}, Active={trainer['is_active']}")
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка настройки базы данных: {e}")
-            sys.exit(1)
-
-    def clear_old_keyboards(self, chat_id):
-        """Принудительно очищает все старые клавиатуры"""
-        try:
-            # Отправляем сообщение с удалением клавиатуры
-            self.bot.send_message(
-                chat_id,
-                "🔄 Очистка интерфейса...",
-                reply_markup=ReplyKeyboardRemove()
-            )
-            time.sleep(0.3)
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось очистить старые клавиатуры: {e}")
-
-    def setup_handlers(self):
-        """Настройка обработчиков сообщений"""
-        logger.info("🔄 Настройка обработчиков...")
-
-        @self.bot.message_handler(commands=['start', 'menu', 'reset'])
-        def send_welcome(message):
-            logger.info(f"📨 Команда {message.text} от пользователя {message.from_user.id}")
-            # Очищаем ВСЕ старые состояния
-            self.clear_old_keyboards(message.chat.id)
-            handle_start(self.bot, self.db, message)
-
-        @self.bot.message_handler(commands=['trainer'])  # ДОБАВЛЯЕМ ЭТОТ ОБРАБОТЧИК
-        def handle_trainer_command(message):
-            logger.info(f"📨 Команда /trainer от пользователя {message.from_user.id}")
-            from handlers.trainer.auth import handle_trainer_command as trainer_handler
-            trainer_handler(self.bot, self.db, message)
-
-        @self.bot.message_handler(commands=['schedule', 'price', 'contacts', 'help'])
-        def handle_commands(message):
-            logger.info(f"📨 Команда {message.text} от пользователя {message.from_user.id}")
-            self.handle_quick_commands(message)
-
-        # СПЕЦИАЛЬНЫЙ обработчик для старых сообщений "Выберите день"
-        @self.bot.message_handler(func=lambda message:
-        "Выберите день" in message.text or
-        message.text in ["🗓️ Выберите день:", "📅 Сегодня", "📅 Завтра", "📅 Послезавтра"])
-        def handle_old_messages(message):
-            logger.info(f"🔄 Обработка старого сообщения: {message.text}")
-            self.clear_old_keyboards(message.chat.id)
-            send_main_menu(self.bot, message.chat.id, "🔄 Обновляем интерфейс...")
-
-        @self.bot.callback_query_handler(func=lambda call: True)
-        def handle_all_callbacks(call):
-            logger.info(f"🖱️ Callback: {call.data} от пользователя {call.from_user.id}")
-            self.handle_callback_queries(call)
-
-        @self.bot.message_handler(content_types=['text'])
-        def handle_unknown(message):
-            logger.info(f"📨 Неизвестное сообщение: {message.text} от пользователя {message.from_user.id}")
-            self.handle_unknown_message(message)
-
-        logger.info("✅ Обработчики настроены")
-
-    def handle_callback_queries(self, call):
-        """Централизованный обработчик всех callback запросов"""
-        try:
-            if call.data.startswith('menu_'):
-                self.handle_menu_callback(call)
-            elif call.data.startswith('book_'):
-                handle_booking_callback(self.bot, self.db, self.config, call)
-            elif call.data.startswith('trainer_'):  # ДОБАВЛЯЕМ ЭТУ СТРОЧКУ
-                self.handle_trainer_callback(call)
-            elif call.data == "back_to_days":
-                self.handle_back_callback(call)
-            elif call.data == "contacts_back_to_main":
-                self.handle_contacts_back_to_main(call)
-            elif call.data == "return_to_main_menu":
-                self.handle_return_to_main_menu(call)
-            elif call.data.startswith('select_day_'):
-                handle_day_selection_callback(self.bot, self.db, self.config, call)
-            else:
-                logger.warning(f"Неизвестный callback: {call.data}")
-                self.bot.answer_callback_query(call.id, "❌ Неизвестная команда")
-
-        except Exception as e:
-            logger.error(f"Ошибка обработки callback: {e}")
-            self.bot.answer_callback_query(call.id, "❌ Ошибка")
-
     def handle_return_to_main_menu(self, call):
         """Универсальный обработчик возврата в главное меню - СОХРАНЯЕМ ИСТОРИЮ"""
         try:
@@ -322,7 +330,7 @@ class FightClubBot:
                 'progress': lambda: show_progress_info(self.bot, self.db, call.message),
                 'challenges': lambda: show_challenges_info(self.bot, call.message),
                 'profile': lambda: show_profile_info(self.bot, self.db, call.message),
-                'qr_code': lambda: show_qr_code(self.bot, self.db, call.message),  # ДОБАВЛЯЕМ ЭТУ СТРОЧКУ
+                'qr_code': lambda: show_qr_code(self.bot, self.db, call.message),
                 'leaderboard': lambda: show_leaderboard_info(self.bot, call.message),
                 'my_bookings': lambda: show_my_bookings_info(self.bot, self.db, call.message),
                 'schedule': lambda: show_schedule_info(self.bot, call.message),

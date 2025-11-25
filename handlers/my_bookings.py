@@ -13,12 +13,14 @@ def show_my_bookings_info(bot, db, message):
         if not bookings:
             bookings_text = "📭 *У вас нет активных записей на тренировки*\n\n💡 Запишитесь на тренировку через раздел '🥊 Записаться на тренировку'"
         else:
-            bookings_text = "📅 *ВАШИ ЗАПИСИ:*\n\n"
-            for booking in bookings:
-                bookings_text += f"📅 *{booking['date']}* в *{booking['time']}*\n"
-                bookings_text += f"🥊 {booking['workout_name']}\n"
+            bookings_text = "📅 *ВАШИ АКТИВНЫЕ ЗАПИСИ:*\n\n"
+            for i, booking in enumerate(bookings, 1):
+                bookings_text += f"*{i}. {booking['date']}* в *{booking['time']}*\n"
+                bookings_text += f"🥊 *{booking['workout_name']}*\n"
                 bookings_text += f"👨‍🏫 Тренер: {booking['trainer']}\n"
                 bookings_text += "─" * 25 + "\n\n"
+
+            bookings_text += f"💪 *Всего записей: {len(bookings)}*"
 
         # Всегда отправляем новое сообщение для сохранения истории
         bot.send_message(

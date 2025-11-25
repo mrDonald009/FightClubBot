@@ -192,7 +192,7 @@ class Database:
                     trainers
                 )
 
-                self._generate_schedule(conn, days=14)
+                self._generate_schedule(conn, days=30)
 
                 logger.info("Database initialized with real data!")
                 logger.info(f"✅ Добавлено тренеров: {len(trainers)}")
@@ -201,17 +201,24 @@ class Database:
                 logger.error(f"Error initializing data: {e}")
                 raise
 
-    def _generate_schedule(self, conn, days: int = 14):
+    def _generate_schedule(self, conn, days: int = 30):  # ИЗМЕНИТЕ 14 НА 30
         today = datetime.datetime.now().date()
+
+        # Логируем генерацию расписания
+        logger.info(f"🔄 Генерация расписания на {days} дней, начиная с {today}")
 
         for i in range(days):
             date = today + datetime.timedelta(days=i)
             weekday = date.weekday()
 
-            if weekday == 6:
+            if weekday == 6:  # Воскресенье - выходной
                 continue
 
             schedule_slots = self._get_daily_schedule(weekday, date)
+
+            # Логируем для 01.12.2025
+            if date.strftime('%Y-%m-%d') == '2025-12-01':
+                logger.info(f"🔍 Генерация для 01.12.2025: {len(schedule_slots)} слотов")
 
             for slot in schedule_slots:
                 conn.execute(
@@ -220,20 +227,38 @@ class Database:
                 )
 
     def _get_daily_schedule(self, weekday: int, date: datetime.date) -> List[tuple]:
-        if weekday in [0, 2, 4]:
+        # Получаем актуальные ID из базы
+        with self.get_connection() as conn:
+            # Получаем ID для тренировок
+            workout_ids = {}
+            workouts = conn.execute('SELECT id, name FROM workout_types').fetchall()
+            for workout in workouts:
+                workout_ids[workout['name']] = workout['id']
+
+            # Получаем ID для тренеров
+            trainer_ids = {}
+            trainers = conn.execute('SELECT id, name FROM trainers').fetchall()
+            for trainer in trainers:
+                trainer_ids[trainer['name']] = trainer['id']
+
+        # Используем актуальные ID для расписания с лимитом 20 человек
+        if weekday in [0, 2, 4]:  # Пн, Ср, Пт
             return [
-                (3, 1, date, '19:00', 15),
-                (6, 1, date, '20:30', 15)
+                (workout_ids['Тайский бокс (взрослые от 15 лет)'], trainer_ids['Тренер по тайскому боксу'], date,
+                 '19:00', 20),
+                (workout_ids['ММА (взрослые)'], trainer_ids['Тренер по тайскому боксу'], date, '20:30', 20)
             ]
-        elif weekday in [1, 3]:
+        elif weekday in [1, 3]:  # Вт, Чт
             return [
-                (2, 1, date, '17:00', 12),
-                (7, 2, date, '19:00', 12)
+                (workout_ids['Тайский бокс (дети 9-14 лет)'], trainer_ids['Тренер по тайскому боксу'], date, '17:00',
+                 20),
+                (workout_ids['Грэпплинг/БЖЖ'], trainer_ids['Тренер по грэпплингу'], date, '19:00', 20)
             ]
-        elif weekday == 5:
+        elif weekday == 5:  # Сб
             return [
-                (1, 1, date, '11:00', 10),
-                (5, 1, date, '12:00', 10)
+                (
+                workout_ids['Тайский бокс (дети 5-8 лет)'], trainer_ids['Тренер по тайскому боксу'], date, '11:00', 20),
+                (workout_ids['ММА (дети)'], trainer_ids['Тренер по тайскому боксу'], date, '12:00', 20)
             ]
         return []
 
@@ -260,6 +285,9 @@ class Database:
     def get_workouts_by_date(self, date: str) -> List[Dict]:
         with self.get_connection() as conn:
             try:
+                # ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ ДЛЯ ДИАГНОСТИКИ
+                logger.info(f"🔍 get_workouts_by_date вызван для даты: {date}")
+
                 result = conn.execute('''
                     SELECT 
                         s.id, s.time, wt.name as type, t.name as trainer, 
@@ -271,14 +299,32 @@ class Database:
                     ORDER BY s.time
                 ''', (date,))
 
-                return [dict(row) for row in result]
+                workouts = [dict(row) for row in result]
+
+                # ЛОГИРУЕМ РЕЗУЛЬТАТ
+                logger.info(f"🔍 get_workouts_by_date результат: {len(workouts)} тренировок")
+                for workout in workouts:
+                    logger.info(f"🔍 Найдена тренировка: {workout['time']} - {workout['type']}")
+
+                return workouts
+
             except Exception as e:
-                logger.error(f"Error getting workouts: {e}")
+                logger.error(f"❌ Ошибка в get_workouts_by_date: {e}")
                 return []
 
     def book_workout(self, user_id: int, schedule_id: int) -> bool:
         with self.get_connection() as conn:
             try:
+                # Проверяем, не превышен ли лимит записей на тренировку (20 человек)
+                available_slots = conn.execute(
+                    'SELECT available_slots FROM schedule WHERE id = ?',
+                    (schedule_id,)
+                ).fetchone()
+
+                if not available_slots or available_slots[0] <= 0:
+                    logger.warning(f"Нет свободных мест на тренировку {schedule_id}")
+                    return False
+
                 user_bookings = conn.execute('''
                     SELECT COUNT(*) FROM bookings b
                     JOIN schedule s ON b.schedule_id = s.id
