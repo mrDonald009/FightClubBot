@@ -13,25 +13,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or "Не указан"
     first_name = update.effective_user.first_name or "Пользователь"
 
-    # Выводим в консоль
     print(f"🎯 ПОЛЬЗОВАТЕЛЬ {user_id} ({first_name}) ОТПРАВИЛ /start")
+    print(f"📝 Username: {username}")
 
-    # Проверяем, есть ли пользователь в базе
     session = Session()
     try:
         user = get_user_by_telegram_id(session, user_id)
 
         if not user:
             user = create_user(session, user_id, username, first_name, "athlete")
+            print(f"✅ СОЗДАН НОВЫЙ ПОЛЬЗОВАТЕЛЬ: {user_id} с ролью {user.role}")
             welcome_text = f"""👋 Добро пожаловать, {first_name}!
 
 Вы были зарегистрированы как спортсмен. Обратитесь к тренеру для изменения роли."""
-            print(f"✅ СОЗДАН НОВЫЙ ПОЛЬЗОВАТЕЛЬ: {user_id} с ролью {user.role}")
         else:
+            print(f"🔍 ПОЛЬЗОВАТЕЛЬ {user_id} УЖЕ СУЩЕСТВУЕТ, роль: {user.role}")
             welcome_text = f"""👋 С возвращением, {first_name}!
 
 Ваша роль: {user.role}"""
-            print(f"🔍 ПОЛЬЗОВАТЕЛЬ {user_id} УЖЕ СУЩЕСТВУЕТ, роль: {user.role}")
 
         await update.message.reply_text(welcome_text)
 
@@ -51,11 +50,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
     finally:
         session.close()
+        print(f"🔚 ЗАВЕРШЕНА ОБРАБОТКА /start ДЛЯ {user_id}")
 
 
 async def show_coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает меню тренера"""
-    print("📋 ОТОБРАЖАЕМ МЕНЮ ТРЕНЕРА")
+    user_id = update.effective_user.id
+    print(f"📋 ПОКАЗ МЕНЮ ТРЕНЕРА ДЛЯ {user_id}")
+
     keyboard = [
         [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
         [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
@@ -68,11 +70,14 @@ async def show_coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Выберите действие:",
         reply_markup=reply_markup
     )
+    print(f"✅ МЕНЮ ТРЕНЕРА ОТОБРАЖЕНО ДЛЯ {user_id}")
 
 
 async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает меню администратора"""
-    print("📋 ОТОБРАЖАЕМ МЕНЮ АДМИНИСТРАТОРА")
+    user_id = update.effective_user.id
+    print(f"📋 ПОКАЗ МЕНЮ АДМИНА ДЛЯ {user_id}")
+
     keyboard = [
         [KeyboardButton("👥 Тренеры"), KeyboardButton("📊 Общая статистика")],
         [KeyboardButton("💰 Финансы"), KeyboardButton("⚙️ Настройки")]
@@ -83,11 +88,14 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👑 Меню администратора",
         reply_markup=reply_markup
     )
+    print(f"✅ МЕНЮ АДМИНА ОТОБРАЖЕНО ДЛЯ {user_id}")
 
 
 async def show_athlete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает меню спортсмена"""
-    print("📋 ОТОБРАЖАЕМ МЕНЮ СПОРТСМЕНА")
+    user_id = update.effective_user.id
+    print(f"📋 ПОКАЗ МЕНЮ СПОРТСМЕНА ДЛЯ {user_id}")
+
     keyboard = [
         [KeyboardButton("📊 Мой прогресс"), KeyboardButton("📅 Расписание")],
         [KeyboardButton("🏆 Рейтинг"), KeyboardButton("ℹ️ Информация")]
@@ -98,3 +106,4 @@ async def show_athlete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💪 Личный кабинет спортсмена",
         reply_markup=reply_markup
     )
+    print(f"✅ МЕНЮ СПОРТСМЕНА ОТОБРАЖЕНО ДЛЯ {user_id}")
