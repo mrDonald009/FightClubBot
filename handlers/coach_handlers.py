@@ -1,493 +1,480 @@
-import logging
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
-from database.models import Session, User, Athlete, Subscription
-from database.db_utils import get_user_by_telegram_id, create_athlete, create_subscription
-import random
-import re
+from database.models import Session, User, AthleteInfo
+import logging
 
 logger = logging.getLogger(__name__)
 
 # Состояния для добавления спортсмена
-(
-    ATHLETE_FULL_NAME,
-    ATHLETE_PHONE,
-    ATHLETE_MEDICAL,
-    ATHLETE_SPORT_TYPE,
-    ATHLETE_AGE_GROUP,
-    ATHLETE_SUBSCRIPTION
-) = range(6)
+ATHLETE_FULL_NAME, ATHLETE_PHONE, ATHLETE_MEDICAL, ATHLETE_AGE_GROUP, ATHLETE_SUBSCRIPTION = range(5)
 
-# Список кнопок меню для проверки прерывания
-MENU_BUTTONS = [
-    "👥 Добавить спортсмена",
-    "📋 Список спортсменов",
-    "📊 Статистика посещений",
-    "💰 Финансовая статистика",
-    "📅 Отметить посещение",
-    "⚙️ Настройки"
-]
+# Состояния для редактирования спортсмена
+EDIT_ATHLETE_START, EDIT_CHOOSE_FIELD, EDIT_INPUT_VALUE = range(3)
 
 
-def is_phone_number(text):
-    """Проверяет, является ли текст номером телефона"""
-    # Удаляем все пробелы и лишние символы для проверки
-    cleaned = re.sub(r'[^\d]', '', text)
-
-    # Проверяем паттерны номеров телефонов
-    phone_patterns = [
-        r'^\d{3}-\d{3}-\d{2}-\d{2}$',  # 925-123-45-67
-        r'^\d{10,11}$',  # 9251234567 или 79251234567
-        r'^\d{1}[- ]?\d{3}[- ]?\d{3}[- ]?\d{2}[- ]?\d{2}$',  # 7-925-123-45-67
-    ]
-
-    # Если строка состоит в основном из цифр и соответствует одному из паттернов
-    if len(cleaned) >= 10 and any(re.match(pattern, text) for pattern in phone_patterns):
-        return True
-
-    # Дополнительная проверка: если больше половины символов - цифры
-    digit_count = sum(c.isdigit() for c in text)
-    if digit_count >= len(text) * 0.5 and digit_count >= 10:
-        return True
-
-    return False
-
-
-def is_valid_name_format(name):
-    """Проверяет корректность формата ФИО"""
-    # Разрешаем буквы, пробелы, дефисы и апострофы
-    name_pattern = r'^[a-zA-Zа-яА-ЯёЁ\s\-'']+$'
-
-    if not re.match(name_pattern, name):
-        return False
-
-    # Проверяем, что есть хотя бы 2 слова (имя и фамилия)
-    words = name.split()
-    if len(words) < 2:
-        return False
-
-    # Проверяем, что каждое слово содержит буквы
-    for word in words:
-        if not any(c.isalpha() for c in word):
-            return False
-
-    return True
-
-
-def has_digits(text):
-    """Проверяет, есть ли в тексте цифры"""
-    return any(char.isdigit() for char in text)
-
+# ==================== МЕНЮ ТРЕНЕРА ====================
 
 async def coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Главное меню тренера"""
-    user_id = update.effective_user.id
-    print(f"🏠 ПОЛЬЗОВАТЕЛЬ {user_id} ОТКРЫЛ МЕНЮ ТРЕНЕРА")
-
+    """Обработчик команды /menu для тренера"""
     session = Session()
-    try:
-        user = get_user_by_telegram_id(session, user_id)
 
-        if not user or user.role not in ['coach', 'admin']:
-            print(f"❌ У ПОЛЬЗОВАТЕЛЯ {user_id} НЕТ ДОСТУПА К МЕНЮ ТРЕНЕРА")
-            await update.message.reply_text("❌ У вас нет доступа к этому меню")
+    try:
+        from database.db_utils import get_user_by_telegram_id
+        user = get_user_by_telegram_id(session, update.effective_user.id)
+
+        if not user or user.role != 'coach':
+            await update.message.reply_text(
+                "❌ У вас нет прав тренера.\n"
+                "Обратитесь к администратору."
+            )
             return
 
+        # Клавиатура меню тренера
         keyboard = [
-            [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
-            [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
-            [KeyboardButton("📅 Отметить посещение"), KeyboardButton("⚙️ Настройки")]
+            ["👥 Добавить спортсмена", "📋 Список спортсменов"],
+            ["📅 Отметить посещение", "📊 Статистика посещений"],
+            ["💰 Финансовая статистика", "⚙️ Настройки"]
         ]
+
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
         await update.message.reply_text(
-            "🏋️‍♂️ Меню тренера:\n\n"
+            "🏋️ *Панель тренера*\n\n"
             "Выберите действие:",
+            parse_mode='Markdown',
             reply_markup=reply_markup
         )
 
     except Exception as e:
-        print(f"❌ ОШИБКА В МЕНЮ ТРЕНЕРА: {e}")
-        await update.message.reply_text("❌ Произошла ошибка")
+        logger.error(f"Ошибка в coach_menu: {e}")
+        await update.message.reply_text("❌ Ошибка при загрузке меню.")
     finally:
         session.close()
 
+
+# ==================== ДОБАВЛЕНИЕ СПОРТСМЕНА ====================
 
 async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начало процесса добавления спортсмена"""
-    user_id = update.effective_user.id
-    print(f"👤 ПОЛЬЗОВАТЕЛЬ {user_id} НАЧАЛ ДОБАВЛЕНИЕ СПОРТСМЕНА")
-
-    # Очищаем данные предыдущего процесса
-    context.user_data.clear()
-
-    session = Session()
-    try:
-        user = get_user_by_telegram_id(session, user_id)
-
-        if not user or user.role not in ['coach', 'admin']:
-            print(f"❌ У ПОЛЬЗОВАТЕЛЯ {user_id} НЕТ ПРАВ ДОБАВЛЯТЬ СПОРТСМЕНОВ")
-            await update.message.reply_text("❌ У вас нет прав для добавления спортсменов")
-            return ConversationHandler.END
-
-        # Если тренер, автоматически определяем вид спорта из его профиля
-        if user.role == 'coach' and user.sport_type:
-            context.user_data['sport_type'] = user.sport_type
-            print(f"🥊 ТРЕНЕР {user_id} РАБОТАЕТ С ВИДОМ СПОРТА: {user.sport_type}")
-
-            await update.message.reply_text(
-                f"👤 <b>Добавление нового спортсмена</b>\n\n"
-                f"<b>Вид спорта:</b> {user.sport_type}\n\n"
-                f"Введите ФИО спортсмена:",
-                parse_mode='HTML'
-            )
-
-            context.user_data['coach_id'] = user.id
-            print(f"✅ УСТАНОВЛЕНО СОСТОЯНИЕ ATHLETE_FULL_NAME ДЛЯ {user_id}")
-            return ATHLETE_FULL_NAME
-        else:
-            # Если у тренера не указан вид спорта или это админ - показываем выбор
-            await update.message.reply_text(
-                "❌ У вас не указана спортивная специализация. Обратитесь к администратору."
-            )
-            return ConversationHandler.END
-
-    except Exception as e:
-        print(f"❌ ОШИБКА ПРИ НАЧАЛЕ ДОБАВЛЕНИЯ: {e}")
-        await update.message.reply_text("❌ Произошла ошибка")
-        return ConversationHandler.END
-    finally:
-        session.close()
+    """Начало добавления спортсмена"""
+    await update.message.reply_text(
+        "👤 *Добавление нового спортсмена*\n\n"
+        "Введите ФИО спортсмена:",
+        parse_mode='Markdown'
+    )
+    return ATHLETE_FULL_NAME
 
 
 async def add_athlete_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ФИО спортсмена с валидацией"""
-    user_id = update.effective_user.id
-    user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_full_name ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
-
-    # Проверяем, не является ли ввод кнопкой меню
-    if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВВОД ФИО, ВЫБРАВ: {user_text}")
-        await cancel_athlete_creation(update, context)
-        return ConversationHandler.END
-
-    full_name = user_text.strip()
-
-    # ВАЛИДАЦИЯ ФИО - проверяем, что это не номер телефона
-    if is_phone_number(full_name):
-        print(f"❌ ОБНАРУЖЕН НОМЕР ТЕЛЕФОНА ВМЕСТО ФИО: {full_name}")
-        await update.message.reply_text(
-            "❌ <b>Обнаружен номер телефона!</b>\n\n"
-            "Вы ввели номер телефона вместо ФИО.\n"
-            "Пожалуйста, введите <b>ФИО спортсмена</b> (только буквы):\n\n"
-            "<i>Пример: Иванов Иван Иванович</i>",
-            parse_mode='HTML'
-        )
-        return ATHLETE_FULL_NAME
-
-    # Проверяем, что введен текст (не пустой и не слишком короткий)
-    if not full_name or len(full_name) < 2:
-        await update.message.reply_text(
-            "❌ ФИО слишком короткое!\n"
-            "Пожалуйста, введите полное ФИО спортсмена:"
-        )
-        return ATHLETE_FULL_NAME
-
-    # Проверяем, что в ФИО есть только буквы, пробелы, дефисы
-    if not is_valid_name_format(full_name):
-        await update.message.reply_text(
-            "❌ <b>Некорректный формат ФИО!</b>\n\n"
-            "ФИО должно содержать только:\n"
-            "• Буквы русского/английского алфавита\n"
-            "• Пробелы\n"
-            "• Дефисы\n\n"
-            "<i>Пример: Петров-Сидоров Иван Александрович</i>",
-            parse_mode='HTML'
-        )
-        return ATHLETE_FULL_NAME
-
-    context.user_data['full_name'] = full_name
-    print(f"✅ ВВЕДЕНО ФИО: {full_name}, ПЕРЕХОДИМ В ATHLETE_PHONE")
+    """Обработка ФИО спортсмена"""
+    context.user_data['full_name'] = update.message.text
 
     await update.message.reply_text(
-        "📞 Теперь введите номер телефона спортсмена в формате:\n"
-        "<b>XXX-XXX-XX-XX</b>\n\n"
-        "<i>Пример: 925-123-45-67</i>",
-        parse_mode='HTML'
+        "📞 *Введите номер телефона спортсмена:*\n"
+        "Формат: +79991234567 или 89991234567",
+        parse_mode='Markdown'
     )
     return ATHLETE_PHONE
 
 
 async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка телефона спортсмена"""
-    user_id = update.effective_user.id
-    user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_phone ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
+    phone = update.message.text
 
-    # Проверяем, не является ли ввод кнопкой меню
-    if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВВОД ТЕЛЕФОНА, ВЫБРАВ: {user_text}")
-        await cancel_athlete_creation(update, context)
-        return ConversationHandler.END
+    # Простая валидация телефона
+    if (phone.startswith('+') and len(phone) == 12) or \
+            (phone.startswith('8') and len(phone) == 11) or \
+            (phone.startswith('7') and len(phone) == 11):
+        context.user_data['phone'] = phone
 
-    # Проверяем, что пользователь не ввел ФИО вместо телефона
-    if not has_digits(user_text) or is_valid_name_format(user_text):
-        print(f"❌ ПОЛЬЗОВАТЕЛЬ {user_id} ВВЕЛ ФИО ВМЕСТО ТЕЛЕФОНА: '{user_text}'")
         await update.message.reply_text(
-            "❌ <b>Это похоже на ФИО, а не на телефон!</b>\n\n"
-            "Пожалуйста, введите <b>номер телефона</b> в формате:\n"
-            "<b>XXX-XXX-XX-XX</b>\n\n"
-            "<i>Пример: 925-123-45-67</i>",
-            parse_mode='HTML'
+            "🏥 *Медицинские заметки:*\n"
+            "Введите медицинские ограничения или заметки\n"
+            "(или напишите 'нет' если нет ограничений):",
+            parse_mode='Markdown'
+        )
+        return ATHLETE_MEDICAL
+    else:
+        await update.message.reply_text(
+            "❌ *Неверный формат телефона!*\n"
+            "Пожалуйста, введите телефон в формате:\n"
+            "+79991234567 или 89991234567",
+            parse_mode='Markdown'
         )
         return ATHLETE_PHONE
 
-    # Удаляем все нецифровые символы кроме дефисов
-    cleaned_input = re.sub(r'[^\d-]', '', user_text)
-
-    # Проверяем формат: XXX-XXX-XX-XX (9 цифр с дефисами)
-    phone_pattern = r'^\d{3}-\d{3}-\d{2}-\d{2}$'
-
-    if not re.match(phone_pattern, cleaned_input):
-        print(f"❌ НЕВЕРНЫЙ ФОРМАТ ТЕЛЕФОНА ОТ ПОЛЬЗОВАТЕЛЯ {user_id}: '{user_text}'")
-        error_message = """❌ <b>Неверный формат телефона!</b>
-
-📞 Правильный формат: <b>XXX-XXX-XX-XX</b>
-Пример: <code>925-123-45-67</code>
-
-Пожалуйста, введите телефон в правильном формате:"""
-
-        await update.message.reply_text(error_message, parse_mode='HTML')
-        return ATHLETE_PHONE
-
-    # Если формат правильный - сохраняем полный номер
-    full_phone = f"+7-{cleaned_input}"
-    context.user_data['phone'] = full_phone
-    print(f"✅ ВВЕДЕН ТЕЛЕФОН: {full_phone}, ПЕРЕХОДИМ В ATHLETE_MEDICAL")
-
-    await update.message.reply_text(
-        "🏥 Введите медицинские противопоказания (или 'нет' если отсутствуют):"
-    )
-    return ATHLETE_MEDICAL
-
 
 async def add_athlete_medical(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка медицинской информации"""
-    user_id = update.effective_user.id
-    user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_medical ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
-
-    # Проверяем, не является ли ввод кнопкой меню
-    if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВВОД МЕД.ДАННЫХ, ВЫБРАВ: {user_text}")
-        await cancel_athlete_creation(update, context)
-        return ConversationHandler.END
-
-    medical_info = user_text
-    context.user_data['medical_info'] = medical_info
-    print(f"✅ ВВЕДЕНЫ МЕД.ДАННЫЕ: {medical_info}, ПЕРЕХОДИМ В ATHLETE_AGE_GROUP")
-
-    # Пропускаем выбор вида спорта - используем специализацию тренера
-    keyboard = [[KeyboardButton("Детская"), KeyboardButton("Взрослая")]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    """Обработка медицинских заметок"""
+    context.user_data['medical_notes'] = update.message.text
 
     await update.message.reply_text(
-        "👦👨 Выберите возрастную группу:",
-        reply_markup=reply_markup
+        "👶 *Возрастная группа:*\n"
+        "Введите возрастную группу:\n"
+        "• Дети (до 12 лет)\n"
+        "• Подростки (13-17 лет)\n"
+        "• Взрослые (18+ лет)",
+        parse_mode='Markdown'
     )
     return ATHLETE_AGE_GROUP
 
 
 async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка возрастной группы"""
-    user_id = update.effective_user.id
-    user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_age_group ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
-
-    # Проверяем, не является ли ввод кнопкой меню
-    if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВЫБОР ВОЗРАСТНОЙ ГРУППЫ, ВЫБРАВ: {user_text}")
-        await cancel_athlete_creation(update, context)
-        return ConversationHandler.END
-
-    age_group_ru = user_text
-    age_group = "children" if age_group_ru == "Детская" else "adults"
-    context.user_data['age_group'] = age_group
-    print(f"✅ ВЫБРАНА ВОЗРАСТНАЯ ГРУППА: {age_group_ru} ({age_group}), ПЕРЕХОДИМ В ATHLETE_SUBSCRIPTION")
-
-    keyboard = [[KeyboardButton("Месячный"), KeyboardButton("Разовый")]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    context.user_data['age_group'] = update.message.text
 
     await update.message.reply_text(
-        "🎫 Выберите тип абонемента:",
-        reply_markup=reply_markup
+        "💰 *Тип абонемента:*\n"
+        "Введите тип абонемента:\n"
+        "• Разовое посещение\n"
+        "• Месячный абонемент\n"
+        "• Годовой абонемент",
+        parse_mode='Markdown'
     )
     return ATHLETE_SUBSCRIPTION
 
 
 async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка типа абонемента и завершение процесса"""
-    user_id = update.effective_user.id
-    user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_subscription ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
-
-    # Проверяем, не является ли ввод кнопкой меню
-    if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВЫБОР АБОНЕМЕНТА, ВЫБРАВ: {user_text}")
-        await cancel_athlete_creation(update, context)
-        return ConversationHandler.END
-
-    subscription_type_ru = user_text
-    subscription_type = "monthly" if subscription_type_ru == "Месячный" else "single"
-    print(f"✅ ВЫБРАН ТИП АБОНЕМЕНТА: {subscription_type_ru} ({subscription_type})")
+    """Обработка типа абонемента и сохранение спортсмена"""
+    context.user_data['subscription_type'] = update.message.text
 
     session = Session()
+
     try:
-        temp_telegram_id = -random.randint(10000, 99999)
+        from database.db_utils import get_user_by_telegram_id, create_user, create_athlete_info
 
-        from database.db_utils import create_user
-        athlete_user = create_user(
+        # Получаем тренера
+        coach = get_user_by_telegram_id(session, update.effective_user.id)
+
+        if not coach or coach.role != 'coach':
+            await update.message.reply_text("❌ Ошибка: вы не являетесь тренером.")
+            return ConversationHandler.END
+
+        # Создаем спортсмена
+        athlete = create_user(
             session=session,
-            telegram_id=temp_telegram_id,
+            telegram_id=None,  # У спортсмена может не быть Telegram
             username=None,
-            first_name=context.user_data['full_name'].split()[0],
-            role="athlete"
-        )
-
-        athlete = create_athlete(
-            session=session,
-            user_id=athlete_user.id,
-            full_name=context.user_data['full_name'],
+            first_name=context.user_data['full_name'],
             phone=context.user_data['phone'],
-            medical_info=context.user_data['medical_info'],
-            sport_type=context.user_data['sport_type'],
-            age_group=context.user_data['age_group'],
-            created_by=context.user_data['coach_id']
+            role='athlete',
+            sport_type='MMA'  # По умолчанию MMA
         )
 
-        subscription = create_subscription(
+        # Создаем информацию о спортсмене
+        create_athlete_info(
             session=session,
-            athlete_id=athlete.id,
-            subscription_type=subscription_type
+            user_id=athlete.id,
+            medical_notes=context.user_data['medical_notes'],
+            age_group=context.user_data['age_group'],
+            subscription_type=context.user_data['subscription_type']
         )
-
-        # Конвертируем возрастную группу для отображения
-        age_group_display = "Детская" if athlete.age_group == "children" else "Взрослая"
-
-        # Очищаем данные процесса
-        context.user_data.clear()
-
-        print(f"✅ УСПЕШНО ДОБАВЛЕН СПОРТСМЕН: {athlete.full_name}")
 
         await update.message.reply_text(
-            f"✅ Спортсмен успешно добавлен!\n\n"
-            f"📝 ФИО: {athlete.full_name}\n"
-            f"📞 Телефон: {athlete.phone}\n"
-            f"🥊 Вид спорта: {athlete.sport_type}\n"
-            f"👥 Группа: {age_group_display}\n"
-            f"🎫 Абонемент: {subscription_type_ru}\n"
-            f"💪 Осталось тренировок: {subscription.trainings_remaining}",
-            reply_markup=ReplyKeyboardMarkup([["/menu"]], resize_keyboard=True)
+            f"✅ *Спортсмен успешно добавлен!*\n\n"
+            f"*ФИО:* {context.user_data['full_name']}\n"
+            f"*Телефон:* {context.user_data['phone']}\n"
+            f"*Возрастная группа:* {context.user_data['age_group']}\n"
+            f"*Абонемент:* {context.user_data['subscription_type']}\n\n"
+            f"Спортсмен добавлен в ваш список.",
+            parse_mode='Markdown'
         )
 
-    except Exception as e:
-        print(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}")
-        await update.message.reply_text("❌ Ошибка при добавлении спортсмена")
-    finally:
-        session.close()
+        # Очищаем данные
+        context.user_data.clear()
 
-    return ConversationHandler.END
-
-
-async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список спортсменов тренера (только его вида спорта)"""
-    user_id = update.effective_user.id
-    print(f"📋 ПОЛЬЗОВАТЕЛЬ {user_id} ЗАПРОСИЛ СПИСОК СПОРТСМЕНОВ")
-
-    session = Session()
-    try:
-        user = get_user_by_telegram_id(session, user_id)
-
-        if not user or user.role not in ['coach', 'admin']:
-            await update.message.reply_text("❌ У вас нет доступа к этому меню")
-            return
-
-        # Для админа - показываем всех спортсменов
-        if user.role == 'admin':
-            athletes = session.query(Athlete).all()
-            message_header = "🏃‍♂️ <b>СПИСОК ВСЕХ СПОРТСМЕНОВ</b>\n\n"
-        else:
-            # Для тренера - только спортсменов его вида спорта
-            athletes = session.query(Athlete).filter_by(
-                created_by=user.id,
-                sport_type=user.sport_type
-            ).all()
-            message_header = f"🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ ({user.sport_type})</b>\n\n"
-
-        if not athletes:
-            await update.message.reply_text(
-                "📭 У вас пока нет спортсменов.\n\n"
-                "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
-            )
-            return
-
-        # Формируем сообщение со списком спортсменов
-        message = message_header
-
-        for i, athlete in enumerate(athletes, 1):
-            # Получаем активный абонемент спортсмена
-            subscription = session.query(Subscription).filter_by(
-                athlete_id=athlete.id,
-                is_active=True
-            ).first()
-
-            # Определяем статус абонемента
-            if subscription:
-                status = f"🎫 {subscription.trainings_remaining}/{subscription.trainings_total}"
-                sub_type = "Месячный" if subscription.subscription_type == "monthly" else "Разовый"
-            else:
-                status = "❌ Нет абонемента"
-                sub_type = "—"
-
-            # Конвертируем возрастную группу для отображения
-            age_group_display = "Детская" if athlete.age_group == "children" else "Взрослая"
-
-            message += (
-                f"{i}. <b>{athlete.full_name}</b>\n"
-                f"   📞 {athlete.phone}\n"
-                f"   🥊 {athlete.sport_type} | {age_group_display}\n"
-                f"   {status} | {sub_type}\n"
-                f"   🆔 ID: {athlete.id}\n\n"
-            )
-
-        message += f"📊 Всего спортсменов: <b>{len(athletes)}</b>"
-
-        await update.message.reply_text(message, parse_mode='HTML')
+        return ConversationHandler.END
 
     except Exception as e:
-        print(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ СПИСКА СПОРТСМЕНОВ: {e}")
-        await update.message.reply_text("❌ Ошибка при загрузке списка спортсменов")
+        logger.error(f"Ошибка при добавлении спортсмена: {e}")
+        await update.message.reply_text(
+            "❌ *Ошибка при сохранении спортсмена!*\n"
+            "Попробуйте еще раз или обратитесь к администратору.",
+            parse_mode='Markdown'
+        )
+        return ConversationHandler.END
     finally:
         session.close()
 
 
 async def cancel_athlete_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена процесса добавления спортсмена"""
-    user_id = update.effective_user.id
-    print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ОТМЕНИЛ ДОБАВЛЕНИЕ СПОРТСМЕНА")
-
-    # Очищаем данные процесса
+    """Отмена добавления спортсмена"""
     context.user_data.clear()
 
     await update.message.reply_text(
-        "❌ Добавление спортсмена отменено.\n\n"
-        "Выберите действие из меню:",
-        reply_markup=ReplyKeyboardMarkup([
-            [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
-            [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
-            [KeyboardButton("📅 Отметить посещение"), KeyboardButton("⚙️ Настройки")]
-        ], resize_keyboard=True)
+        "❌ Добавление спортсмена отменено.",
+        parse_mode='Markdown'
     )
 
+    # Показываем меню тренера
+    return await coach_menu(update, context)
+
+
+# ==================== СПИСОК И РЕДАКТИРОВАНИЕ СПОРТСМЕНОВ ====================
+
+async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список спортсменов тренера с возможностью редактирования"""
+    session = Session()
+
+    try:
+        from database.db_utils import get_user_by_telegram_id, get_coach_athletes
+
+        coach = get_user_by_telegram_id(session, update.effective_user.id)
+        if not coach or coach.role != 'coach':
+            await update.message.reply_text("❌ У вас нет доступа к этому разделу.")
+            return
+
+        athletes = get_coach_athletes(session, coach.telegram_id)
+
+        if not athletes:
+            await update.message.reply_text(
+                "📭 *У вас пока нет спортсменов.*\n"
+                "Добавьте спортсменов через меню '👥 Добавить спортсмена'",
+                parse_mode='Markdown'
+            )
+            return
+
+        await update.message.reply_text(
+            f"📋 *Список ваших спортсменов:*\n"
+            f"Всего: *{len(athletes)}* спортсменов\n\n"
+            f"Выберите спортсмена для редактирования:",
+            parse_mode='Markdown'
+        )
+
+        for athlete in athletes:
+            # Получаем дополнительную информацию
+            athlete_info = session.query(AthleteInfo).filter_by(user_id=athlete.id).first()
+
+            message = f"👤 *{athlete.first_name}*\n"
+            message += f"📞 `{athlete.phone or 'Не указан'}`\n"
+
+            if athlete_info:
+                message += f"🏥 Мед. заметки: {athlete_info.medical_notes[:50] if athlete_info.medical_notes else 'Нет'}\n"
+                message += f"👶 Группа: {athlete_info.age_group or 'Не указана'}\n"
+                message += f"💰 Абонемент: {athlete_info.subscription_type or 'Не указан'}\n"
+
+            message += f"🏷️ ID: `{athlete.id}`\n"
+            message += f"📅 Зарегистрирован: {athlete.created_at.strftime('%d.%m.%Y')}\n"
+
+            # Кнопки для каждого спортсмена
+            keyboard = [
+                [
+                    InlineKeyboardButton("✏️ Редактировать",
+                                         callback_data=f"edit_athlete_{athlete.id}"),
+                    InlineKeyboardButton("📅 Тренировки",
+                                         callback_data=f"trainings_{athlete.id}")
+                ]
+            ]
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(
+                message,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+
+    except Exception as e:
+        logger.error(f"Ошибка в athletes_list: {e}")
+        await update.message.reply_text(
+            "❌ Произошла ошибка при загрузке списка спортсменов."
+        )
+    finally:
+        session.close()
+
+
+async def edit_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало редактирования спортсмена"""
+    query = update.callback_query
+    await query.answer()
+
+    athlete_id = int(query.data.split('_')[2])
+    context.user_data['edit_athlete_id'] = athlete_id
+
+    session = Session()
+    try:
+        athlete = session.query(User).filter_by(id=athlete_id).first()
+
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден.")
+            return ConversationHandler.END
+
+        athlete_info = session.query(AthleteInfo).filter_by(user_id=athlete_id).first()
+
+        # Сохраняем данные спортсмена в context
+        context.user_data['athlete_name'] = athlete.first_name
+
+        # Клавиатура выбора поля для редактирования
+        keyboard = [
+            [InlineKeyboardButton("👤 Имя", callback_data='edit_field_first_name')],
+            [InlineKeyboardButton("📞 Телефон", callback_data='edit_field_phone')],
+            [InlineKeyboardButton("🏥 Мед. заметки", callback_data='edit_field_medical')],
+            [InlineKeyboardButton("👶 Возрастная группа", callback_data='edit_field_age_group')],
+            [InlineKeyboardButton("💰 Абонемент", callback_data='edit_field_subscription')],
+            [InlineKeyboardButton("❌ Отмена", callback_data='edit_cancel')]
+        ]
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            f"✏️ *Редактирование спортсмена:* {athlete.first_name}\n\n"
+            f"*Текущие данные:*\n"
+            f"👤 Имя: {athlete.first_name}\n"
+            f"📞 Телефон: `{athlete.phone or 'Не указан'}`\n"
+            f"🏥 Мед. заметки: {athlete_info.medical_notes[:100] + '...' if athlete_info and athlete_info.medical_notes and len(athlete_info.medical_notes) > 100 else (athlete_info.medical_notes if athlete_info and athlete_info.medical_notes else 'Нет')}\n"
+            f"👶 Группа: {athlete_info.age_group if athlete_info else 'Не указана'}\n"
+            f"💰 Абонемент: {athlete_info.subscription_type if athlete_info else 'Не указан'}\n\n"
+            f"Выберите что хотите отредактировать:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+        return EDIT_CHOOSE_FIELD
+
+    except Exception as e:
+        logger.error(f"Ошибка в edit_athlete_start: {e}")
+        await query.edit_message_text("❌ Ошибка при загрузке данных спортсмена.")
+        return ConversationHandler.END
+    finally:
+        session.close()
+
+
+async def edit_choose_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выбор поля для редактирования"""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == 'edit_cancel':
+        await query.edit_message_text("❌ Редактирование отменено.")
+        return ConversationHandler.END
+
+    # Определяем выбранное поле
+    field_map = {
+        'edit_field_first_name': 'Имя',
+        'edit_field_phone': 'Телефон',
+        'edit_field_medical': 'Медицинские заметки',
+        'edit_field_age_group': 'Возрастная группа',
+        'edit_field_subscription': 'Тип абонемента'
+    }
+
+    field_key = query.data
+    field_name = field_map.get(field_key)
+
+    if not field_name:
+        await query.edit_message_text("❌ Неизвестное поле.")
+        return ConversationHandler.END
+
+    # Сохраняем выбранное поле в context
+    context.user_data['edit_field'] = field_key
+    context.user_data['edit_field_name'] = field_name
+
+    # Подготавливаем сообщение в зависимости от поля
+    messages = {
+        'edit_field_first_name': "✏️ *Введите новое имя спортсмена:*",
+        'edit_field_phone': "📞 *Введите новый телефон спортсмена:*\nФормат: +79991234567 или 89991234567",
+        'edit_field_medical': "🏥 *Введите новые медицинские заметки:*",
+        'edit_field_age_group': "👶 *Введите новую возрастную группу:*\n(Дети, Подростки, Взрослые)",
+        'edit_field_subscription': "💰 *Введите новый тип абонемент:*\n(Разовое, Месячный, Годовой)"
+    }
+
+    message_text = messages.get(field_key, "Введите новое значение:")
+
+    await query.edit_message_text(
+        f"{message_text}\n\n"
+        f"Спортсмен: *{context.user_data.get('athlete_name', 'Неизвестно')}*",
+        parse_mode='Markdown'
+    )
+
+    return EDIT_INPUT_VALUE
+
+
+async def edit_input_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка введенного значения"""
+    session = Session()
+
+    try:
+        from database.db_utils import update_user, update_athlete_info
+
+        athlete_id = context.user_data.get('edit_athlete_id')
+        field_key = context.user_data.get('edit_field')
+        field_name = context.user_data.get('edit_field_name')
+
+        if not athlete_id or not field_key:
+            await update.message.reply_text("❌ Ошибка: данные не найдены.")
+            return ConversationHandler.END
+
+        new_value = update.message.text.strip()
+
+        # Обработка в зависимости от типа поля
+        if field_key == 'edit_field_first_name':
+            update_user(session, athlete_id, first_name=new_value)
+            message = f"✅ *Имя изменено на:* {new_value}"
+
+        elif field_key == 'edit_field_phone':
+            # Простая валидация телефона
+            if (new_value.startswith('+') and len(new_value) == 12) or \
+                    (new_value.startswith('8') and len(new_value) == 11) or \
+                    (new_value.startswith('7') and len(new_value) == 11):
+                update_user(session, athlete_id, phone=new_value)
+                message = f"✅ *Телефон изменен на:* `{new_value}`"
+            else:
+                await update.message.reply_text(
+                    "❌ *Неверный формат телефона!*\n"
+                    "Используйте формат: +79991234567 или 89991234567\n"
+                    "Попробуйте еще раз:",
+                    parse_mode='Markdown'
+                )
+                return EDIT_INPUT_VALUE
+
+        elif field_key == 'edit_field_medical':
+            update_athlete_info(session, athlete_id, medical_notes=new_value)
+            message = f"✅ *Медицинские заметки обновлены*"
+
+        elif field_key == 'edit_field_age_group':
+            update_athlete_info(session, athlete_id, age_group=new_value)
+            message = f"✅ *Возрастная группа изменена на:* {new_value}"
+
+        elif field_key == 'edit_field_subscription':
+            update_athlete_info(session, athlete_id, subscription_type=new_value)
+            message = f"✅ *Тип абонемента изменен на:* {new_value}"
+
+        # Отправляем сообщение об успехе
+        await update.message.reply_text(
+            f"{message}\n\n"
+            f"✏️ *Хотите отредактировать что-то еще?*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Продолжить редактирование",
+                                      callback_data=f"edit_athlete_{athlete_id}")],
+                [InlineKeyboardButton("📋 Вернуться к списку",
+                                      callback_data='back_to_list')]
+            ])
+        )
+
+        return ConversationHandler.END
+
+    except Exception as e:
+        logger.error(f"Ошибка в edit_input_value: {e}")
+        await update.message.reply_text("❌ Ошибка при сохранении изменений.")
+        return ConversationHandler.END
+    finally:
+        session.close()
+
+
+async def edit_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена редактирования"""
+    context.user_data.clear()
+    await update.message.reply_text("❌ Редактирование отменено.")
+    return ConversationHandler.END
+
+
+async def back_to_list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Возврат к списку спортсменов через callback"""
+    query = update.callback_query
+    await query.answer()
+
+    # Очищаем данные редактирования
+    context.user_data.clear()
+
+    # Вызываем функцию отображения списка
+    await athletes_list(query, context)
     return ConversationHandler.END
