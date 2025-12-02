@@ -7,6 +7,7 @@ from config import config
 # Создаем базовый класс
 Base = declarative_base()
 
+
 class User(Base):
     __tablename__ = 'users'
 
@@ -18,6 +19,7 @@ class User(Base):
     sport_type = Column(String(50), nullable=True)  # MMA, Thai - только для тренеров
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
+
 
 class Athlete(Base):
     __tablename__ = 'athletes'
@@ -38,6 +40,7 @@ class Athlete(Base):
     user = relationship("User", foreign_keys=[user_id])
     coach = relationship("User", foreign_keys=[created_by])
 
+
 class Subscription(Base):
     __tablename__ = 'subscriptions'
 
@@ -52,6 +55,7 @@ class Subscription(Base):
 
     athlete = relationship("Athlete")
 
+
 class Training(Base):
     __tablename__ = 'trainings'
 
@@ -60,6 +64,7 @@ class Training(Base):
     age_group = Column(String(20))  # children, adults
     training_date = Column(DateTime)
     is_cancelled = Column(Boolean, default=False)
+
 
 class Attendance(Base):
     __tablename__ = 'attendances'
@@ -78,8 +83,8 @@ class Attendance(Base):
 # Создаем движок и таблицы
 engine = create_engine(config.DATABASE_URL)
 
-# УДАЛЯЕМ И ПЕРЕСОЗДАЕМ ТАБЛИЦЫ (только для разработки)
-Base.metadata.drop_all(engine)
+
+# Создаем таблицы если их нет
 Base.metadata.create_all(engine)
 
 # Создаем сессию

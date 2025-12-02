@@ -13,10 +13,9 @@ logger = logging.getLogger(__name__)
     ATHLETE_FULL_NAME,
     ATHLETE_PHONE,
     ATHLETE_MEDICAL,
-    ATHLETE_SPORT_TYPE,
     ATHLETE_AGE_GROUP,
     ATHLETE_SUBSCRIPTION
-) = range(6)
+) = range(5)
 
 # Список кнопок меню для проверки прерывания
 MENU_BUTTONS = [
@@ -266,8 +265,9 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['phone'] = full_phone
     print(f"✅ ВВЕДЕН ТЕЛЕФОН: {full_phone}, ПЕРЕХОДИМ В ATHLETE_MEDICAL")
 
+    # ИЗМЕНЕННОЕ СООБЩЕНИЕ:
     await update.message.reply_text(
-        "🏥 Введите медицинские противопоказания (или 'нет' если отсутствуют):"
+        "🏥 Введите медицинские противопоказания (или нажмите 'нет' если отсутствуют):"
     )
     return ATHLETE_MEDICAL
 
@@ -275,8 +275,8 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_athlete_medical(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка медицинской информации"""
     user_id = update.effective_user.id
-    user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_medical ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
+    user_text = update.message.text.strip()  # Добавил strip() для удаления пробелов
+    print(f"🎯 ВХОД В add_athlete_medical ДЛЯ ПОЛЬЗОВАТЕЛЬ {user_id}, ТЕКСТ: '{user_text}'")
 
     # Проверяем, не является ли ввод кнопкой меню
     if user_text in MENU_BUTTONS:
@@ -284,9 +284,16 @@ async def add_athlete_medical(update: Update, context: ContextTypes.DEFAULT_TYPE
         await cancel_athlete_creation(update, context)
         return ConversationHandler.END
 
-    medical_info = user_text
+    # Обрабатываем кнопку "нет"
+    if user_text.lower() == "нет":
+        print(f"✅ ПОЛЬЗОВАТЕЛЬ {user_id} УКАЗАЛ ОТСУТСТВИЕ ПРОТИВОПОКАЗАНИЙ")
+        medical_info = "Нет противопоказаний"
+    else:
+        medical_info = user_text
+        print(f"✅ ВВЕДЕНЫ МЕД.ДАННЫЕ: '{medical_info}'")
+
     context.user_data['medical_info'] = medical_info
-    print(f"✅ ВВЕДЕНЫ МЕД.ДАННЫЕ: {medical_info}, ПЕРЕХОДИМ В ATHLETE_AGE_GROUP")
+    print(f"✅ МЕД.ДАННЫЕ СОХРАНЕНЫ В user_data: '{medical_info}', ПЕРЕХОДИМ В ATHLETE_AGE_GROUP")
 
     # Пропускаем выбор вида спорта - используем специализацию тренера
     keyboard = [[KeyboardButton("Детская"), KeyboardButton("Взрослая")]]
@@ -342,8 +349,18 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
     subscription_type = "monthly" if subscription_type_ru == "Месячный" else "single"
     print(f"✅ ВЫБРАН ТИП АБОНЕМЕНТА: {subscription_type_ru} ({subscription_type})")
 
+    # ОТЛАДОЧНАЯ ИНФОРМАЦИЯ: выводим все данные перед созданием
+    print(f"📋 ДАННЫЕ ДЛЯ СОЗДАНИЯ СПОРТСМЕНА:")
+    print(f"   ФИО: {context.user_data.get('full_name')}")
+    print(f"   Телефон: {context.user_data.get('phone')}")
+    print(f"   Медицинская информация: {context.user_data.get('medical_info')}")
+    print(f"   Вид спорта: {context.user_data.get('sport_type')}")
+    print(f"   Возрастная группа: {context.user_data.get('age_group')}")
+    print(f"   ID тренера: {context.user_data.get('coach_id')}")
+
     session = Session()
     try:
+        import random
         temp_telegram_id = -random.randint(10000, 99999)
 
         from database.db_utils import create_user
@@ -360,7 +377,7 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
             user_id=athlete_user.id,
             full_name=context.user_data['full_name'],
             phone=context.user_data['phone'],
-            medical_info=context.user_data['medical_info'],
+            medical_info=context.user_data['medical_info'],  # ВОТ ТУТ ДОЛЖНА БЫТЬ МЕД. ИНФОРМАЦИЯ
             sport_type=context.user_data['sport_type'],
             age_group=context.user_data['age_group'],
             created_by=context.user_data['coach_id']
@@ -379,15 +396,21 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
         context.user_data.clear()
 
         print(f"✅ УСПЕШНО ДОБАВЛЕН СПОРТСМЕН: {athlete.full_name}")
+        print(f"   Мед. информация в БД: '{athlete.medical_info}'")  # ОТЛАДКА
+
+        # ФИНАЛЬНОЕ СООБЩЕНИЕ С ИЗМЕНЕННЫМ ПОРЯДКОМ
+        message = f"""✅ Спортсмен успешно добавлен!
+
+        📝 ФИО: {athlete.full_name}
+        📞 Телефон: {athlete.phone}
+        🥊 Вид спорта: {athlete.sport_type}
+        👥 Группа: {age_group_display}
+        🎫 Абонемент: {subscription_type_ru}
+        🏥 Мед. информация: {athlete.medical_info}
+        💪 Осталось тренировок: {subscription.trainings_remaining}"""
 
         await update.message.reply_text(
-            f"✅ Спортсмен успешно добавлен!\n\n"
-            f"📝 ФИО: {athlete.full_name}\n"
-            f"📞 Телефон: {athlete.phone}\n"
-            f"🥊 Вид спорта: {athlete.sport_type}\n"
-            f"👥 Группа: {age_group_display}\n"
-            f"🎫 Абонемент: {subscription_type_ru}\n"
-            f"💪 Осталось тренировок: {subscription.trainings_remaining}",
+            message,
             reply_markup=ReplyKeyboardMarkup([["/menu"]], resize_keyboard=True)
         )
 
@@ -433,6 +456,7 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Формируем сообщение со списком спортсменов
+        # Формируем сообщение со списком спортсменов
         message = message_header
 
         for i, athlete in enumerate(athletes, 1):
@@ -453,10 +477,16 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Конвертируем возрастную группу для отображения
             age_group_display = "Детская" if athlete.age_group == "children" else "Взрослая"
 
+            # Сокращаем медицинскую информацию если слишком длинная
+            medical_display = athlete.medical_info
+            if medical_display and len(medical_display) > 30:
+                medical_display = medical_display[:27] + "..."
+
             message += (
                 f"{i}. <b>{athlete.full_name}</b>\n"
                 f"   📞 {athlete.phone}\n"
                 f"   🥊 {athlete.sport_type} | {age_group_display}\n"
+                f"   🏥 Мед: {medical_display or '—'}\n"
                 f"   {status} | {sub_type}\n"
                 f"   🆔 ID: {athlete.id}\n\n"
             )
