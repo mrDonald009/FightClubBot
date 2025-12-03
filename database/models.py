@@ -2,10 +2,17 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
-from config import config
+import enum
+import os
 
-# Создаем базовый класс
 Base = declarative_base()
+
+
+class RestorationStatus(enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    COMPLETED = "completed"
 
 
 class User(Base):
@@ -25,20 +32,38 @@ class Athlete(Base):
     __tablename__ = 'athletes'
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # Может быть NULL
     full_name = Column(String(200), nullable=False)
     phone = Column(String(20))
     height = Column(Integer)  # рост в см
     weight = Column(Integer)  # вес в кг
-    medical_info = Column(Text)  # медицинские противопоказания
-    sport_type = Column(String(50))  # MMA, Thai
+    medical_info = Column(Text)
+    sport_type = Column(String(50))
     age_group = Column(String(20))  # children, adults
     created_by = Column(Integer, ForeignKey('users.id'))  # тренер, который добавил
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # Связь с текущим активным абонементом
+    current_subscription_id = Column(Integer, ForeignKey('subscriptions.id'), nullable=True)
+
     # Связи
     user = relationship("User", foreign_keys=[user_id])
     coach = relationship("User", foreign_keys=[created_by])
+
+    # Явно указываем foreign_keys для всех связей
+    current_subscription = relationship(
+        "Subscription",
+        foreign_keys=[current_subscription_id],
+        backref="athlete_ref",
+        post_update=True
+    )
+
+    subscriptions = relationship(
+        "Subscription",
+        foreign_keys="Subscription.athlete_id",
+        back_populates="athlete",
+        primaryjoin="Athlete.id==Subscription.athlete_id"
+    )
 
 
 class Subscription(Base):
@@ -53,7 +78,25 @@ class Subscription(Base):
     trainings_remaining = Column(Integer)
     is_active = Column(Boolean, default=True)
 
-    athlete = relationship("Athlete")
+    # Статистика восстановлений
+    total_restored = Column(Integer, default=0)  # Всего восстановлено
+    restored_this_month = Column(Integer, default=0)  # Восстановлено в этом месяце
+
+    # Поле created_at без default для SQLite
+    created_at = Column(DateTime)
+
+    # Связи - явно указываем foreign_keys
+    athlete = relationship(
+        "Athlete",
+        foreign_keys=[athlete_id],
+        back_populates="subscriptions"
+    )
+
+    attendances = relationship(
+        "Attendance",
+        back_populates="subscription",
+        foreign_keys="Attendance.subscription_id"
+    )
 
 
 class Training(Base):
@@ -72,17 +115,89 @@ class Attendance(Base):
     id = Column(Integer, primary_key=True)
     athlete_id = Column(Integer, ForeignKey('athletes.id'))
     training_id = Column(Integer, ForeignKey('trainings.id'))
-    attended = Column(Boolean, default=False)
-    marked_by = Column(Integer, ForeignKey('users.id'))  # кто отметил
+    subscription_id = Column(Integer, ForeignKey('subscriptions.id'))
+    attended = Column(Boolean, default=False)  # True - присутствовал, False - отсутствовал
+    marked_by = Column(Integer, ForeignKey('users.id'))
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # Флаги восстановления
+    was_restored = Column(Boolean, default=False)
+    restoration_reason = Column(Text, nullable=True)
+
+    # Связи
     athlete = relationship("Athlete")
     training = relationship("Training")
+    subscription = relationship(
+        "Subscription",
+        foreign_keys=[subscription_id],
+        back_populates="attendances"
+    )
     marker = relationship("User", foreign_keys=[marked_by])
 
-# Создаем движок и таблицы
-engine = create_engine(config.DATABASE_URL)
 
+class RestorationRequest(Base):
+    """Запрос на восстановление тренировок (упрощенный - сразу исполняется)"""
+    __tablename__ = 'restoration_requests'
+
+    id = Column(Integer, primary_key=True)
+    athlete_id = Column(Integer, ForeignKey('athletes.id'))
+    subscription_id = Column(Integer, ForeignKey('subscriptions.id'))
+
+    # Детали запроса
+    missed_dates = Column(Text)  # Даты пропущенных тренировок в формате JSON
+    restored_count = Column(Integer)  # Сколько тренировок восстановлено
+    reason = Column(Text)
+    notes = Column(Text, nullable=True)
+
+    # Аудит
+    restored_by = Column(Integer, ForeignKey('users.id'))
+    restored_at = Column(DateTime, default=datetime.utcnow)
+
+    # Связи
+    athlete = relationship("Athlete")
+    subscription = relationship("Subscription")
+    restorer = relationship("User", foreign_keys=[restored_by])
+
+
+class Subscription(Base):
+    __tablename__ = 'subscriptions'
+
+    id = Column(Integer, primary_key=True)
+    athlete_id = Column(Integer, ForeignKey('athletes.id'))
+    subscription_type = Column(String(20))  # monthly, single
+    start_date = Column(DateTime, default=datetime.utcnow)
+    end_date = Column(DateTime)
+    trainings_total = Column(Integer)  # 12 для месячных, 1 для разовых
+    trainings_remaining = Column(Integer)
+    is_active = Column(Boolean, default=True)
+
+    # Статистика восстановлений
+    total_restored = Column(Integer, default=0)  # Всего восстановлено
+    restored_this_month = Column(Integer, default=0)  # Восстановлено в этом месяце
+
+    # Добавляем поле created_at
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Связи - явно указываем foreign_keys
+    athlete = relationship(
+        "Athlete",
+        foreign_keys=[athlete_id],
+        back_populates="subscriptions"
+    )
+
+    attendances = relationship(
+        "Attendance",
+        back_populates="subscription",
+        foreign_keys="Attendance.subscription_id"
+    )
+# Путь к базе данных
+DB_PATH = "database/club.db"
+
+# Создаем папку если её нет
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+# Создаем движок SQLAlchemy
+engine = create_engine(f'sqlite:///{DB_PATH}')
 
 # Создаем таблицы если их нет
 Base.metadata.create_all(engine)

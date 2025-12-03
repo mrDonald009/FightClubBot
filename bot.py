@@ -10,6 +10,12 @@ from handlers.coach_handlers import (
     athletes_list, cancel_athlete_creation,
     ATHLETE_FULL_NAME, ATHLETE_PHONE, ATHLETE_MEDICAL, ATHLETE_AGE_GROUP, ATHLETE_SUBSCRIPTION
 )
+from handlers.card_handlers import (
+    show_athlete_card,
+    show_subscription_card,
+    handle_back_to_list,
+    handle_back_to_menu
+)
 
 # Код для проверки и исправления пользователя 26655492
 from database.models import Session, User
@@ -124,6 +130,17 @@ def main():
 
         application.add_handler(conv_handler)
         print("✅ CONVERSATIONHANDLER ДЛЯ ДОБАВЛЕНИЯ СПОРТСМЕНА ДОБАВЛЕН")
+
+        # Обработчики для карточек
+        application.add_handler(CallbackQueryHandler(show_athlete_card, pattern="^athlete_"))
+        application.add_handler(CallbackQueryHandler(show_subscription_card, pattern="^subscription_"))
+        application.add_handler(CallbackQueryHandler(handle_back_to_list, pattern="^back_to_list$"))
+        application.add_handler(CallbackQueryHandler(handle_back_to_menu, pattern="^back_to_menu"))
+        application.add_handler(CallbackQueryHandler(handle_back_to_menu, pattern="^back_to_menu_main$"))
+
+        # Команды быстрого доступа
+        application.add_handler(CommandHandler("card", show_athlete_card))
+        application.add_handler(CommandHandler("sub", show_subscription_card))
 
         # Обработчик команды /start
         application.add_handler(CommandHandler("start", start))

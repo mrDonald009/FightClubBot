@@ -1,7 +1,7 @@
 import logging
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
-from database.models import Session, User, Athlete, Subscription
+from database.models import Session, User, Athlete, Subscription, Training, Attendance
 from database.db_utils import get_user_by_telegram_id, create_athlete, create_subscription
 import random
 import re
@@ -13,9 +13,10 @@ logger = logging.getLogger(__name__)
     ATHLETE_FULL_NAME,
     ATHLETE_PHONE,
     ATHLETE_MEDICAL,
+    ATHLETE_SPORT_TYPE,
     ATHLETE_AGE_GROUP,
     ATHLETE_SUBSCRIPTION
-) = range(5)
+) = range(6)
 
 # Список кнопок меню для проверки прерывания
 MENU_BUTTONS = [
@@ -88,7 +89,7 @@ async def coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = get_user_by_telegram_id(session, user_id)
 
         if not user or user.role not in ['coach', 'admin']:
-            print(f"❌ У ПОЛЬЗОВАТЕЛЯ {user_id} НЕТ ДОСТУПА К МЕНЮ ТРЕНЕРА")
+            print(f"❌ У ПОЛЬЗОВАТЕЛЬ {user_id} НЕТ ДОСТУПА К МЕНЮ ТРЕНЕРА")
             await update.message.reply_text("❌ У вас нет доступа к этому меню")
             return
 
@@ -265,7 +266,6 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['phone'] = full_phone
     print(f"✅ ВВЕДЕН ТЕЛЕФОН: {full_phone}, ПЕРЕХОДИМ В ATHLETE_MEDICAL")
 
-    # ИЗМЕНЕННОЕ СООБЩЕНИЕ:
     await update.message.reply_text(
         "🏥 Введите медицинские противопоказания (или нажмите 'нет' если отсутствуют):"
     )
@@ -275,8 +275,8 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_athlete_medical(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка медицинской информации"""
     user_id = update.effective_user.id
-    user_text = update.message.text.strip()  # Добавил strip() для удаления пробелов
-    print(f"🎯 ВХОД В add_athlete_medical ДЛЯ ПОЛЬЗОВАТЕЛЬ {user_id}, ТЕКСТ: '{user_text}'")
+    user_text = update.message.text.strip()
+    print(f"🎯 ВХОД В add_athlete_medical ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
 
     # Проверяем, не является ли ввод кнопкой меню
     if user_text in MENU_BUTTONS:
@@ -337,7 +337,7 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
     """Обработка типа абонемента и завершение процесса"""
     user_id = update.effective_user.id
     user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_subscription ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
+    print(f"🎯 ВХОД В add_athlete_subscription ДЛЯ ПОЛЬЗОВАТЕЛЬ {user_id}, ТЕКСТ: '{user_text}'")
 
     # Проверяем, не является ли ввод кнопкой меню
     if user_text in MENU_BUTTONS:
@@ -349,18 +349,8 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
     subscription_type = "monthly" if subscription_type_ru == "Месячный" else "single"
     print(f"✅ ВЫБРАН ТИП АБОНЕМЕНТА: {subscription_type_ru} ({subscription_type})")
 
-    # ОТЛАДОЧНАЯ ИНФОРМАЦИЯ: выводим все данные перед созданием
-    print(f"📋 ДАННЫЕ ДЛЯ СОЗДАНИЯ СПОРТСМЕНА:")
-    print(f"   ФИО: {context.user_data.get('full_name')}")
-    print(f"   Телефон: {context.user_data.get('phone')}")
-    print(f"   Медицинская информация: {context.user_data.get('medical_info')}")
-    print(f"   Вид спорта: {context.user_data.get('sport_type')}")
-    print(f"   Возрастная группа: {context.user_data.get('age_group')}")
-    print(f"   ID тренера: {context.user_data.get('coach_id')}")
-
     session = Session()
     try:
-        import random
         temp_telegram_id = -random.randint(10000, 99999)
 
         from database.db_utils import create_user
@@ -377,7 +367,7 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
             user_id=athlete_user.id,
             full_name=context.user_data['full_name'],
             phone=context.user_data['phone'],
-            medical_info=context.user_data['medical_info'],  # ВОТ ТУТ ДОЛЖНА БЫТЬ МЕД. ИНФОРМАЦИЯ
+            medical_info=context.user_data['medical_info'],
             sport_type=context.user_data['sport_type'],
             age_group=context.user_data['age_group'],
             created_by=context.user_data['coach_id']
@@ -389,6 +379,10 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
             subscription_type=subscription_type
         )
 
+        # Устанавливаем текущий абонемент для спортсмена
+        athlete.current_subscription_id = subscription.id
+        session.commit()
+
         # Конвертируем возрастную группу для отображения
         age_group_display = "Детская" if athlete.age_group == "children" else "Взрослая"
 
@@ -396,21 +390,16 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
         context.user_data.clear()
 
         print(f"✅ УСПЕШНО ДОБАВЛЕН СПОРТСМЕН: {athlete.full_name}")
-        print(f"   Мед. информация в БД: '{athlete.medical_info}'")  # ОТЛАДКА
-
-        # ФИНАЛЬНОЕ СООБЩЕНИЕ С ИЗМЕНЕННЫМ ПОРЯДКОМ
-        message = f"""✅ Спортсмен успешно добавлен!
-
-        📝 ФИО: {athlete.full_name}
-        📞 Телефон: {athlete.phone}
-        🥊 Вид спорта: {athlete.sport_type}
-        👥 Группа: {age_group_display}
-        🎫 Абонемент: {subscription_type_ru}
-        🏥 Мед. информация: {athlete.medical_info}
-        💪 Осталось тренировок: {subscription.trainings_remaining}"""
 
         await update.message.reply_text(
-            message,
+            f"✅ Спортсмен успешно добавлен!\n\n"
+            f"📝 ФИО: {athlete.full_name}\n"
+            f"📞 Телефон: {athlete.phone}\n"
+            f"🥊 Вид спорта: {athlete.sport_type}\n"
+            f"👥 Группа: {age_group_display}\n"
+            f"🎫 Абонемент: {subscription_type_ru}\n"
+            f"🏥 Мед. информация: {athlete.medical_info}\n"
+            f"💪 Осталось тренировок: {subscription.trainings_remaining}",
             reply_markup=ReplyKeyboardMarkup([["/menu"]], resize_keyboard=True)
         )
 
@@ -424,7 +413,7 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
 
 
 async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список спортсменов тренера (только его вида спорта)"""
+    """Показывает список спортсменов тренера с интерактивными кнопками"""
     user_id = update.effective_user.id
     print(f"📋 ПОЛЬЗОВАТЕЛЬ {user_id} ЗАПРОСИЛ СПИСОК СПОРТСМЕНОВ")
 
@@ -436,17 +425,13 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ У вас нет доступа к этому меню")
             return
 
-        # Для админа - показываем всех спортсменов
+        # Получаем спортсменов
         if user.role == 'admin':
             athletes = session.query(Athlete).all()
             message_header = "🏃‍♂️ <b>СПИСОК ВСЕХ СПОРТСМЕНОВ</b>\n\n"
         else:
-            # Для тренера - только спортсменов его вида спорта
-            athletes = session.query(Athlete).filter_by(
-                created_by=user.id,
-                sport_type=user.sport_type
-            ).all()
-            message_header = f"🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ ({user.sport_type})</b>\n\n"
+            athletes = session.query(Athlete).filter_by(created_by=user.id).all()
+            message_header = f"🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
 
         if not athletes:
             await update.message.reply_text(
@@ -455,45 +440,55 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Формируем сообщение со списком спортсменов
-        # Формируем сообщение со списком спортсменов
-        message = message_header
+        # Создаем инлайн клавиатуру
+        keyboard = []
 
-        for i, athlete in enumerate(athletes, 1):
-            # Получаем активный абонемент спортсмена
-            subscription = session.query(Subscription).filter_by(
-                athlete_id=athlete.id,
-                is_active=True
-            ).first()
+        # Группируем спортсменов по 2 в строку
+        for i in range(0, len(athletes), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(athletes):
+                    athlete = athletes[i + j]
 
-            # Определяем статус абонемента
-            if subscription:
-                status = f"🎫 {subscription.trainings_remaining}/{subscription.trainings_total}"
-                sub_type = "Месячный" if subscription.subscription_type == "monthly" else "Разовый"
-            else:
-                status = "❌ Нет абонемента"
-                sub_type = "—"
+                    # Определяем иконку статуса
+                    if athlete.current_subscription and athlete.current_subscription.is_active:
+                        icon = "✅"
+                    else:
+                        icon = "❌"
 
-            # Конвертируем возрастную группу для отображения
-            age_group_display = "Детская" if athlete.age_group == "children" else "Взрослая"
+                    # Сокращаем имя если длинное
+                    name = athlete.full_name
+                    if len(name) > 15:
+                        name = name[:12] + "..."
 
-            # Сокращаем медицинскую информацию если слишком длинная
-            medical_display = athlete.medical_info
-            if medical_display and len(medical_display) > 30:
-                medical_display = medical_display[:27] + "..."
+                    btn_text = f"{icon} {name}"
+                    row.append(InlineKeyboardButton(btn_text, callback_data=f"athlete_{athlete.id}"))
 
-            message += (
-                f"{i}. <b>{athlete.full_name}</b>\n"
-                f"   📞 {athlete.phone}\n"
-                f"   🥊 {athlete.sport_type} | {age_group_display}\n"
-                f"   🏥 Мед: {medical_display or '—'}\n"
-                f"   {status} | {sub_type}\n"
-                f"   🆔 ID: {athlete.id}\n\n"
-            )
+            if row:
+                keyboard.append(row)
 
-        message += f"📊 Всего спортсменов: <b>{len(athletes)}</b>"
+        # Добавляем кнопки навигации
+        keyboard.append([
+            InlineKeyboardButton("🔍 Поиск спортсмена", callback_data="search_athlete"),
+            InlineKeyboardButton("📊 Общая статистика", callback_data="overall_stats")
+        ])
 
-        await update.message.reply_text(message, parse_mode='HTML')
+        keyboard.append([
+            InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")
+        ])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Отправляем сообщение
+        await update.message.reply_text(
+            message_header +
+            f"Выберите спортсмена для просмотра карточки:\n"
+            f"✅ - есть активный абонемент\n"
+            f"❌ - нет активного абонемента\n\n"
+            f"📊 Всего спортсменов: <b>{len(athletes)}</b>",
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
 
     except Exception as e:
         print(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ СПИСКА СПОРТСМЕНОВ: {e}")
