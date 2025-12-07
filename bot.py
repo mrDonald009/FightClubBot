@@ -94,8 +94,9 @@ logger = logging.getLogger(__name__)
 def main():
     """Запуск бота"""
     try:
-        # Создаем приложение
-        application = Application.builder().token(config.BOT_TOKEN).build()
+        # Создаем приложение с параметром для избежания конфликтов
+        application = Application.builder().token(config.BOT_TOKEN).get_updates_read_timeout(30).build()
+        #application = Application.builder().token(config.BOT_TOKEN).build()
         print("🤖 БОТ ИНИЦИАЛИЗИРОВАН")
         print(f"🔑 TOKEN: {config.BOT_TOKEN[:10]}...")
         print(f"📁 DATABASE: {config.DATABASE_URL}")

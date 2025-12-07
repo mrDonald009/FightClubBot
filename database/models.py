@@ -5,6 +5,7 @@ from datetime import datetime
 import enum
 import os
 
+# Создаем базовый класс с флагом extend_existing
 Base = declarative_base()
 
 
@@ -17,6 +18,7 @@ class RestorationStatus(enum.Enum):
 
 class User(Base):
     __tablename__ = 'users'
+    __table_args__ = {'extend_existing': True}  # Добавляем этот флаг
 
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer, unique=True, nullable=False)
@@ -30,6 +32,7 @@ class User(Base):
 
 class Athlete(Base):
     __tablename__ = 'athletes'
+    __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # Может быть NULL
@@ -50,7 +53,6 @@ class Athlete(Base):
     user = relationship("User", foreign_keys=[user_id])
     coach = relationship("User", foreign_keys=[created_by])
 
-    # Явно указываем foreign_keys для всех связей
     current_subscription = relationship(
         "Subscription",
         foreign_keys=[current_subscription_id],
@@ -61,13 +63,13 @@ class Athlete(Base):
     subscriptions = relationship(
         "Subscription",
         foreign_keys="Subscription.athlete_id",
-        back_populates="athlete",
-        primaryjoin="Athlete.id==Subscription.athlete_id"
+        back_populates="athlete"
     )
 
 
 class Subscription(Base):
     __tablename__ = 'subscriptions'
+    __table_args__ = {'extend_existing': True}  # Ключевой флаг
 
     id = Column(Integer, primary_key=True)
     athlete_id = Column(Integer, ForeignKey('athletes.id'))
@@ -101,6 +103,7 @@ class Subscription(Base):
 
 class Training(Base):
     __tablename__ = 'trainings'
+    __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
     sport_type = Column(String(50))  # MMA, Thai
@@ -111,6 +114,7 @@ class Training(Base):
 
 class Attendance(Base):
     __tablename__ = 'attendances'
+    __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
     athlete_id = Column(Integer, ForeignKey('athletes.id'))
@@ -138,6 +142,7 @@ class Attendance(Base):
 class RestorationRequest(Base):
     """Запрос на восстановление тренировок (упрощенный - сразу исполняется)"""
     __tablename__ = 'restoration_requests'
+    __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
     athlete_id = Column(Integer, ForeignKey('athletes.id'))
@@ -159,37 +164,6 @@ class RestorationRequest(Base):
     restorer = relationship("User", foreign_keys=[restored_by])
 
 
-class Subscription(Base):
-    __tablename__ = 'subscriptions'
-
-    id = Column(Integer, primary_key=True)
-    athlete_id = Column(Integer, ForeignKey('athletes.id'))
-    subscription_type = Column(String(20))  # monthly, single
-    start_date = Column(DateTime, default=datetime.utcnow)
-    end_date = Column(DateTime)
-    trainings_total = Column(Integer)  # 12 для месячных, 1 для разовых
-    trainings_remaining = Column(Integer)
-    is_active = Column(Boolean, default=True)
-
-    # Статистика восстановлений
-    total_restored = Column(Integer, default=0)  # Всего восстановлено
-    restored_this_month = Column(Integer, default=0)  # Восстановлено в этом месяце
-
-    # Добавляем поле created_at
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    # Связи - явно указываем foreign_keys
-    athlete = relationship(
-        "Athlete",
-        foreign_keys=[athlete_id],
-        back_populates="subscriptions"
-    )
-
-    attendances = relationship(
-        "Attendance",
-        back_populates="subscription",
-        foreign_keys="Attendance.subscription_id"
-    )
 # Путь к базе данных
 DB_PATH = "database/club.db"
 
