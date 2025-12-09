@@ -140,12 +140,22 @@ def setup_handlers(application):
     application.add_handler(conv_handler)
     print("✅ ConversationHandler добавлен")
 
+    # Обработчики для списка спортсменов
+    from handlers.coach_handlers import (
+        handle_back_to_menu_main,
+        handle_show_more_info
+    )
+
+    application.add_handler(CallbackQueryHandler(handle_back_to_menu_main, pattern="^back_to_menu_main$"))
+    application.add_handler(CallbackQueryHandler(handle_show_more_info, pattern="^show_more_info$"))
+    print("✅ Обработчики списка спортсменов добавлены")
+
     # Обработчики для карточек
     application.add_handler(CallbackQueryHandler(show_athlete_card, pattern="^athlete_"))
     application.add_handler(CallbackQueryHandler(show_subscription_card, pattern="^subscription_"))
     application.add_handler(CallbackQueryHandler(handle_back_to_list, pattern="^back_to_list$"))
     application.add_handler(CallbackQueryHandler(handle_back_to_menu, pattern="^back_to_menu"))
-    application.add_handler(CallbackQueryHandler(handle_back_to_menu, pattern="^back_to_menu_main$"))
+    print("✅ Обработчики карточек добавлены")
 
     # Команды быстрого доступа
     application.add_handler(CommandHandler("card", show_athlete_card))

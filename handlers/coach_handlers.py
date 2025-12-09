@@ -6,6 +6,7 @@ from database.db_utils import get_user_by_telegram_id, create_athlete, create_su
 import random
 import re
 
+
 logger = logging.getLogger(__name__)
 
 # Состояния для добавления спортсмена
@@ -413,7 +414,7 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
 
 
 async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список спортсменов тренера с интерактивными кнопками"""
+    """Показывает упрощенный список спортсменов тренера"""
     user_id = update.effective_user.id
     print(f"📋 ПОЛЬЗОВАТЕЛЬ {user_id} ЗАПРОСИЛ СПИСОК СПОРТСМЕНОВ")
 
@@ -422,7 +423,10 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = get_user_by_telegram_id(session, user_id)
 
         if not user or user.role not in ['coach', 'admin']:
-            await update.message.reply_text("❌ У вас нет доступа к этому меню")
+            if update.callback_query:
+                await update.callback_query.answer("❌ У вас нет доступа")
+            else:
+                await update.message.reply_text("❌ У вас нет доступа к этому меню")
             return
 
         # Получаем спортсменов
@@ -434,68 +438,142 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_header = f"🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
 
         if not athletes:
-            await update.message.reply_text(
-                "📭 У вас пока нет спортсменов.\n\n"
-                "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
-            )
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(
+                    "📭 У вас пока нет спортсменов.\n\n"
+                    "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
+                )
+            else:
+                await update.message.reply_text(
+                    "📭 У вас пока нет спортсменов.\n\n"
+                    "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
+                )
             return
+
+        # Простая статистика
+        total_athletes = len(athletes)
+        active_count = 0
+        children_count = 0
+
+        for athlete in athletes:
+            if athlete.current_subscription and athlete.current_subscription.is_active:
+                active_count += 1
+            if athlete.age_group == 'children':
+                children_count += 1
+
+        # Формируем сообщение
+        message = message_header
+        message += f"📊 <b>СТАТИСТИКА:</b>\n"
+        message += f"• Всего спортсменов: {total_athletes}\n"
+        message += f"• С активным абонементом: {active_count}\n"
+        message += f"• Детская группа: {children_count}\n"
+        message += f"• Взрослая группа: {total_athletes - children_count}\n\n"
+
+        message += f"<b>ВЫБЕРИТЕ СПОРТСМЕНА:</b>\n"
+        message += f"✅ - активный абонемент\n"
+        message += f"❌ - нет абонемента\n"
+        message += f"👶 - детская группа\n"
+        message += f"👨‍🦰 - взрослая группа"
 
         # Создаем инлайн клавиатуру
         keyboard = []
 
-        # Группируем спортсменов по 2 в строку
-        for i in range(0, len(athletes), 2):
+        # Группируем спортсменов по 2 в строку (максимум 10 строк = 20 спортсменов)
+        for i in range(0, min(len(athletes), 20), 2):
             row = []
             for j in range(2):
                 if i + j < len(athletes):
                     athlete = athletes[i + j]
 
-                    # Определяем иконку статуса
+                    # Определяем иконки
+                    icons = []
+
+                    # Иконка активного абонемента
                     if athlete.current_subscription and athlete.current_subscription.is_active:
-                        icon = "✅"
+                        icons.append("✅")
                     else:
-                        icon = "❌"
+                        icons.append("❌")
+
+                    # Иконка возрастной группы
+                    if athlete.age_group == 'children':
+                        icons.append("👶")
+                    else:
+                        icons.append("👨‍🦰")
 
                     # Сокращаем имя если длинное
                     name = athlete.full_name
-                    if len(name) > 15:
-                        name = name[:12] + "..."
+                    if len(name) > 12:
+                        name = name[:10] + "..."
 
-                    btn_text = f"{icon} {name}"
+                    btn_text = f"{''.join(icons)} {name}"
                     row.append(InlineKeyboardButton(btn_text, callback_data=f"athlete_{athlete.id}"))
 
             if row:
                 keyboard.append(row)
 
-        # Добавляем кнопки навигации
-        keyboard.append([
-            InlineKeyboardButton("🔍 Поиск спортсмена", callback_data="search_athlete"),
-            InlineKeyboardButton("📊 Общая статистика", callback_data="overall_stats")
-        ])
+        # Если спортсменов больше 20, показываем предупреждение
+        if len(athletes) > 20:
+            keyboard.append([
+                InlineKeyboardButton(f"📝 Показано 20 из {len(athletes)}", callback_data="show_more_info")
+            ])
 
+        # Простая кнопка возврата в меню
         keyboard.append([
             InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")
         ])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Отправляем сообщение
-        await update.message.reply_text(
-            message_header +
-            f"Выберите спортсмена для просмотра карточки:\n"
-            f"✅ - есть активный абонемент\n"
-            f"❌ - нет активного абонемента\n\n"
-            f"📊 Всего спортсменов: <b>{len(athletes)}</b>",
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        # Отправляем или редактируем сообщение
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
+                message,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(
+                message,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
 
     except Exception as e:
         print(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ СПИСКА СПОРТСМЕНОВ: {e}")
-        await update.message.reply_text("❌ Ошибка при загрузке списка спортсменов")
+        error_msg = "❌ Ошибка при загрузке списка спортсменов"
+        if update.callback_query:
+            await update.callback_query.answer(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
     finally:
         session.close()
 
+async def handle_show_more_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать информацию о количестве спортсменов"""
+    query = update.callback_query
+    await query.answer("В текущей версии отображаются первые 20 спортсменов")
+
+
+async def handle_back_to_menu_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Возврат в главное меню из списка"""
+    query = update.callback_query
+    await query.answer("Возвращаемся в меню...")
+
+    # Отправляем новое сообщение с меню тренера
+    keyboard = [
+        [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
+        [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
+        [KeyboardButton("📅 Отметить посещение"), KeyboardButton("⚙️ Настройки")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    await query.message.reply_text(
+        "🏋️‍♂️ Меню тренера:\n\n"
+        "Выберите действие:",
+        reply_markup=reply_markup
+    )
 
 async def cancel_athlete_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отмена процесса добавления спортсмена"""
