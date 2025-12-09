@@ -81,9 +81,8 @@ async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         message += f"<b>🎫 АБОНЕМЕНТ</b>\n"
         if subscription:
-            # Проверяем статус абонемента
-            from utils.subscription_checker import SubscriptionChecker
-            status_display = SubscriptionChecker.format_subscription_status(subscription)
+            # ИСПОЛЬЗУЕМ АВТОМАТИЧЕСКИ ОБНОВЛЕННЫЙ СТАТУС
+            status_display = card_info['status_display']
 
             trainings = f"{subscription.trainings_remaining}/{subscription.trainings_total}"
             if subscription.total_restored > 0:
@@ -110,57 +109,6 @@ async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += f"\n🆔 ID: {athlete_id}"
         if not stats['has_telegram']:
             message += f"\n⚠️ У спортсмена нет Telegram аккаунта"
-
-        # Создаем инлайн клавиатуру
-        keyboard = []
-
-        # Первый ряд: основные действия
-        keyboard.append([
-            InlineKeyboardButton("🎫 Абонемент", callback_data=f"subscription_{athlete_id}"),
-            InlineKeyboardButton("📅 Посещения", callback_data=f"visits_{athlete_id}")
-        ])
-
-        # Второй ряд: восстановление и статистика
-        keyboard.append([
-            InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{athlete_id}"),
-            InlineKeyboardButton("🔄 Восстановить", callback_data=f"restore_{athlete_id}")
-        ])
-
-        # Третий ряд: редактирование и отметка
-        keyboard.append([
-            InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_{athlete_id}"),
-            InlineKeyboardButton("📅 Отметить", callback_data=f"mark_{athlete_id}")
-        ])
-
-        # Четвертый ряд: навигация
-        keyboard.append([
-            InlineKeyboardButton("📋 К списку", callback_data="back_to_list"),
-            InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu")
-        ])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        if query:
-            await query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-        else:
-            await update.message.reply_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-
-    except Exception as e:
-        logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ КАРТОЧКИ: {e}")
-        if query:
-            await query.edit_message_text("❌ Ошибка при загрузке карточки")
-        else:
-            await update.message.reply_text("❌ Ошибка при загрузке карточки")
-    finally:
-        session.close()
 
 
 async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -225,12 +173,7 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
 
         message += f"<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
         message += f"• Тип: {'Месячный' if subscription.subscription_type == 'monthly' else 'Разовый'}\n"
-
-        # Используем наш новый checker для статуса
-        from utils.subscription_checker import SubscriptionChecker
-        status_display = SubscriptionChecker.format_subscription_status(subscription)
-        message += f"• Статус: {status_display}\n"
-
+        message += f"• Статус: {'✅ Активен' if subscription.is_active else '❌ Неактивен'}\n"
         message += f"• Начало: {subscription.start_date.strftime('%d.%m.%Y')}\n"
 
         if subscription.end_date:

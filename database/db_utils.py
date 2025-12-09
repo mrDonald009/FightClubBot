@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from database.models import User, Athlete, Subscription, Training, Attendance, RestorationRequest
 from datetime import datetime, timedelta
 import json
+from utils.subscription_checker import SubscriptionChecker
 
 
 def get_user_by_telegram_id(session: Session, telegram_id: int):
@@ -187,6 +188,15 @@ def get_athlete_card_info(session: Session, athlete_id: int):
     subscription = athlete.current_subscription
     coach = athlete.coach
 
+    # АВТОМАТИЧЕСКАЯ ПРОВЕРКА СТАТУСА АБОНЕМЕНТА
+    if subscription and subscription.is_active and subscription.end_date:
+        current_time = datetime.utcnow()
+        if subscription.end_date < current_time:
+            # Автоматически деактивируем истекший абонемент
+            subscription.is_active = False
+            session.commit()
+            print(f"🔄 Автоматически деактивирован абонемент #{subscription.id} для {athlete.full_name}")
+
     # Получаем статистику посещений за последние 30 дней
     month_ago = datetime.utcnow() - timedelta(days=30)
 
@@ -217,6 +227,9 @@ def get_athlete_card_info(session: Session, athlete_id: int):
     if medical_display and len(medical_display) > 100:
         medical_display = medical_display[:97] + "..."
 
+    # Получаем отформатированный статус абонемента
+    status_display = SubscriptionChecker.format_subscription_status(subscription)
+
     return {
         "athlete": athlete,
         "subscription": subscription,
@@ -229,5 +242,6 @@ def get_athlete_card_info(session: Session, athlete_id: int):
             "has_telegram": bool(athlete.user_id)
         },
         "medical_display": medical_display,
-        "age_group_display": "Детская" if athlete.age_group == "children" else "Взрослая"
+        "age_group_display": "Детская" if athlete.age_group == "children" else "Взрослая",
+        "status_display": status_display  # Добавляем отформатированный статус
     }

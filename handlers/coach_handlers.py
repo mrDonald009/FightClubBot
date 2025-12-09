@@ -490,8 +490,18 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     icons = []
 
                     # Иконка активного абонемента
-                    if athlete.current_subscription and athlete.current_subscription.is_active:
-                        icons.append("✅")
+                    if athlete.current_subscription:
+                        from utils.subscription_checker import SubscriptionChecker
+                        status = SubscriptionChecker.get_subscription_status(athlete.current_subscription)
+
+                        if status == "active":
+                            icons.append("✅")
+                        elif status == "expiring_soon":
+                            icons.append("🟡")
+                        elif status == "expired":
+                            icons.append("🔴")
+                        else:  # inactive или no_subscription
+                            icons.append("❌")
                     else:
                         icons.append("❌")
 

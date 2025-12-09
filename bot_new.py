@@ -28,6 +28,7 @@ try:
         coach_menu, add_athlete_start, add_athlete_full_name, add_athlete_phone,
         add_athlete_medical, add_athlete_age_group, add_athlete_subscription,
         athletes_list, cancel_athlete_creation,
+        handle_back_to_menu_main, handle_show_more_info,
         ATHLETE_FULL_NAME, ATHLETE_PHONE, ATHLETE_MEDICAL, ATHLETE_AGE_GROUP, ATHLETE_SUBSCRIPTION
     )
     from handlers.card_handlers import (
@@ -141,11 +142,6 @@ def setup_handlers(application):
     print("✅ ConversationHandler добавлен")
 
     # Обработчики для списка спортсменов
-    from handlers.coach_handlers import (
-        handle_back_to_menu_main,
-        handle_show_more_info
-    )
-
     application.add_handler(CallbackQueryHandler(handle_back_to_menu_main, pattern="^back_to_menu_main$"))
     application.add_handler(CallbackQueryHandler(handle_show_more_info, pattern="^show_more_info$"))
     print("✅ Обработчики списка спортсменов добавлены")
@@ -168,6 +164,38 @@ def setup_handlers(application):
     # Обработчик команды /menu
     application.add_handler(CommandHandler("menu", coach_menu))
     print("✅ Обработчик /menu добавлен")
+
+    # Команда для проверки абонементов
+    from utils.subscription_checker import SubscriptionChecker
+
+    async def check_all_subscriptions(update: Update, context):
+        """Проверить и обновить статусы всех абонементов"""
+        user_id = update.effective_user.id
+
+        # Проверяем права (только админ или тренер)
+        from database.models import Session
+        from database.db_utils import get_user_by_telegram_id
+
+        session = Session()
+        try:
+            user = get_user_by_telegram_id(session, user_id)
+            if not user or user.role not in ['coach', 'admin']:
+                await update.message.reply_text("❌ У вас нет прав для этой команды")
+                return
+        finally:
+            session.close()
+
+        # Выполняем проверку
+        updated_count = SubscriptionChecker.check_and_update_subscriptions()
+
+        await update.message.reply_text(
+            f"🔄 Проверка абонементов завершена\n"
+            f"✅ Обновлено статусов: {updated_count}\n\n"
+            f"Теперь все абонементы имеют актуальный статус."
+        )
+
+    application.add_handler(CommandHandler("check_subs", check_all_subscriptions))
+    print("✅ Обработчик /check_subs добавлен")
 
     # Обработчики для кнопок меню
     application.add_handler(MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list))
@@ -195,6 +223,16 @@ def main():
 
         # Проверяем тестового тренера
         ensure_test_coach()
+
+        # АВТОМАТИЧЕСКАЯ ПРОВЕРКА АБОНЕМЕНТОВ ПРИ ЗАПУСКЕ
+        try:
+            from utils.subscription_checker import SubscriptionChecker
+            updated_count = SubscriptionChecker.check_and_update_subscriptions()
+            if updated_count > 0:
+                print(f"🔄 При запуске обновлено {updated_count} абонементов")
+        except ImportError as e:
+            print(f"⚠️ Не удалось загрузить SubscriptionChecker: {e}")
+            print("⚠️ Проверка абонементов будет выполнена при открытии карточек")
 
         # Получаем токен бота
         bot_token = get_bot_token(config_source)
