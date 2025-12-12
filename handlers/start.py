@@ -2,6 +2,7 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
 from database.models import User, Session
 from database.db_utils import get_user_by_telegram_id, create_user
+from keyboards.coach_kb import get_coach_main_menu
 import logging
 
 logger = logging.getLogger(__name__)
@@ -58,18 +59,10 @@ async def show_coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     print(f"📋 ПОКАЗ МЕНЮ ТРЕНЕРА ДЛЯ {user_id}")
 
-    keyboard = [
-        [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
-        [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
-        [KeyboardButton("📅 Отметить посещение"), KeyboardButton("📅 Мой календарь")],
-        [KeyboardButton("⚙️ Настройки")]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
     await update.message.reply_text(
         "🏋️‍♂️ Меню тренера:\n\n"
         "Выберите действие:",
-        reply_markup=reply_markup
+        reply_markup=get_coach_main_menu()
     )
     print(f"✅ МЕНЮ ТРЕНЕРА ОТОБРАЖЕНО ДЛЯ {user_id}")
 

@@ -4,6 +4,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from database.models import Session, User, Athlete, Subscription, Training, Attendance
 from database.db_utils import get_user_by_telegram_id, create_athlete, create_subscription
 from utils.training_manager import TrainingManager
+from keyboards.coach_kb import get_coach_main_menu
 from datetime import datetime, timedelta
 import random
 import re
@@ -99,13 +100,7 @@ async def coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ У вас нет доступа к этому меню")
             return
 
-        keyboard = [
-            [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
-            [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
-            [KeyboardButton("📅 Отметить посещение"), KeyboardButton("📅 Мой календарь")],
-            [KeyboardButton("⚙️ Настройки")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        reply_markup = get_coach_main_menu()
 
         await update.message.reply_text(
             "🏋️‍♂️ Меню тренера:\n\n"
@@ -530,13 +525,6 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
 
         print(f"✅ УСПЕШНО ДОБАВЛЕН СПОРТСМЕН: {athlete.full_name}")
 
-        keyboard = [
-            [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
-            [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
-            [KeyboardButton("📅 Отметить посещение"), KeyboardButton("📅 Мой календарь")],
-            [KeyboardButton("⚙️ Настройки")]
-        ]
-        
         await update.message.reply_text(
             f"✅ Спортсмен успешно добавлен!\n\n"
             f"📝 ФИО: {athlete.full_name}\n"
@@ -546,7 +534,7 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
             f"🎫 Абонемент: {subscription_type_ru}\n"
             f"🏥 Мед. информация: {athlete.medical_info}\n"
             f"💪 Осталось тренировок: {subscription.trainings_remaining}",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            reply_markup=get_coach_main_menu()
         )
 
     except Exception as e:
@@ -661,16 +649,9 @@ async def handle_training_date_selection(update: Update, context: ContextTypes.D
         )
         
         # Отправляем сообщение с клавиатурой меню
-        keyboard = [
-            [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
-            [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
-            [KeyboardButton("📅 Отметить посещение"), KeyboardButton("📅 Мой календарь")],
-            [KeyboardButton("⚙️ Настройки")]
-        ]
-        
         await query.message.reply_text(
             "Выберите действие из меню:",
-            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            reply_markup=get_coach_main_menu()
         )
         
     except Exception as e:
@@ -842,18 +823,10 @@ async def handle_back_to_menu_main(update: Update, context: ContextTypes.DEFAULT
     await query.answer("Возвращаемся в меню...")
 
     # Отправляем новое сообщение с меню тренера
-    keyboard = [
-        [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
-        [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
-        [KeyboardButton("📅 Отметить посещение"), KeyboardButton("📅 Мой календарь")],
-        [KeyboardButton("⚙️ Настройки")]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
     await query.message.reply_text(
         "🏋️‍♂️ Меню тренера:\n\n"
         "Выберите действие:",
-        reply_markup=reply_markup
+        reply_markup=get_coach_main_menu()
     )
 
 async def cancel_athlete_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -867,12 +840,7 @@ async def cancel_athlete_creation(update: Update, context: ContextTypes.DEFAULT_
     await update.message.reply_text(
         "❌ Добавление спортсмена отменено.\n\n"
         "Выберите действие из меню:",
-        reply_markup=ReplyKeyboardMarkup([
-            [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
-            [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
-            [KeyboardButton("📅 Отметить посещение"), KeyboardButton("📅 Мой календарь")],
-            [KeyboardButton("⚙️ Настройки")]
-        ], resize_keyboard=True)
+        reply_markup=get_coach_main_menu()
     )
 
     return ConversationHandler.END
