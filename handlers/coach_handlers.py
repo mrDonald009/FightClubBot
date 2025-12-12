@@ -665,9 +665,9 @@ async def handle_training_date_selection(update: Update, context: ContextTypes.D
 
 
 async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает упрощенный список спортсменов тренера"""
+    """Показать меню выбора категории для списка спортсменов тренера"""
     user_id = update.effective_user.id
-    print(f"📋 ПОЛЬЗОВАТЕЛЬ {user_id} ЗАПРОСИЛ СПИСОК СПОРТСМЕНОВ")
+    print(f"📋 ПОЛЬЗОВАТЕЛЬ {user_id} ЗАПРОСИЛ СПИСОК СПОРТСМЕНОВ (КАТЕГОРИИ)")
 
     session = Session()
     try:
@@ -683,10 +683,10 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Получаем спортсменов
         if user.role == 'admin':
             athletes = session.query(Athlete).all()
-            message_header = "🏃‍♂️ <b>СПИСОК ВСЕХ СПОРТСМЕНОВ</b>\n\n"
+            message_header = "🏃‍♂️ <b>СПИСОК СПОРТСМЕНОВ</b>\n\n"
         else:
             athletes = session.query(Athlete).filter_by(created_by=user.id).all()
-            message_header = f"🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
+            message_header = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
 
         if not athletes:
             if update.callback_query:
@@ -702,87 +702,57 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             return
 
-        # Простая статистика
+        # Считаем статистику по категориям
+        from utils.subscription_checker import SubscriptionChecker
+
+        def is_active_status(status: str) -> bool:
+            # expiring_soon всё еще считаем активным
+            return status in ("active", "expiring_soon")
+
         total_athletes = len(athletes)
-        active_count = 0
-        children_count = 0
+        
+        # Подсчет активных/неактивных с разбивкой на детей/взрослых
+        active_children = 0
+        active_adults = 0
+        inactive_children = 0
+        inactive_adults = 0
+        
+        for a in athletes:
+            status = SubscriptionChecker.get_subscription_status(a.current_subscription) if a.current_subscription else "no_subscription"
+            is_active = is_active_status(status)
+            
+            if a.age_group == "children":
+                if is_active:
+                    active_children += 1
+                else:
+                    inactive_children += 1
+            else:
+                if is_active:
+                    active_adults += 1
+                else:
+                    inactive_adults += 1
+        
+        active_total = active_children + active_adults
+        inactive_total = inactive_children + inactive_adults
 
-        for athlete in athletes:
-            if athlete.current_subscription and athlete.current_subscription.is_active:
-                active_count += 1
-            if athlete.age_group == 'children':
-                children_count += 1
-
-        # Формируем сообщение
         message = message_header
-        message += f"📊 <b>СТАТИСТИКА:</b>\n"
+        message += "📊 <b>СТАТИСТИКА:</b>\n"
         message += f"• Всего спортсменов: {total_athletes}\n"
-        message += f"• С активным абонементом: {active_count}\n"
-        message += f"• Детская группа: {children_count}\n"
-        message += f"• Взрослая группа: {total_athletes - children_count}\n\n"
+        message += f"• ✅ Активные: {active_total} (👶 {active_children} / 👨‍🦰 {active_adults})\n"
+        message += f"• ❌ Неактивные: {inactive_total} (👶 {inactive_children} / 👨‍🦰 {inactive_adults})\n\n"
+        message += "<b>ВЫБЕРИТЕ КАТЕГОРИЮ:</b>"
 
-        message += f"<b>ВЫБЕРИТЕ СПОРТСМЕНА:</b>\n"
-        message += f"✅ - активный абонемент\n"
-        message += f"❌ - нет абонемента\n"
-        message += f"👶 - детская группа\n"
-        message += f"👨‍🦰 - взрослая группа"
-
-        # Создаем инлайн клавиатуру
-        keyboard = []
-
-        # Группируем спортсменов по 2 в строку (максимум 10 строк = 20 спортсменов)
-        for i in range(0, min(len(athletes), 20), 2):
-            row = []
-            for j in range(2):
-                if i + j < len(athletes):
-                    athlete = athletes[i + j]
-
-                    # Определяем иконки
-                    icons = []
-
-                    # Иконка активного абонемента
-                    if athlete.current_subscription:
-                        from utils.subscription_checker import SubscriptionChecker
-                        status = SubscriptionChecker.get_subscription_status(athlete.current_subscription)
-
-                        if status == "active":
-                            icons.append("✅")
-                        elif status == "expiring_soon":
-                            icons.append("🟡")
-                        elif status == "expired":
-                            icons.append("🔴")
-                        else:  # inactive или no_subscription
-                            icons.append("❌")
-                    else:
-                        icons.append("❌")
-
-                    # Иконка возрастной группы
-                    if athlete.age_group == 'children':
-                        icons.append("👶")
-                    else:
-                        icons.append("👨‍🦰")
-
-                    # Сокращаем имя если длинное
-                    name = athlete.full_name
-                    if len(name) > 12:
-                        name = name[:10] + "..."
-
-                    btn_text = f"{''.join(icons)} {name}"
-                    row.append(InlineKeyboardButton(btn_text, callback_data=f"athlete_{athlete.id}"))
-
-            if row:
-                keyboard.append(row)
-
-        # Если спортсменов больше 20, показываем предупреждение
-        if len(athletes) > 20:
-            keyboard.append([
-                InlineKeyboardButton(f"📝 Показано 20 из {len(athletes)}", callback_data="show_more_info")
-            ])
-
-        # Простая кнопка возврата в меню
-        keyboard.append([
-            InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")
-        ])
+        # Меню категорий - сначала активные/неактивные
+        keyboard = [
+            [
+                InlineKeyboardButton(f"✅ Активные ({active_total})", callback_data="athletes_active"),
+                InlineKeyboardButton(f"❌ Неактивные ({inactive_total})", callback_data="athletes_inactive"),
+            ],
+            [
+                InlineKeyboardButton(f"📋 Все ({total_athletes})", callback_data="athletes_all"),
+            ],
+            [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")],
+        ]
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -808,6 +778,248 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.answer(error_msg)
         else:
             await update.message.reply_text(error_msg)
+    finally:
+        session.close()
+
+
+async def athletes_list_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать список спортсменов по выбранному фильтру или подменю"""
+    query = update.callback_query
+    await query.answer()
+
+    filter_key = (query.data or "").replace("athletes_", "").strip()
+    
+    # Если выбран active или inactive, показываем подменю с детьми/взрослыми
+    if filter_key == "active":
+        await show_active_inactive_submenu(update, context, "active")
+        return
+    elif filter_key == "inactive":
+        await show_active_inactive_submenu(update, context, "inactive")
+        return
+    elif filter_key in ("active_children", "active_adults", "inactive_children", "inactive_adults", "all"):
+        await show_athletes_list_by_filter(update, context, filter_key)
+        return
+    
+    await query.answer("❌ Неизвестный фильтр")
+
+
+async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEFAULT_TYPE, status_type: str):
+    """Показать подменю с детьми/взрослыми для активных или неактивных"""
+    user_id = update.effective_user.id
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, user_id)
+
+        if not user or user.role not in ['coach', 'admin']:
+            if update.callback_query:
+                await update.callback_query.answer("❌ У вас нет доступа")
+            return
+
+        # Получаем спортсменов
+        if user.role == 'admin':
+            athletes = session.query(Athlete).all()
+            message_header = "🏃‍♂️ <b>СПИСОК СПОРТСМЕНОВ</b>\n\n"
+        else:
+            athletes = session.query(Athlete).filter_by(created_by=user.id).all()
+            message_header = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
+
+        from utils.subscription_checker import SubscriptionChecker
+
+        def is_active_status(status: str) -> bool:
+            return status in ("active", "expiring_soon")
+
+        # Подсчет детей и взрослых в выбранной категории
+        children_count = 0
+        adults_count = 0
+        
+        for a in athletes:
+            status = SubscriptionChecker.get_subscription_status(a.current_subscription) if a.current_subscription else "no_subscription"
+            is_active = is_active_status(status)
+            
+            if status_type == "active" and is_active:
+                if a.age_group == "children":
+                    children_count += 1
+                else:
+                    adults_count += 1
+            elif status_type == "inactive" and not is_active:
+                if a.age_group == "children":
+                    children_count += 1
+                else:
+                    adults_count += 1
+
+        status_label = "✅ <b>АКТИВНЫЕ</b>" if status_type == "active" else "❌ <b>НЕАКТИВНЫЕ</b>"
+        message = message_header + status_label + "\n\n"
+        message += "<b>ВЫБЕРИТЕ ВОЗРАСТНУЮ ГРУППУ:</b>"
+
+        keyboard = [
+            [
+                InlineKeyboardButton(f"👶 Дети ({children_count})", callback_data=f"athletes_{status_type}_children"),
+                InlineKeyboardButton(f"👨‍🦰 Взрослые ({adults_count})", callback_data=f"athletes_{status_type}_adults"),
+            ],
+            [
+                InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories"),
+                InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main"),
+            ],
+        ]
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                message,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+    except Exception as e:
+        print(f"❌ ОШИБКА ПРИ ПОКАЗЕ ПОДМЕНЮ: {e}")
+        if update.callback_query:
+            await update.callback_query.answer("❌ Ошибка при загрузке меню")
+    finally:
+        session.close()
+
+
+async def athletes_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Вернуться к экрану выбора категорий"""
+    # сбрасываем последний фильтр, чтобы «к списку» из карточки возвращал в категории
+    context.user_data.pop("athletes_list_filter", None)
+    await athletes_list(update, context)
+
+
+async def show_athletes_list_by_filter(update: Update, context: ContextTypes.DEFAULT_TYPE, filter_key: str):
+    """Отрисовать список спортсменов в зависимости от фильтра (all/children/adults/inactive)."""
+    user_id = update.effective_user.id
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, user_id)
+
+        if not user or user.role not in ['coach', 'admin']:
+            if update.callback_query:
+                await update.callback_query.answer("❌ У вас нет доступа")
+            else:
+                await update.message.reply_text("❌ У вас нет доступа к этому меню")
+            return
+
+        # Запоминаем фильтр, чтобы возврат «📋 К списку» из карточки работал ожидаемо
+        context.user_data["athletes_list_filter"] = filter_key
+
+        # Берем базовый список
+        if user.role == "admin":
+            athletes = session.query(Athlete).all()
+            header_base = "🏃‍♂️ <b>СПИСОК СПОРТСМЕНОВ</b>\n\n"
+        else:
+            athletes = session.query(Athlete).filter_by(created_by=user.id).all()
+            header_base = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
+
+        from utils.subscription_checker import SubscriptionChecker
+
+        def is_active_status(status: str) -> bool:
+            return status in ("active", "expiring_soon")
+
+        def athlete_status(a: Athlete) -> str:
+            return SubscriptionChecker.get_subscription_status(a.current_subscription) if a.current_subscription else "no_subscription"
+
+        # Фильтрация
+        if filter_key == "active_children":
+            filtered = [a for a in athletes if a.age_group == "children" and is_active_status(athlete_status(a))]
+            filter_title = "✅ <b>АКТИВНЫЕ - ДЕТСКАЯ ГРУППА</b>\n\n"
+        elif filter_key == "active_adults":
+            filtered = [a for a in athletes if a.age_group != "children" and is_active_status(athlete_status(a))]
+            filter_title = "✅ <b>АКТИВНЫЕ - ВЗРОСЛАЯ ГРУППА</b>\n\n"
+        elif filter_key == "inactive_children":
+            filtered = [a for a in athletes if a.age_group == "children" and not is_active_status(athlete_status(a))]
+            filter_title = "❌ <b>НЕАКТИВНЫЕ - ДЕТСКАЯ ГРУППА</b>\n\n"
+        elif filter_key == "inactive_adults":
+            filtered = [a for a in athletes if a.age_group != "children" and not is_active_status(athlete_status(a))]
+            filter_title = "❌ <b>НЕАКТИВНЫЕ - ВЗРОСЛАЯ ГРУППА</b>\n\n"
+        elif filter_key == "all":
+            filtered = list(athletes)
+            filter_title = "📋 <b>ВСЕ СПОРТСМЕНЫ</b>\n\n"
+        else:
+            # Старые фильтры для обратной совместимости
+            if filter_key == "children":
+                filtered = [a for a in athletes if a.age_group == "children"]
+                filter_title = "👶 <b>ДЕТСКАЯ ГРУППА</b>\n\n"
+            elif filter_key == "adults":
+                filtered = [a for a in athletes if a.age_group != "children"]
+                filter_title = "👨‍🦰 <b>ВЗРОСЛАЯ ГРУППА</b>\n\n"
+            elif filter_key == "inactive":
+                filtered = [a for a in athletes if not is_active_status(athlete_status(a))]
+                filter_title = "❌ <b>НЕАКТИВНЫЕ АБОНЕМЕНТЫ / НЕТ АБОНЕМЕНТА</b>\n\n"
+            else:
+                filtered = list(athletes)
+                filter_title = "📋 <b>ВСЕ СПОРТСМЕНЫ</b>\n\n"
+
+        if not filtered:
+            message = header_base + filter_title + "📭 В этой категории пока нет спортсменов."
+            keyboard = [
+                [InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories")],
+                [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            if update.callback_query:
+                await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
+            else:
+                await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="HTML")
+            return
+
+        # Формируем текст + легенду
+        message = header_base + filter_title
+        message += "<b>ВЫБЕРИТЕ СПОРТСМЕНА:</b>\n"
+        message += "✅ - активный абонемент\n"
+        message += "🟡 - истекает скоро\n"
+        message += "🔴 - истек\n"
+        message += "❌ - неактивен/нет абонемента\n"
+        message += "👶 - детская группа\n"
+        message += "👨‍🦰 - взрослая группа"
+
+        # Клавиатура спортсменов (первые 20)
+        keyboard = []
+        for i in range(0, min(len(filtered), 20), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(filtered):
+                    a = filtered[i + j]
+
+                    status = athlete_status(a)
+                    icons = []
+                    if status == "active":
+                        icons.append("✅")
+                    elif status == "expiring_soon":
+                        icons.append("🟡")
+                    elif status == "expired":
+                        icons.append("🔴")
+                    else:
+                        icons.append("❌")
+
+                    icons.append("👶" if a.age_group == "children" else "👨‍🦰")
+
+                    name = a.full_name
+                    if len(name) > 12:
+                        name = name[:10] + "..."
+
+                    row.append(InlineKeyboardButton(f"{''.join(icons)} {name}", callback_data=f"athlete_{a.id}"))
+            if row:
+                keyboard.append(row)
+
+        if len(filtered) > 20:
+            keyboard.append([InlineKeyboardButton(f"📝 Показано 20 из {len(filtered)}", callback_data="show_more_info")])
+
+        keyboard.append([InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories")])
+        keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if update.callback_query:
+            await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
+        else:
+            await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="HTML")
+
+    except Exception as e:
+        print(f"❌ ОШИБКА ПРИ ПОКАЗЕ СПИСКА СПОРТСМЕНОВ (ФИЛЬТР={filter_key}): {e}")
+        if update.callback_query:
+            await update.callback_query.answer("❌ Ошибка при загрузке списка")
+        else:
+            await update.message.reply_text("❌ Ошибка при загрузке списка спортсменов")
     finally:
         session.close()
 

@@ -1,5 +1,5 @@
 """Сервис для работы с пользователями."""
-from typing import Optional
+from typing import Optional, List
 from sqlalchemy.orm import Session
 from database.models import User
 from database.db_utils import get_user_by_telegram_id, create_user as db_create_user
@@ -97,7 +97,7 @@ class UserService:
         return user
     
     @staticmethod
-    def check_permission(user: User, required_roles: list[str]) -> bool:
+    def check_permission(user: User, required_roles: List[str]) -> bool:
         """
         Проверить, имеет ли пользователь требуемую роль.
         

@@ -10,6 +10,16 @@ def get_user_by_telegram_id(session: Session, telegram_id: int):
     return session.query(User).filter_by(telegram_id=telegram_id).first()
 
 
+def get_athletes_by_coach(session: Session, coach_id: int):
+    """Получить список спортсменов, созданных конкретным тренером."""
+    return (
+        session.query(Athlete)
+        .filter(Athlete.created_by == coach_id)
+        .order_by(Athlete.full_name.asc())
+        .all()
+    )
+
+
 def get_coach_by_sport_type(session: Session, sport_type: str):
     """Получить тренера по виду спорта"""
     return session.query(User).filter(

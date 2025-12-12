@@ -306,8 +306,14 @@ async def handle_back_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
 
-    from handlers.coach_handlers import athletes_list
-    await athletes_list(update, context)
+    # Возвращаемся в последний выбранный фильтр (если был), иначе в экран категорий
+    filter_key = context.user_data.get("athletes_list_filter")
+    if filter_key in ("all", "children", "adults", "inactive", "active_children", "active_adults", "inactive_children", "inactive_adults"):
+        from handlers.coach_handlers import show_athletes_list_by_filter
+        await show_athletes_list_by_filter(update, context, filter_key)
+    else:
+        from handlers.coach_handlers import athletes_list
+        await athletes_list(update, context)
 
 
 async def handle_back_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):

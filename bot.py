@@ -3,6 +3,19 @@ import logging
 import sys
 from pathlib import Path
 
+# Windows/PowerShell часто падает на emoji в выводе (cp1251/cp866).
+# Переключаем stdout/stderr на UTF-8 и включаем замену символов вместо падения.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Добавляем текущую директорию в путь для импортов
 sys.path.append(str(Path(__file__).parent))
 
