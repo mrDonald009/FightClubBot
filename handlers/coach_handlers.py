@@ -530,6 +530,13 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
 
         print(f"✅ УСПЕШНО ДОБАВЛЕН СПОРТСМЕН: {athlete.full_name}")
 
+        keyboard = [
+            [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
+            [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
+            [KeyboardButton("📅 Отметить посещение"), KeyboardButton("📅 Мой календарь")],
+            [KeyboardButton("⚙️ Настройки")]
+        ]
+        
         await update.message.reply_text(
             f"✅ Спортсмен успешно добавлен!\n\n"
             f"📝 ФИО: {athlete.full_name}\n"
@@ -539,7 +546,7 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
             f"🎫 Абонемент: {subscription_type_ru}\n"
             f"🏥 Мед. информация: {athlete.medical_info}\n"
             f"💪 Осталось тренировок: {subscription.trainings_remaining}",
-            reply_markup=ReplyKeyboardMarkup([["/menu"]], resize_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
 
     except Exception as e:
@@ -654,9 +661,16 @@ async def handle_training_date_selection(update: Update, context: ContextTypes.D
         )
         
         # Отправляем сообщение с клавиатурой меню
+        keyboard = [
+            [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
+            [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
+            [KeyboardButton("📅 Отметить посещение"), KeyboardButton("📅 Мой календарь")],
+            [KeyboardButton("⚙️ Настройки")]
+        ]
+        
         await query.message.reply_text(
             "Выберите действие из меню:",
-            reply_markup=ReplyKeyboardMarkup([["/menu"]], resize_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
         
     except Exception as e:
