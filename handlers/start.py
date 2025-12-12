@@ -61,7 +61,8 @@ async def show_coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
         [KeyboardButton("📊 Статистика посещений"), KeyboardButton("💰 Финансовая статистика")],
-        [KeyboardButton("📅 Отметить посещение"), KeyboardButton("⚙️ Настройки")]
+        [KeyboardButton("📅 Отметить посещение"), KeyboardButton("📅 Мой календарь")],
+        [KeyboardButton("⚙️ Настройки")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 

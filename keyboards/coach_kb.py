@@ -8,6 +8,7 @@ def get_coach_main_menu():
         [KeyboardButton("👥 Добавить спортсмена")],
         [KeyboardButton("📋 Список спортсменов")],
         [KeyboardButton("📅 Отметить посещение")],
+        [KeyboardButton("📅 Мой календарь")],
         [KeyboardButton("📊 Статистика посещений")],
         [KeyboardButton("💰 Финансовая статистика")],
         [KeyboardButton("⚙️ Настройки")]

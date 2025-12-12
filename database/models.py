@@ -110,6 +110,10 @@ class Training(Base):
     age_group = Column(String(20))  # children, adults
     training_date = Column(DateTime)
     is_cancelled = Column(Boolean, default=False)
+    coach_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # Тренер, проводящий тренировку
+
+    # Связи
+    coach = relationship("User", foreign_keys=[coach_id])
 
 
 class Attendance(Base):

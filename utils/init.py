@@ -103,7 +103,8 @@ def init_database():
             training_mma = Training(
                 sport_type="MMA",
                 age_group="adults",
-                training_date=date.replace(hour=20, minute=0, second=0)
+                training_date=date.replace(hour=20, minute=0, second=0),
+                coach_id=coach_mma.id
             )
             session.add(training_mma)
 
@@ -111,7 +112,8 @@ def init_database():
             training_thai = Training(
                 sport_type="Тайский Бокс",
                 age_group="adults",
-                training_date=date.replace(hour=19, minute=0, second=0)
+                training_date=date.replace(hour=19, minute=0, second=0),
+                coach_id=coach_thai.id
             )
             session.add(training_thai)
 

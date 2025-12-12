@@ -10,6 +10,15 @@ def get_user_by_telegram_id(session: Session, telegram_id: int):
     return session.query(User).filter_by(telegram_id=telegram_id).first()
 
 
+def get_coach_by_sport_type(session: Session, sport_type: str):
+    """Получить тренера по виду спорта"""
+    return session.query(User).filter(
+        User.role == 'coach',
+        User.sport_type == sport_type,
+        User.is_active == True
+    ).first()
+
+
 def create_user(session: Session, telegram_id: int, username: str, first_name: str, role: str = "athlete",
                 sport_type: str = None):
     """Создать нового пользователя"""
@@ -45,13 +54,23 @@ def create_athlete(session: Session, user_id: int, full_name: str, phone: str, m
 
 
 def create_subscription(session: Session, athlete_id: int, subscription_type: str):
-    """Создать абонемент для спортсмена"""
+    """
+    Создать абонемент для спортсмена.
+    
+    Присваивает количество тренировок в зависимости от типа абонемента:
+    - месячный (monthly): 12 тренировок
+    - разовый (single): 1 тренировка
+    """
     if subscription_type == "monthly":
+        # Месячный абонемент - 12 тренировок
         trainings_total = 12
         end_date = datetime.utcnow() + timedelta(days=30)
-    else:  # single
+    elif subscription_type == "single":
+        # Разовый абонемент - 1 тренировка
         trainings_total = 1
         end_date = datetime.utcnow() + timedelta(days=1)
+    else:
+        raise ValueError(f"Неизвестный тип абонемента: {subscription_type}")
 
     subscription = Subscription(
         athlete_id=athlete_id,

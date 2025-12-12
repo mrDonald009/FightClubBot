@@ -96,6 +96,16 @@ def migrate_database():
         """)
         print("✅ Таблица restoration_requests создана")
 
+        # Проверяем таблицу trainings
+        cursor.execute("PRAGMA table_info(trainings)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        # Добавляем coach_id если его нет
+        if 'coach_id' not in columns:
+            print("🔧 Добавляю coach_id в таблицу trainings...")
+            cursor.execute("ALTER TABLE trainings ADD COLUMN coach_id INTEGER")
+            print("✅ coach_id добавлен в trainings")
+
         connection.commit()
         print("🎉 Миграция завершена успешно!")
 
