@@ -962,15 +962,8 @@ async def show_athletes_list_by_filter(update: Update, context: ContextTypes.DEF
                 await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="HTML")
             return
 
-        # Формируем текст + легенду
+        # Формируем текст
         message = header_base + filter_title
-        message += "<b>ВЫБЕРИТЕ СПОРТСМЕНА:</b>\n"
-        message += "✅ - активный абонемент\n"
-        message += "🟡 - истекает скоро\n"
-        message += "🔴 - истек\n"
-        message += "❌ - неактивен/нет абонемента\n"
-        message += "👶 - детская группа\n"
-        message += "👨‍🦰 - взрослая группа"
 
         # Клавиатура спортсменов (первые 20)
         keyboard = []
@@ -994,10 +987,16 @@ async def show_athletes_list_by_filter(update: Update, context: ContextTypes.DEF
                     icons.append("👶" if a.age_group == "children" else "👨‍🦰")
 
                     name = a.full_name
+                    sport = a.sport_type or ""
                     if len(name) > 12:
                         name = name[:10] + "..."
+                    
+                    # Добавляем вид спорта к имени
+                    button_text = f"{''.join(icons)} {name}"
+                    if sport:
+                        button_text += f" ({sport})"
 
-                    row.append(InlineKeyboardButton(f"{''.join(icons)} {name}", callback_data=f"athlete_{a.id}"))
+                    row.append(InlineKeyboardButton(button_text, callback_data=f"athlete_{a.id}"))
             if row:
                 keyboard.append(row)
 
