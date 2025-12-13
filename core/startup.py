@@ -22,11 +22,11 @@ def ensure_test_coach(config: Config) -> None:
             UserService.ensure_test_coach(
                 session=session,
                 telegram_id=test_coach_id,
-                username="coach_mma",
-                first_name="Тренер ММА",
-                sport_type="MMA"
+                username="coach_thai",
+                first_name="Тренер Тайский Бокс",
+                sport_type="Тайский Бокс"
             )
-            logger.info(f"✅ Тестовый тренер проверен/создан: {test_coach_id}")
+            logger.info(f"✅ Тестовый тренер проверен/создан: {test_coach_id} (Тайский Бокс)")
     except Exception as e:
         logger.error(f"❌ Ошибка при проверке тренера: {e}", exc_info=True)
 

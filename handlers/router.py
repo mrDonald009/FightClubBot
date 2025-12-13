@@ -28,6 +28,7 @@ from handlers.coach_handlers import (
     cancel_athlete_creation,
     handle_back_to_menu_main,
     handle_show_more_info,
+    start_training,
     show_coach_calendar,
     ATHLETE_FULL_NAME,
     ATHLETE_PHONE,
@@ -41,6 +42,11 @@ from handlers.card_handlers import (
     show_subscription_card,
     handle_back_to_list,
     handle_back_to_menu,
+)
+from handlers.attendance_handlers import (
+    mark_attendance_start,
+    handle_training_selection,
+    execute_mark_attendance,
 )
 
 logger = logging.getLogger(__name__)
@@ -169,6 +175,17 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(handle_back_to_menu, pattern="^back_to_menu")
     )
 
+    # Обработчики для отметки посещения
+    registrar.register(
+        CallbackQueryHandler(mark_attendance_start, pattern="^mark_attendance_")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_training_selection, pattern="^select_training_")
+    )
+    registrar.register(
+        CallbackQueryHandler(execute_mark_attendance, pattern="^(mark_present|mark_absent)$")
+    )
+
     # Команды быстрого доступа
     registrar.register(CommandHandler("card", show_athlete_card))
     registrar.register(CommandHandler("sub", show_subscription_card))
@@ -194,6 +211,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     registrar.register(
         MessageHandler(filters.Regex("^(📅 Отметить посещение)$"), handle_attendance)
+    )
+    registrar.register(
+        MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training)
     )
     registrar.register(
         MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar)
