@@ -1255,6 +1255,15 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Создаем интерактивную клавиатуру из 35 квадратных кнопок (5 строк × 7 дней)
         keyboard = []
         
+        # Добавляем строку с днями недели над календарем
+        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+        day_names_buttons = []
+        for day_name in day_names:
+            # Формат: Пн. Вт. Ср. (просто текст)
+            # Примечание: В Telegram Bot API нельзя задать цвет текста в InlineKeyboardButton
+            day_names_buttons.append(InlineKeyboardButton(f"{day_name}.", callback_data="cal_empty"))
+        keyboard.append(day_names_buttons)
+        
         # Обеспечиваем ровно 5 строк (если недель меньше - дополняем пустыми, если больше - берем первые 5)
         weeks_to_show = cal[:5]  # Берем максимум 5 недель
         while len(weeks_to_show) < 5:
@@ -1319,6 +1328,8 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if update.callback_query:
             await update.callback_query.answer()
+            # При редактировании явно обновляем и текст, и клавиатуру
+            # Обновляем текст и клавиатуру одновременно, чтобы размер не менялся
             await update.callback_query.edit_message_text(
                 message,
                 reply_markup=reply_markup,
