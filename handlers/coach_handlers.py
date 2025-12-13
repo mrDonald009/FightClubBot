@@ -1162,8 +1162,8 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.close()
 
 
-async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать календарь тренировок тренера"""
+async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE, month: int = None, year: int = None):
+    """Показать календарь тренировок тренера с промаркированными днями и навигацией"""
     user_id = update.effective_user.id
     print(f"📅 ПОЛЬЗОВАТЕЛЬ {user_id} ЗАПРОСИЛ КАЛЕНДАРЬ ТРЕНИРОВОК")
 
@@ -1172,41 +1172,63 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
         user = get_user_by_telegram_id(session, user_id)
 
         if not user or user.role not in ['coach', 'admin']:
-            await update.message.reply_text("❌ У вас нет доступа к этому меню")
+            if update.callback_query:
+                await update.callback_query.answer("❌ У вас нет доступа")
+            else:
+                await update.message.reply_text("❌ У вас нет доступа к этому меню")
             return
 
-        # Получаем текущую дату
+        # Получаем текущую дату или используем переданные параметры
         now = datetime.utcnow()
+        today = now.date()
         
-        # Получаем тренировки тренера (будущие и за последний месяц)
-        month_ago = now - timedelta(days=30)
+        if month is None:
+            current_month = now.month
+        else:
+            current_month = month
+            
+        if year is None:
+            current_year = now.year
+        else:
+            current_year = year
+        
+        # Получаем расписание для вида спорта тренера
+        sport_type = user.sport_type if user.sport_type else None
+        if not sport_type and user.role != 'admin':
+            if update.callback_query:
+                await update.callback_query.answer("❌ У вас не указан вид спорта")
+            else:
+                await update.message.reply_text(
+                    "❌ У вас не указан вид спорта. Обратитесь к администратору.",
+                    parse_mode='HTML'
+                )
+            return
+
+        # Получаем тренировки для отображаемого месяца
+        month_start = datetime(current_year, current_month, 1)
+        if current_month == 12:
+            month_end = datetime(current_year + 1, 1, 1)
+        else:
+            month_end = datetime(current_year, current_month + 1, 1)
         
         if user.role == 'admin':
-            # Админ видит все тренировки
             trainings = session.query(Training).filter(
-                Training.training_date >= month_ago,
+                Training.training_date >= month_start,
+                Training.training_date < month_end,
                 Training.is_cancelled == False
             ).order_by(Training.training_date.asc()).all()
-            message_header = "📅 <b>КАЛЕНДАРЬ ВСЕХ ТРЕНИРОВОК</b>\n\n"
+            message_header = "📅 <b>КАЛЕНДАРЬ</b>\n\n"
         else:
-            # Тренер видит только свои тренировки по своему виду спорта
             query = session.query(Training).filter(
                 Training.coach_id == user.id,
-                Training.training_date >= month_ago,
+                Training.training_date >= month_start,
+                Training.training_date < month_end,
                 Training.is_cancelled == False
             )
-            if user.sport_type:
-                query = query.filter(Training.sport_type == user.sport_type)
+            if sport_type:
+                query = query.filter(Training.sport_type == sport_type)
             trainings = query.order_by(Training.training_date.asc()).all()
-            message_header = "📅 <b>МОЙ КАЛЕНДАРЬ ТРЕНИРОВОК</b>\n\n"
-
-        if not trainings:
-            await update.message.reply_text(
-                "📭 У вас пока нет запланированных тренировок.\n\n"
-                "Тренировки появятся здесь после их создания.",
-                parse_mode='HTML'
-            )
-            return
+            message_header = f"📅 <b>КАЛЕНДАРЬ</b>\n\n"
 
         # Группируем тренировки по датам
         trainings_by_date = {}
@@ -1216,87 +1238,232 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                 trainings_by_date[date_key] = []
             trainings_by_date[date_key].append(training)
 
+        # Получаем расписание для календаря
+        schedule_info = {}
+        if sport_type:
+            for age_group in ['children', 'adults']:
+                schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+                if schedule:
+                    schedule_info[age_group] = schedule
+
         # Формируем сообщение
         message = message_header
         
-        # Сортируем даты
-        sorted_dates = sorted(trainings_by_date.keys())
+        # Создаем календарь (monthcalendar возвращает недели с понедельника как первый день)
+        cal = calendar.monthcalendar(current_year, current_month)
         
-        # Разделяем на прошедшие и будущие
-        today = now.date()
-        past_trainings = [d for d in sorted_dates if d < today]
-        future_trainings = [d for d in sorted_dates if d >= today]
-
-        if future_trainings:
-            message += "<b>🔜 БУДУЩИЕ ТРЕНИРОВКИ:</b>\n\n"
-            for date in future_trainings:
-                day_name = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][date.weekday()]
-                message += f"<b>{date.strftime('%d.%m.%Y')} ({day_name})</b>\n"
-                
-                for training in trainings_by_date[date]:
-                    # Подсчитываем количество посетивших
-                    attended_count = session.query(Attendance).filter(
-                        Attendance.training_id == training.id,
-                        Attendance.attended == True
-                    ).count()
-                    
-                    # Подсчитываем общее количество записей
-                    total_attendances = session.query(Attendance).filter(
-                        Attendance.training_id == training.id
-                    ).count()
-                    
-                    time_str = training.training_date.strftime('%H:%M')
-                    age_group_ru = "👶 Детская" if training.age_group == "children" else "👨‍🦰 Взрослая"
-                    
-                    message += f"  ⏰ {time_str} | {training.sport_type} | {age_group_ru}\n"
-                    message += f"     👥 Посетило: {attended_count}/{total_attendances}\n\n"
-            
-            message += "\n"
-
-        if past_trainings:
-            message += "<b>📜 ПРОШЕДШИЕ ТРЕНИРОВКИ (последние 30 дней):</b>\n\n"
-            # Показываем только последние 10 дат из прошлого
-            for date in past_trainings[-10:]:
-                day_name = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][date.weekday()]
-                message += f"<b>{date.strftime('%d.%m.%Y')} ({day_name})</b>\n"
-                
-                for training in trainings_by_date[date]:
-                    attended_count = session.query(Attendance).filter(
-                        Attendance.training_id == training.id,
-                        Attendance.attended == True
-                    ).count()
-                    
-                    total_attendances = session.query(Attendance).filter(
-                        Attendance.training_id == training.id
-                    ).count()
-                    
-                    time_str = training.training_date.strftime('%H:%M')
-                    age_group_ru = "👶 Детская" if training.age_group == "children" else "👨‍🦰 Взрослая"
-                    
-                    message += f"  ✅ {time_str} | {training.sport_type} | {age_group_ru}\n"
-                    message += f"     👥 Посетило: {attended_count}/{total_attendances}\n\n"
-            
-            if len(past_trainings) > 10:
-                message += f"\n<i>... и еще {len(past_trainings) - 10} дат</i>\n"
-
-        # Статистика
-        total_trainings = len(trainings)
-        future_count = len(future_trainings)
-        past_count = len(past_trainings)
+        # Создаем интерактивную клавиатуру из 35 квадратных кнопок (5 строк × 7 дней)
+        keyboard = []
         
-        message += f"\n📊 <b>СТАТИСТИКА:</b>\n"
-        message += f"• Всего тренировок: {total_trainings}\n"
-        message += f"• Будущих: {future_count}\n"
-        message += f"• Прошедших: {past_count}"
+        # Обеспечиваем ровно 5 строк (если недель меньше - дополняем пустыми, если больше - берем первые 5)
+        weeks_to_show = cal[:5]  # Берем максимум 5 недель
+        while len(weeks_to_show) < 5:
+            # Дополняем пустыми неделями до 5 строк
+            weeks_to_show.append([0, 0, 0, 0, 0, 0, 0])
+        
+        # Создаем ровно 5 строк по 7 квадратов (минимальный размер)
+        for week in weeks_to_show:
+            week_buttons = []
+            for day in week:
+                if day == 0:
+                    # Пустой день - создаем неактивную квадратную кнопку
+                    week_buttons.append(InlineKeyboardButton(" ", callback_data="cal_empty"))
+                else:
+                    date_obj = datetime(current_year, current_month, day).date()
+                    # Проверяем, есть ли тренировки на эту дату
+                    has_training = date_obj in trainings_by_date
+                    # Формируем текст квадратной кнопки (минимальный размер)
+                    if date_obj == today:
+                        btn_text = f"•{day:2d}•"  # Сегодня
+                    elif has_training:
+                        btn_text = f"✓{day:2d}"  # Есть тренировки
+                    else:
+                        btn_text = f"{day:2d}"  # Обычный день
+                    
+                    callback_data = f"cal_date_{current_year}_{current_month}_{day}"
+                    week_buttons.append(InlineKeyboardButton(btn_text, callback_data=callback_data))
+            
+            # Всегда добавляем строку из 7 кнопок (квадратов)
+            keyboard.append(week_buttons)
+        
+        # Кнопки навигации по месяцам
+        prev_month = current_month - 1
+        prev_year = current_year
+        if prev_month < 1:
+            prev_month = 12
+            prev_year -= 1
+            
+        next_month = current_month + 1
+        next_year = current_year
+        if next_month > 12:
+            next_month = 1
+            next_year += 1
+        
+        keyboard.append([
+            InlineKeyboardButton("◀️ Предыдущий", callback_data=f"calendar_{prev_year}_{prev_month}"),
+            InlineKeyboardButton("Следующий ▶️", callback_data=f"calendar_{next_year}_{next_month}")
+        ])
+        
+        # Кнопка "Сегодня"
+        if current_month != now.month or current_year != now.year:
+            keyboard.append([
+                InlineKeyboardButton("📅 Сегодня", callback_data=f"calendar_{now.year}_{now.month}")
+            ])
+        
+        # Кнопка возврата в меню
+        keyboard.append([
+            InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")
+        ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await update.message.reply_text(
-            message,
-            parse_mode='HTML'
-        )
+        if update.callback_query:
+            await update.callback_query.answer()
+            await update.callback_query.edit_message_text(
+                message,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(
+                message,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
 
     except Exception as e:
         print(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ КАЛЕНДАРЯ: {e}")
         logger.error(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ КАЛЕНДАРЯ: {e}", exc_info=True)
-        await update.message.reply_text("❌ Ошибка при загрузке календаря")
+        error_msg = "❌ Ошибка при загрузке календаря"
+        if update.callback_query:
+            await update.callback_query.answer(error_msg)
+        else:
+            await update.message.reply_text(error_msg)
+    finally:
+        session.close()
+
+
+async def handle_calendar_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик навигации по календарю"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Парсим callback_data: calendar_YYYY_MM
+    parts = query.data.split("_")
+    if len(parts) == 3:
+        try:
+            year = int(parts[1])
+            month = int(parts[2])
+            await show_coach_calendar(update, context, month=month, year=year)
+        except ValueError:
+            await query.answer("❌ Ошибка при обработке запроса")
+    else:
+        await query.answer("❌ Неверный формат запроса")
+
+
+async def handle_calendar_empty_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик клика по пустой кнопке календаря (неактивная)"""
+    query = update.callback_query
+    await query.answer()  # Просто отвечаем, ничего не делаем
+
+
+async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик клика по дате в календаре - показывает тренировки на эту дату"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    session = Session()
+    
+    try:
+        # Парсим callback_data: cal_date_YYYY_MM_DD
+        parts = query.data.split("_")
+        if len(parts) != 5:
+            await query.answer("❌ Ошибка при обработке даты")
+            return
+        
+        year = int(parts[2])
+        month = int(parts[3])
+        day = int(parts[4])
+        
+        selected_date = datetime(year, month, day).date()
+        date_start = datetime.combine(selected_date, datetime.min.time())
+        date_end = datetime.combine(selected_date, datetime.max.time())
+        
+        user = get_user_by_telegram_id(session, user_id)
+        if not user or user.role not in ['coach', 'admin']:
+            await query.answer("❌ У вас нет доступа")
+            return
+        
+        # Получаем тренировки на выбранную дату
+        if user.role == 'admin':
+            trainings = session.query(Training).filter(
+                Training.training_date >= date_start,
+                Training.training_date <= date_end,
+                Training.is_cancelled == False
+            ).order_by(Training.training_date.asc()).all()
+        else:
+            query_filter = session.query(Training).filter(
+                Training.coach_id == user.id,
+                Training.training_date >= date_start,
+                Training.training_date <= date_end,
+                Training.is_cancelled == False
+            )
+            if user.sport_type:
+                query_filter = query_filter.filter(Training.sport_type == user.sport_type)
+            trainings = query_filter.order_by(Training.training_date.asc()).all()
+        
+        # Формируем сообщение
+        date_str = selected_date.strftime("%d.%m.%Y")
+        message = f"<b>📅 {date_str}</b>\n\n"
+        
+        if trainings:
+            message += f"<b>Тренировок: {len(trainings)}</b>\n\n"
+            for training in trainings:
+                age_group_ru = "Дети" if training.age_group == "children" else "Взрослые"
+                time_str = training.training_date.strftime("%H:%M")
+                message += f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru})\n"
+                
+                # Получаем количество посещений на эту тренировку
+                attendances = session.query(Attendance).filter_by(
+                    training_id=training.id,
+                    attended=True
+                ).count()
+                message += f"  Посещений: {attendances}\n\n"
+        else:
+            message += "На эту дату тренировок не запланировано.\n\n"
+            # Проверяем, есть ли день тренировки по расписанию
+            weekday = selected_date.weekday()
+            sport_type = user.sport_type if user.sport_type else None
+            if sport_type:
+                schedule_info = {}
+                for age_group in ['children', 'adults']:
+                    schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+                    if schedule and weekday in schedule['days']:
+                        schedule_info[age_group] = schedule
+                
+                if schedule_info:
+                    message += "<b>По расписанию:</b>\n"
+                    for age_group, schedule in schedule_info.items():
+                        age_group_ru = "Дети" if age_group == "children" else "Взрослые"
+                        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+                        day_name = day_names[weekday]
+                        message += f"• {day_name} {schedule['time']} - {age_group_ru}\n"
+        
+        # Кнопка возврата к календарю
+        keyboard = [[
+            InlineKeyboardButton("🔙 К календарю", callback_data=f"calendar_{year}_{month}")
+        ]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ОБРАБОТКЕ КЛИКА ПО ДАТЕ: {e}", exc_info=True)
+        await query.answer("❌ Ошибка при загрузке данных")
     finally:
         session.close()

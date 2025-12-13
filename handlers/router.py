@@ -30,6 +30,9 @@ from handlers.coach_handlers import (
     handle_show_more_info,
     start_training,
     show_coach_calendar,
+    handle_calendar_navigation,
+    handle_calendar_date_click,
+    handle_calendar_empty_click,
     ATHLETE_FULL_NAME,
     ATHLETE_PHONE,
     ATHLETE_MEDICAL,
@@ -220,6 +223,19 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     registrar.register(
         MessageHandler(filters.Regex("^(⚙️ Настройки)$"), handle_settings)
+    )
+
+    # Обработчик навигации по календарю
+    registrar.register(
+        CallbackQueryHandler(handle_calendar_navigation, pattern="^calendar_")
+    )
+    # Обработчик клика по дате в календаре
+    registrar.register(
+        CallbackQueryHandler(handle_calendar_date_click, pattern="^cal_date_")
+    )
+    # Обработчик клика по пустой кнопке календаря
+    registrar.register(
+        CallbackQueryHandler(handle_calendar_empty_click, pattern="^cal_empty$")
     )
 
     logger.info("✅ Все обработчики зарегистрированы")
