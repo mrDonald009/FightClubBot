@@ -193,6 +193,14 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
             return
 
+        # Автоматически списываем тренировки по расписанию для активного абонемента
+        if subscription and subscription.is_active:
+            from database.db_utils import auto_deduct_daily_trainings, migrate_existing_subscription
+            # Применяем миграцию к существующим абонементам (если нужно)
+            migrate_existing_subscription(session, subscription.id)
+            # Автоматически списываем тренировки за сегодня
+            auto_deduct_daily_trainings(session)
+
         if not subscription:
             # Если нет абонемента
             keyboard = [
@@ -210,9 +218,21 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             )
             return
 
+        # Получаем статистику использованных/неиспользованных тренировок
+        from database.models import Attendance
+        used_trainings = session.query(Attendance).filter_by(
+            subscription_id=subscription.id,
+            attended=True
+        ).count()
+        
+        unused_trainings = session.query(Attendance).filter_by(
+            subscription_id=subscription.id,
+            attended=False
+        ).count()
+        
         # Расчет прогресса использования
-        used = subscription.trainings_total - subscription.trainings_remaining
-        usage_percent = round((used / subscription.trainings_total) * 100, 1) if subscription.trainings_total > 0 else 0
+        total_deducted = used_trainings + unused_trainings
+        usage_percent = round((total_deducted / subscription.trainings_total) * 100, 1) if subscription.trainings_total > 0 else 0
 
         # Создаем визуальный прогресс-бар
         progress_length = 15
@@ -242,7 +262,8 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
 
         message += f"\n<b>🏋️ ТРЕНИРОВКИ</b>\n"
         message += f"• Всего: {subscription.trainings_total}\n"
-        message += f"• Использовано: {used}\n"
+        message += f"• Использовано: {used_trainings}\n"
+        message += f"• Неиспользовано: {unused_trainings}\n"
         message += f"• Осталось: {subscription.trainings_remaining}\n"
 
         if subscription.total_restored > 0:
@@ -250,40 +271,16 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             if subscription.restored_this_month > 0:
                 message += f"• Восстановлено в этом месяце: {subscription.restored_this_month}\n"
 
-        message += f"\n<b>📊 ИСПОЛЬЗОВАНИЕ</b>\n"
-        message += f"{progress_bar} {usage_percent}%\n\n"
-
-        message += f"<b>🔄 ДОСТУПНЫЕ ДЕЙСТВИЯ</b>\n"
-        message += f"Выберите действие для управления абонементом:"
-
         # Создаем инлайн клавиатуру
         keyboard = []
 
-        if subscription.is_active:
+        if not subscription.is_active:
             keyboard.append([
-                InlineKeyboardButton("📈 История списаний", callback_data=f"history_{athlete_id}"),
-                InlineKeyboardButton("🔄 Восстановить", callback_data=f"restore_{athlete_id}")
-            ])
-
-            # Проверяем, есть ли тренировки для списания
-            if subscription.trainings_remaining > 0:
-                keyboard.append([
-                    InlineKeyboardButton("📅 Отметить посещение", callback_data=f"mark_{athlete_id}")
-                ])
-        else:
-            keyboard.append([
-                InlineKeyboardButton("✅ Активировать", callback_data=f"activate_{athlete_id}"),
-                InlineKeyboardButton("➕ Новый абонемент", callback_data=f"new_sub_{athlete_id}")
+                InlineKeyboardButton("✅ Активировать", callback_data=f"activate_{athlete_id}")
             ])
 
         keyboard.append([
-            InlineKeyboardButton("📊 Статистика использования", callback_data=f"sub_stats_{athlete_id}"),
-            InlineKeyboardButton("📋 История абонементов", callback_data=f"sub_history_{athlete_id}")
-        ])
-
-        keyboard.append([
-            InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}"),
-            InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu")
+            InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
         ])
 
         reply_markup = InlineKeyboardMarkup(keyboard)

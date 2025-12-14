@@ -6,6 +6,7 @@ from database.db_utils import get_user_by_telegram_id, create_athlete, create_su
 from utils.training_manager import TrainingManager
 from keyboards.coach_kb import get_coach_main_menu
 from datetime import datetime, timedelta
+from sqlalchemy import func
 import random
 import re
 import calendar
@@ -1238,13 +1239,14 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                 trainings_by_date[date_key] = []
             trainings_by_date[date_key].append(training)
 
-        # Получаем расписание для календаря
-        schedule_info = {}
+        # Получаем все дни недели, когда есть тренировки по расписанию для данного вида спорта
+        scheduled_days = set()
         if sport_type:
+            schedule_dict = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {})
             for age_group in ['children', 'adults']:
-                schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
-                if schedule:
-                    schedule_info[age_group] = schedule
+                schedule = schedule_dict.get(age_group)
+                if schedule and 'days' in schedule:
+                    scheduled_days.update(schedule['days'])
 
         # Формируем сообщение
         message = message_header
@@ -1279,13 +1281,15 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                     week_buttons.append(InlineKeyboardButton(" ", callback_data="cal_empty"))
                 else:
                     date_obj = datetime(current_year, current_month, day).date()
-                    # Проверяем, есть ли тренировки на эту дату
-                    has_training = date_obj in trainings_by_date
-                    # Формируем текст квадратной кнопки (минимальный размер)
+                    # Проверяем, есть ли тренировка по расписанию на этот день недели
+                    weekday = date_obj.weekday()
+                    has_scheduled_training = weekday in scheduled_days
+                    
+                    # Формируем текст квадратной кнопки
                     if date_obj == today:
-                        btn_text = f"•{day:2d}•"  # Сегодня
-                    elif has_training:
-                        btn_text = f"✓{day:2d}"  # Есть тренировки
+                        btn_text = f"[{day:2d}]"  # Сегодня - квадратные скобки (приоритет)
+                    elif has_scheduled_training:
+                        btn_text = f"({day:2d})"  # Есть тренировка по расписанию - круглые скобки
                     else:
                         btn_text = f"{day:2d}"  # Обычный день
                     
@@ -1384,12 +1388,15 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
     await query.answer()
     
     user_id = update.effective_user.id
+    logger.info(f"📅 Клик по дате в календаре: {query.data} от пользователя {user_id}")
     session = Session()
     
     try:
         # Парсим callback_data: cal_date_YYYY_MM_DD
         parts = query.data.split("_")
+        logger.info(f"📅 Парсинг callback_data: {parts}, длина: {len(parts)}")
         if len(parts) != 5:
+            logger.error(f"❌ Неверный формат callback_data: {query.data}, частей: {len(parts)}")
             await query.answer("❌ Ошибка при обработке даты")
             return
         
@@ -1435,17 +1442,40 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                 time_str = training.training_date.strftime("%H:%M")
                 message += f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru})\n"
                 
-                # Получаем количество посещений на эту тренировку
-                attendances = session.query(Attendance).filter_by(
-                    training_id=training.id,
-                    attended=True
-                ).count()
-                message += f"  Посещений: {attendances}\n\n"
+                # Получаем спортсменов, записанных на эту тренировку (с активными абонементами)
+                # Проверяем, что дата тренировки попадает в диапазон действия абонемента
+                training_date_only = training.training_date.date()
+                attendances = session.query(Attendance).join(
+                    Subscription, Attendance.subscription_id == Subscription.id
+                ).join(
+                    Athlete, Attendance.athlete_id == Athlete.id
+                ).filter(
+                    Attendance.training_id == training.id,
+                    Subscription.is_active == True,
+                    func.date(Subscription.start_date) <= training_date_only,  # Дата начала <= дата тренировки
+                    func.date(Subscription.end_date) >= training_date_only,    # Дата окончания >= дата тренировки
+                    Athlete.sport_type == training.sport_type,
+                    Athlete.age_group == training.age_group
+                ).all()
+                
+                if attendances:
+                    message += f"  <b>Записано спортсменов: {len(attendances)}</b>\n"
+                    for attendance in attendances[:10]:  # Показываем до 10 спортсменов
+                        athlete = session.query(Athlete).filter_by(id=attendance.athlete_id).first()
+                        if athlete:
+                            status_icon = "✅" if attendance.attended else "❌"
+                            message += f"    {status_icon} {athlete.full_name}\n"
+                    if len(attendances) > 10:
+                        message += f"    ... и еще {len(attendances) - 10}\n"
+                else:
+                    message += f"  Нет записанных спортсменов\n"
+                
+                message += "\n"
         else:
-            message += "На эту дату тренировок не запланировано.\n\n"
-            # Проверяем, есть ли день тренировки по расписанию
+            # Если тренировок нет в базе, но есть расписание - показываем спортсменов по расписанию
             weekday = selected_date.weekday()
             sport_type = user.sport_type if user.sport_type else None
+            
             if sport_type:
                 schedule_info = {}
                 for age_group in ['children', 'adults']:
@@ -1454,12 +1484,69 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         schedule_info[age_group] = schedule
                 
                 if schedule_info:
-                    message += "<b>По расписанию:</b>\n"
+                    message += "<b>По расписанию:</b>\n\n"
+                    
+                    # Создаем datetime для этой даты и времени тренировки
                     for age_group, schedule in schedule_info.items():
                         age_group_ru = "Дети" if age_group == "children" else "Взрослые"
                         day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
                         day_name = day_names[weekday]
-                        message += f"• {day_name} {schedule['time']} - {age_group_ru}\n"
+                        time_str = schedule['time']
+                        hour, minute = map(int, time_str.split(':'))
+                        training_datetime = datetime.combine(selected_date, datetime.min.time()).replace(hour=hour, minute=minute)
+                        
+                        message += f"• <b>{time_str}</b> - {sport_type} ({age_group_ru})\n"
+                        
+                        # Получаем спортсменов с активными абонементами на эту дату
+                        # Проверяем, что выбранная дата попадает в диапазон действия абонемента (включительно)
+                        athletes_with_subscriptions = session.query(Athlete).join(
+                            Subscription, Athlete.id == Subscription.athlete_id
+                        ).filter(
+                            Subscription.is_active == True,
+                            func.date(Subscription.start_date) <= selected_date,  # Дата начала <= выбранная дата
+                            func.date(Subscription.end_date) >= selected_date,    # Дата окончания >= выбранная дата
+                            Athlete.sport_type == sport_type,
+                            Athlete.age_group == age_group
+                        )
+                        
+                        # Фильтруем по тренеру, если это тренер
+                        if user.role == 'coach':
+                            athletes_with_subscriptions = athletes_with_subscriptions.filter(
+                                Athlete.created_by == user.id
+                            )
+                        
+                        athletes_list = athletes_with_subscriptions.all()
+                        
+                        if athletes_list:
+                            message += f"  <b>Записано спортсменов: {len(athletes_list)}</b>\n"
+                            for athlete in athletes_list[:10]:  # Показываем до 10 спортсменов
+                                # Проверяем, есть ли запись Attendance (для отметки статуса)
+                                subscription = athlete.current_subscription
+                                if subscription:
+                                    attendance = session.query(Attendance).join(
+                                        Training
+                                    ).filter(
+                                        Attendance.athlete_id == athlete.id,
+                                        Attendance.subscription_id == subscription.id,
+                                        Training.sport_type == sport_type,
+                                        Training.age_group == age_group,
+                                        func.date(Training.training_date) == selected_date
+                                    ).first()
+                                    
+                                    if attendance:
+                                        status_icon = "✅" if attendance.attended else "❌"
+                                    else:
+                                        status_icon = "❌"  # Неиспользовано по умолчанию
+                                    
+                                    message += f"    {status_icon} {athlete.full_name}\n"
+                            if len(athletes_list) > 10:
+                                message += f"    ... и еще {len(athletes_list) - 10}\n"
+                        else:
+                            message += f"  Нет записанных спортсменов\n"
+                        
+                        message += "\n"
+                else:
+                    message += "На эту дату тренировок не запланировано.\n\n"
         
         # Кнопка возврата к календарю
         keyboard = [[

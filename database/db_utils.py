@@ -2,7 +2,9 @@ from sqlalchemy.orm import Session
 from database.models import User, Athlete, Subscription, Training, Attendance, RestorationRequest
 from datetime import datetime, timedelta
 import json
+import calendar
 from utils.subscription_checker import SubscriptionChecker
+from utils.training_manager import TrainingManager
 
 
 def get_user_by_telegram_id(session: Session, telegram_id: int):
@@ -63,6 +65,29 @@ def create_athlete(session: Session, user_id: int, full_name: str, phone: str, m
     return athlete
 
 
+def _calculate_end_date(start_date: datetime, months: int = 1) -> datetime:
+    """
+    Рассчитать дату окончания абонемента (start_date + months месяцев).
+    Например: 13.12.2025 + 1 месяц = 13.01.2026
+    """
+    year = start_date.year
+    month = start_date.month
+    day = start_date.day
+    
+    # Добавляем месяцы
+    month += months
+    while month > 12:
+        month -= 12
+        year += 1
+    
+    # Проверяем, существует ли такой день в целевом месяце (например, 31 января)
+    max_day = calendar.monthrange(year, month)[1]
+    if day > max_day:
+        day = max_day
+    
+    return datetime(year, month, day, start_date.hour, start_date.minute, start_date.second)
+
+
 def create_subscription(session: Session, athlete_id: int, subscription_type: str):
     """
     Создать абонемент для спортсмена.
@@ -70,28 +95,352 @@ def create_subscription(session: Session, athlete_id: int, subscription_type: st
     Присваивает количество тренировок в зависимости от типа абонемента:
     - месячный (monthly): 12 тренировок
     - разовый (single): 1 тренировка
+    
+    Автоматически создает тренировки по расписанию и списывает первую тренировку
+    в день активации (если это тренировочный день).
     """
+    athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+    if not athlete:
+        raise ValueError(f"Спортсмен с id={athlete_id} не найден")
+    
+    start_date = datetime.utcnow()
+    
     if subscription_type == "monthly":
         # Месячный абонемент - 12 тренировок
         trainings_total = 12
-        end_date = datetime.utcnow() + timedelta(days=30)
+        end_date = _calculate_end_date(start_date, months=1)
     elif subscription_type == "single":
         # Разовый абонемент - 1 тренировка
         trainings_total = 1
-        end_date = datetime.utcnow() + timedelta(days=1)
+        end_date = start_date + timedelta(days=1)
     else:
         raise ValueError(f"Неизвестный тип абонемента: {subscription_type}")
 
     subscription = Subscription(
         athlete_id=athlete_id,
         subscription_type=subscription_type,
+        start_date=start_date,
         end_date=end_date,
         trainings_total=trainings_total,
         trainings_remaining=trainings_total
     )
     session.add(subscription)
+    session.flush()  # Получаем ID абонемента
+    
+    # Для месячных абонементов создаем тренировки по расписанию и списываем первую
+    if subscription_type == "monthly" and athlete.sport_type and athlete.age_group:
+        _create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
+    
     session.commit()
     return subscription
+
+
+def _create_and_deduct_scheduled_trainings(
+    session: Session, 
+    subscription: Subscription, 
+    athlete: Athlete,
+    start_date: datetime,
+    end_date: datetime
+):
+    """
+    Создать тренировки по расписанию для абонемента и автоматически списать первую.
+    """
+    schedule = TrainingManager.TRAINING_SCHEDULE.get(athlete.sport_type, {}).get(athlete.age_group)
+    if not schedule:
+        return
+    
+    days = schedule['days']
+    time_str = schedule['time']
+    hour, minute = map(int, time_str.split(':'))
+    
+    # Получаем тренера спортсмена
+    coach_id = athlete.created_by
+    
+    # Проходим по всем дням от start_date до end_date
+    current_day = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_day = end_date.replace(hour=23, minute=59, second=59, microsecond=999)
+    
+    first_training_deducted = False
+    
+    while current_day <= end_day:
+        # Проверяем, это ли день тренировки по расписанию
+        if current_day.weekday() in days:
+            # Создаем datetime с правильным временем
+            training_datetime = current_day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            
+            # Пропускаем будущие тренировки (после end_date)
+            if training_datetime > end_date:
+                break
+            
+            # Проверяем, есть ли уже такая тренировка
+            existing_training = session.query(Training).filter_by(
+                sport_type=athlete.sport_type,
+                age_group=athlete.age_group,
+                training_date=training_datetime,
+                is_cancelled=False
+            ).first()
+            
+            if not existing_training:
+                # Создаем новую тренировку
+                training = Training(
+                    sport_type=athlete.sport_type,
+                    age_group=athlete.age_group,
+                    training_date=training_datetime,
+                    is_cancelled=False,
+                    coach_id=coach_id
+                )
+                session.add(training)
+                session.flush()
+            else:
+                training = existing_training
+            
+            # Автоматически списываем первую тренировку в день активации как "неиспользовано"
+            if not first_training_deducted and training_datetime.date() == start_date.date():
+                # Создаем запись о посещении с attended=False (неиспользовано)
+                attendance = Attendance(
+                    athlete_id=athlete.id,
+                    training_id=training.id,
+                    subscription_id=subscription.id,
+                    attended=False,  # По умолчанию неиспользовано
+                    marked_by=None,  # Автоматическое списание
+                    created_at=datetime.utcnow()
+                )
+                session.add(attendance)
+                
+                # Списываем тренировку
+                if subscription.trainings_remaining > 0:
+                    subscription.trainings_remaining -= 1
+                
+                first_training_deducted = True
+        
+        current_day += timedelta(days=1)
+
+
+def auto_deduct_daily_trainings(session: Session):
+    """
+    Автоматически списать тренировки для всех активных абонементов в тренировочные дни.
+    Вызывается ежедневно для списания тренировок по расписанию.
+    """
+    from utils.subscription_checker import SubscriptionChecker
+    
+    now = datetime.utcnow()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end = now.replace(hour=23, minute=59, second=59, microsecond=999)
+    
+    # Получаем все активные абонементы
+    active_subscriptions = session.query(Subscription).filter(
+        Subscription.is_active == True,
+        Subscription.end_date >= today_start
+    ).all()
+    
+    deducted_count = 0
+    
+    for subscription in active_subscriptions:
+        athlete = session.query(Athlete).filter_by(id=subscription.athlete_id).first()
+        if not athlete or not athlete.sport_type or not athlete.age_group:
+            continue
+        
+        # Проверяем статус абонемента
+        status = SubscriptionChecker.get_subscription_status(subscription)
+        if status != "active":
+            continue
+        
+        schedule = TrainingManager.TRAINING_SCHEDULE.get(athlete.sport_type, {}).get(athlete.age_group)
+        if not schedule:
+            continue
+        
+        days = schedule['days']
+        time_str = schedule['time']
+        hour, minute = map(int, time_str.split(':'))
+        
+        # Проверяем, сегодня ли тренировочный день
+        if now.weekday() not in days:
+            continue
+        
+        # Создаем datetime для сегодняшней тренировки
+        training_datetime = today_start.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        
+        # Пропускаем, если тренировка еще не наступила (для будущих тренировок)
+        if training_datetime > now:
+            continue
+        
+        # Проверяем, что тренировка в пределах действия абонемента
+        if training_datetime < subscription.start_date or training_datetime > subscription.end_date:
+            continue
+        
+        # Проверяем, есть ли уже запись о посещении на эту тренировку
+        existing_training = session.query(Training).filter_by(
+            sport_type=athlete.sport_type,
+            age_group=athlete.age_group,
+            training_date=training_datetime,
+            is_cancelled=False
+        ).first()
+        
+        if not existing_training:
+            # Создаем тренировку
+            coach_id = athlete.created_by
+            existing_training = Training(
+                sport_type=athlete.sport_type,
+                age_group=athlete.age_group,
+                training_date=training_datetime,
+                is_cancelled=False,
+                coach_id=coach_id
+            )
+            session.add(existing_training)
+            session.flush()
+        
+        # Проверяем, не списана ли уже тренировка
+        existing_attendance = session.query(Attendance).filter_by(
+            athlete_id=athlete.id,
+            training_id=existing_training.id,
+            subscription_id=subscription.id
+        ).first()
+        
+        if not existing_attendance and subscription.trainings_remaining > 0:
+            # Создаем запись о посещении с attended=False (неиспользовано по умолчанию)
+            attendance = Attendance(
+                athlete_id=athlete.id,
+                training_id=existing_training.id,
+                subscription_id=subscription.id,
+                attended=False,  # По умолчанию неиспользовано
+                marked_by=None,  # Автоматическое списание
+                created_at=datetime.utcnow()
+            )
+            session.add(attendance)
+            
+            # Списываем тренировку
+            subscription.trainings_remaining -= 1
+            deducted_count += 1
+    
+    if deducted_count > 0:
+        session.commit()
+    
+    return deducted_count
+
+
+def migrate_existing_subscription(session: Session, subscription_id: int):
+    """
+    Применить новую логику к существующему абонементу.
+    - Пересчитывает дату окончания (если нужно)
+    - Создает тренировки по расписанию
+    - Списывает уже прошедшие тренировки как "неиспользовано"
+    """
+    subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+    if not subscription:
+        return {"success": False, "message": "Абонемент не найден"}
+    
+    athlete = session.query(Athlete).filter_by(id=subscription.athlete_id).first()
+    if not athlete or not athlete.sport_type or not athlete.age_group:
+        return {"success": False, "message": "Данные спортсмена неполные"}
+    
+    if subscription.subscription_type != "monthly":
+        return {"success": False, "message": "Функция применяется только к месячным абонементам"}
+    
+    changes = []
+    
+    # 1. Пересчитываем дату окончания (start_date + 1 месяц)
+    if subscription.start_date:
+        correct_end_date = _calculate_end_date(subscription.start_date, months=1)
+        if subscription.end_date != correct_end_date:
+            old_end = subscription.end_date
+            subscription.end_date = correct_end_date
+            changes.append(f"Дата окончания исправлена: {old_end.strftime('%d.%m.%Y')} → {correct_end_date.strftime('%d.%m.%Y')}")
+    
+    # 2. Создаем тренировки по расписанию и списываем прошедшие
+    schedule = TrainingManager.TRAINING_SCHEDULE.get(athlete.sport_type, {}).get(athlete.age_group)
+    if not schedule:
+        return {"success": False, "message": "Расписание не найдено"}
+    
+    days = schedule['days']
+    time_str = schedule['time']
+    hour, minute = map(int, time_str.split(':'))
+    
+    coach_id = athlete.created_by
+    start_date = subscription.start_date if subscription.start_date else datetime.utcnow()
+    end_date = subscription.end_date
+    
+    current_day = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_day = end_date.replace(hour=23, minute=59, second=59, microsecond=999)
+    
+    now = datetime.utcnow()
+    trainings_created = 0
+    trainings_deducted = 0
+    
+    while current_day <= end_day and current_day <= now:
+        # Проверяем, это ли день тренировки по расписанию
+        if current_day.weekday() in days:
+            training_datetime = current_day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            
+            if training_datetime > end_date:
+                break
+            
+            # Проверяем, есть ли уже такая тренировка
+            existing_training = session.query(Training).filter_by(
+                sport_type=athlete.sport_type,
+                age_group=athlete.age_group,
+                training_date=training_datetime,
+                is_cancelled=False
+            ).first()
+            
+            if not existing_training:
+                # Создаем тренировку
+                training = Training(
+                    sport_type=athlete.sport_type,
+                    age_group=athlete.age_group,
+                    training_date=training_datetime,
+                    is_cancelled=False,
+                    coach_id=coach_id
+                )
+                session.add(training)
+                session.flush()
+                trainings_created += 1
+            else:
+                training = existing_training
+            
+            # Проверяем, списана ли уже тренировка
+            existing_attendance = session.query(Attendance).filter_by(
+                athlete_id=athlete.id,
+                training_id=training.id,
+                subscription_id=subscription.id
+            ).first()
+            
+            # Списываем прошедшие тренировки как "неиспользовано"
+            if not existing_attendance and training_datetime <= now and subscription.trainings_remaining > 0:
+                attendance = Attendance(
+                    athlete_id=athlete.id,
+                    training_id=training.id,
+                    subscription_id=subscription.id,
+                    attended=False,  # Неиспользовано
+                    marked_by=None,  # Автоматическое списание
+                    created_at=datetime.utcnow()
+                )
+                session.add(attendance)
+                subscription.trainings_remaining -= 1
+                trainings_deducted += 1
+        
+        current_day += timedelta(days=1)
+    
+    if changes or trainings_created > 0 or trainings_deducted > 0:
+        session.commit()
+        changes.append(f"Создано тренировок: {trainings_created}")
+        changes.append(f"Списано тренировок: {trainings_deducted}")
+        return {"success": True, "message": "Абонемент обновлен", "changes": changes}
+    else:
+        return {"success": True, "message": "Абонемент уже актуален", "changes": []}
+
+
+def migrate_subscription_by_athlete_name(session: Session, athlete_name: str):
+    """
+    Найти спортсмена по имени и применить миграцию к его активному абонементу.
+    """
+    athlete = session.query(Athlete).filter_by(full_name=athlete_name).first()
+    if not athlete:
+        return {"success": False, "message": f"Спортсмен '{athlete_name}' не найден"}
+    
+    if not athlete.current_subscription_id:
+        return {"success": False, "message": "У спортсмена нет активного абонемента"}
+    
+    return migrate_existing_subscription(session, athlete.current_subscription_id)
 
 
 def restore_training(session: Session, attendance_id: int, restored_by_id: int, reason: str = None):

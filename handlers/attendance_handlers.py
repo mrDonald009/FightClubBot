@@ -186,21 +186,14 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
 
         if existing_attendance:
             # Обновляем существующую запись
+            # Тренировка уже списана автоматически, поэтому просто обновляем статус
             old_status = existing_attendance.attended
-
-            # Если меняем статус с "не был" на "был" - списываем тренировку
-            if not old_status and attended and subscription.trainings_remaining > 0:
-                subscription.trainings_remaining -= 1
-            # Если меняем статус с "был" на "не был" - возвращаем тренировку
-            elif old_status and not attended:
-                subscription.trainings_remaining += 1
-
             existing_attendance.attended = attended
             existing_attendance.marked_by = query.from_user.id
 
-            message = f"✅ Статус обновлен: {'Присутствовал' if attended else 'Отсутствовал'}"
+            message = f"✅ Статус обновлен: {'Присутствовал (использовано)' if attended else 'Отсутствовал (неиспользовано)'}"
         else:
-            # Создаем новую запись
+            # Создаем новую запись (для старых абонементов без автоматического списания)
             attendance = Attendance(
                 athlete_id=athlete_id,
                 training_id=training_id,
@@ -210,7 +203,7 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
                 created_at=datetime.utcnow()
             )
 
-            # Если присутствовал - списываем тренировку
+            # Если присутствовал - списываем тренировку (только для старых абонементов)
             if attended and subscription.trainings_remaining > 0:
                 subscription.trainings_remaining -= 1
 
