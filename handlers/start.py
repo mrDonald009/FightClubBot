@@ -90,14 +90,22 @@ async def show_athlete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     print(f"📋 ПОКАЗ МЕНЮ СПОРТСМЕНА ДЛЯ {user_id}")
 
+    query = update.callback_query
+    message = update.message
+
     keyboard = [
-        [KeyboardButton("📊 Мой прогресс"), KeyboardButton("📅 Расписание")],
-        [KeyboardButton("🏆 Рейтинг"), KeyboardButton("ℹ️ Информация")]
+        [KeyboardButton("🎫 Мой абонемент"), KeyboardButton("📅 Расписание")],
+        [KeyboardButton("📊 Мой прогресс"), KeyboardButton("🏆 Рейтинг")],
+        [KeyboardButton("ℹ️ Информация")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-    await update.message.reply_text(
-        "💪 Личный кабинет спортсмена",
-        reply_markup=reply_markup
-    )
+    menu_text = "💪 Личный кабинет спортсмена"
+    
+    if query:
+        await query.answer()
+        await query.message.reply_text(menu_text, reply_markup=reply_markup)
+    else:
+        await message.reply_text(menu_text, reply_markup=reply_markup)
+    
     print(f"✅ МЕНЮ СПОРТСМЕНА ОТОБРАЖЕНО ДЛЯ {user_id}")

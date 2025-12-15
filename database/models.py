@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text, and_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -46,25 +46,36 @@ class Athlete(Base):
     created_by = Column(Integer, ForeignKey('users.id'))  # тренер, который добавил
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # Связь с текущим активным абонементом
-    current_subscription_id = Column(Integer, ForeignKey('subscriptions.id'), nullable=True)
-
     # Связи
     user = relationship("User", foreign_keys=[user_id])
     coach = relationship("User", foreign_keys=[created_by])
 
-    current_subscription = relationship(
-        "Subscription",
-        foreign_keys=[current_subscription_id],
-        backref="athlete_ref",
-        post_update=True
-    )
-
+    # Связь один-ко-многим с абонементами
     subscriptions = relationship(
         "Subscription",
         foreign_keys="Subscription.athlete_id",
-        back_populates="athlete"
+        back_populates="athlete",
+        uselist=True,
+        lazy="select"
     )
+    
+    # Обратная совместимость - возвращает первый активный абонемент
+    @property
+    def current_subscription(self):
+        """Обратная совместимость - возвращает первый активный абонемент"""
+        active_subs = [s for s in self.subscriptions if s.is_active]
+        return active_subs[0] if active_subs else None
+    
+    @property
+    def current_subscription_id(self):
+        """Обратная совместимость - возвращает ID первого активного абонемента"""
+        sub = self.current_subscription
+        return sub.id if sub else None
+    
+    @property
+    def subscription(self):
+        """Алиас для current_subscription для обратной совместимости"""
+        return self.current_subscription
 
 
 class Subscription(Base):
@@ -73,6 +84,7 @@ class Subscription(Base):
 
     id = Column(Integer, primary_key=True)
     athlete_id = Column(Integer, ForeignKey('athletes.id'))
+    sport_type = Column(String(50))  # Вид спорта для абонемента (mma, thai_boxing и т.д.)
     subscription_type = Column(String(20))  # monthly, single
     start_date = Column(DateTime, default=datetime.utcnow)
     end_date = Column(DateTime)
@@ -87,11 +99,12 @@ class Subscription(Base):
     # Поле created_at без default для SQLite
     created_at = Column(DateTime)
 
-    # Связи - явно указываем foreign_keys
+    # Связи - один-ко-многим
     athlete = relationship(
         "Athlete",
         foreign_keys=[athlete_id],
-        back_populates="subscriptions"
+        back_populates="subscriptions",
+        uselist=False
     )
 
     attendances = relationship(

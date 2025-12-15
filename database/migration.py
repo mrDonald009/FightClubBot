@@ -2,6 +2,19 @@ import sys
 import os
 from pathlib import Path
 
+# Windows/PowerShell часто падает на emoji в выводе (cp1251/cp866).
+# Переключаем stdout/stderr на UTF-8 и включаем замену символов вместо падения.
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Добавляем корневую папку проекта в путь Python
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
@@ -29,11 +42,29 @@ def migrate_database():
         cursor.execute("PRAGMA table_info(athletes)")
         columns = [row[1] for row in cursor.fetchall()]
 
-        # Добавляем current_subscription_id если его нет
+        # Добавляем subscription_id если его нет (связь один-к-одному)
+        if 'subscription_id' not in columns:
+            print("🔧 Добавляю subscription_id в таблицу athletes...")
+            cursor.execute("ALTER TABLE athletes ADD COLUMN subscription_id INTEGER")
+            print("✅ subscription_id добавлен")
+            
+            # Если есть current_subscription_id, копируем данные
+            if 'current_subscription_id' in columns:
+                print("🔧 Копирую данные из current_subscription_id в subscription_id...")
+                cursor.execute("UPDATE athletes SET subscription_id = current_subscription_id WHERE current_subscription_id IS NOT NULL")
+                print("✅ Данные скопированы")
+        
+        # Добавляем current_subscription_id если его нет (для обратной совместимости)
         if 'current_subscription_id' not in columns:
-            print("🔧 Добавляю current_subscription_id в таблицу athletes...")
+            print("🔧 Добавляю current_subscription_id в таблицу athletes (обратная совместимость)...")
             cursor.execute("ALTER TABLE athletes ADD COLUMN current_subscription_id INTEGER")
             print("✅ current_subscription_id добавлен")
+            
+            # Копируем данные из subscription_id
+            if 'subscription_id' in columns:
+                print("🔧 Копирую данные из subscription_id в current_subscription_id...")
+                cursor.execute("UPDATE athletes SET current_subscription_id = subscription_id WHERE subscription_id IS NOT NULL")
+                print("✅ Данные скопированы")
 
         # Проверяем таблицу subscriptions
         cursor.execute("PRAGMA table_info(subscriptions)")
@@ -59,6 +90,24 @@ def migrate_database():
             # Обновляем существующие записи текущим временем
             cursor.execute("UPDATE subscriptions SET created_at = datetime('now') WHERE created_at IS NULL")
             print("✅ Обновлены существующие записи в subscriptions")
+        
+        # Добавляем sport_type если его нет
+        if 'sport_type' not in columns:
+            print("🔧 Добавляю sport_type в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN sport_type VARCHAR(50)")
+            print("✅ sport_type добавлен")
+            
+            # Обновляем существующие записи sport_type из связанного спортсмена
+            cursor.execute("""
+                UPDATE subscriptions 
+                SET sport_type = (
+                    SELECT athletes.sport_type 
+                    FROM athletes 
+                    WHERE athletes.id = subscriptions.athlete_id
+                )
+                WHERE sport_type IS NULL
+            """)
+            print("✅ Обновлены существующие записи в subscriptions с sport_type из спортсменов")
 
         # Проверяем таблицу attendances
         cursor.execute("PRAGMA table_info(attendances)")

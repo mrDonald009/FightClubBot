@@ -15,17 +15,30 @@ class SubscriptionChecker:
         try:
             print("🔄 Проверка статусов абонементов...")
 
-            # Находим активные абонементы с истекшим сроком
+            # Находим активные абонементы с истекшим сроком или с 0 тренировок
             expired_subscriptions = session.query(Subscription).filter(
-                Subscription.is_active == True,
-                Subscription.end_date < datetime.utcnow()
+                Subscription.is_active == True
             ).all()
 
             updated_count = 0
             for subscription in expired_subscriptions:
-                logger.info(f"🔴 Абонемент #{subscription.id} истек, деактивируем")
-                subscription.is_active = False
-                updated_count += 1
+                should_deactivate = False
+                reason = ""
+                
+                # Проверяем дату окончания
+                if subscription.end_date and subscription.end_date < datetime.utcnow():
+                    should_deactivate = True
+                    reason = "истек срок действия"
+                
+                # Проверяем количество оставшихся тренировок
+                if subscription.trainings_remaining <= 0:
+                    should_deactivate = True
+                    reason = "закончились тренировки" if not reason else f"{reason} и закончились тренировки"
+                
+                if should_deactivate:
+                    logger.info(f"🔴 Абонемент #{subscription.id} деактивирован: {reason}")
+                    subscription.is_active = False
+                    updated_count += 1
 
             if updated_count > 0:
                 session.commit()
@@ -97,9 +110,20 @@ class SubscriptionChecker:
             subscription = athlete.current_subscription
             old_status = subscription.is_active
 
-            # Проверяем дату окончания
-            if subscription.is_active and subscription.end_date:
-                if subscription.end_date < datetime.utcnow():
+            # Проверяем дату окончания и количество тренировок
+            if subscription.is_active:
+                should_deactivate = False
+                reason = ""
+                
+                if subscription.end_date and subscription.end_date < datetime.utcnow():
+                    should_deactivate = True
+                    reason = "истек срок действия"
+                
+                if subscription.trainings_remaining <= 0:
+                    should_deactivate = True
+                    reason = "закончились тренировки" if not reason else f"{reason} и закончились тренировки"
+                
+                if should_deactivate:
                     subscription.is_active = False
                     session.commit()
 

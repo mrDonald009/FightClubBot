@@ -88,48 +88,64 @@ def _calculate_end_date(start_date: datetime, months: int = 1) -> datetime:
     return datetime(year, month, day, start_date.hour, start_date.minute, start_date.second)
 
 
-def create_subscription(session: Session, athlete_id: int, subscription_type: str):
+def create_subscription(session: Session, athlete_id: int, subscription_type: str = None, sport_type: str = None):
     """
     Создать абонемент для спортсмена.
     
-    Присваивает количество тренировок в зависимости от типа абонемента:
+    Если subscription_type не указан, абонемент создается без типа (тип будет определен при активации).
+    Если subscription_type указан, присваивает количество тренировок:
     - месячный (monthly): 12 тренировок
     - разовый (single): 1 тренировка
     
-    Автоматически создает тренировки по расписанию и списывает первую тренировку
-    в день активации (если это тренировочный день).
+    Args:
+        session: Сессия базы данных
+        athlete_id: ID спортсмена
+        subscription_type: Тип абонемента (monthly, single) или None (будет определен при активации)
+        sport_type: Вид спорта для абонемента (если None, берется из спортсмена)
     """
     athlete = session.query(Athlete).filter_by(id=athlete_id).first()
     if not athlete:
         raise ValueError(f"Спортсмен с id={athlete_id} не найден")
     
-    start_date = datetime.utcnow()
+    # Если sport_type не указан, берем из спортсмена
+    if not sport_type:
+        sport_type = athlete.sport_type
     
-    if subscription_type == "monthly":
+    # При создании абонемент неактивен, даты начала и окончания не устанавливаются
+    # Они будут установлены при активации
+    created_at = datetime.utcnow()
+    
+    # Если тип не указан, создаем абонемент без типа
+    if subscription_type is None:
+        trainings_total = None
+        trainings_remaining = None
+    elif subscription_type == "monthly":
         # Месячный абонемент - 12 тренировок
         trainings_total = 12
-        end_date = _calculate_end_date(start_date, months=1)
+        trainings_remaining = 12
     elif subscription_type == "single":
         # Разовый абонемент - 1 тренировка
         trainings_total = 1
-        end_date = start_date + timedelta(days=1)
+        trainings_remaining = 1
     else:
         raise ValueError(f"Неизвестный тип абонемента: {subscription_type}")
 
     subscription = Subscription(
         athlete_id=athlete_id,
-        subscription_type=subscription_type,
-        start_date=start_date,
-        end_date=end_date,
-        trainings_total=trainings_total,
-        trainings_remaining=trainings_total
+        sport_type=sport_type,
+        subscription_type=subscription_type,  # Может быть None
+        start_date=None,  # Будет установлена при активации
+        end_date=None,     # Будет установлена при активации
+        trainings_total=trainings_total,  # Может быть None
+        trainings_remaining=trainings_remaining,  # Может быть None
+        is_active=False,   # По умолчанию неактивен
+        created_at=created_at
     )
     session.add(subscription)
     session.flush()  # Получаем ID абонемента
     
-    # Для месячных абонементов создаем тренировки по расписанию и списываем первую
-    if subscription_type == "monthly" and athlete.sport_type and athlete.age_group:
-        _create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
+    # Тренировки не создаются при создании абонемента
+    # Они будут созданы при активации абонемента
     
     session.commit()
     return subscription
@@ -194,24 +210,26 @@ def _create_and_deduct_scheduled_trainings(
             else:
                 training = existing_training
             
-            # Автоматически списываем первую тренировку в день активации как "неиспользовано"
+            # Автоматически списываем первую тренировку в день активации, только если это тренировочный день
             if not first_training_deducted and training_datetime.date() == start_date.date():
-                # Создаем запись о посещении с attended=False (неиспользовано)
-                attendance = Attendance(
-                    athlete_id=athlete.id,
-                    training_id=training.id,
-                    subscription_id=subscription.id,
-                    attended=False,  # По умолчанию неиспользовано
-                    marked_by=None,  # Автоматическое списание
-                    created_at=datetime.utcnow()
-                )
-                session.add(attendance)
-                
-                # Списываем тренировку
-                if subscription.trainings_remaining > 0:
-                    subscription.trainings_remaining -= 1
-                
-                first_training_deducted = True
+                # Проверяем, что день активации - это тренировочный день
+                if start_date.weekday() in days:
+                    # Создаем запись о посещении с attended=False (неиспользовано)
+                    attendance = Attendance(
+                        athlete_id=athlete.id,
+                        training_id=training.id,
+                        subscription_id=subscription.id,
+                        attended=False,  # По умолчанию неиспользовано
+                        marked_by=None,  # Автоматическое списание
+                        created_at=datetime.utcnow()
+                    )
+                    session.add(attendance)
+                    
+                    # Списываем тренировку
+                    if subscription.trainings_remaining > 0:
+                        subscription.trainings_remaining -= 1
+                    
+                    first_training_deducted = True
         
         current_day += timedelta(days=1)
 
@@ -437,10 +455,12 @@ def migrate_subscription_by_athlete_name(session: Session, athlete_name: str):
     if not athlete:
         return {"success": False, "message": f"Спортсмен '{athlete_name}' не найден"}
     
-    if not athlete.current_subscription_id:
+    # Получаем первый активный абонемент
+    active_subscription = athlete.current_subscription
+    if not active_subscription:
         return {"success": False, "message": "У спортсмена нет активного абонемента"}
     
-    return migrate_existing_subscription(session, athlete.current_subscription_id)
+    return migrate_existing_subscription(session, active_subscription.id)
 
 
 def restore_training(session: Session, attendance_id: int, restored_by_id: int, reason: str = None):
@@ -563,6 +583,7 @@ def get_athlete_card_info(session: Session, athlete_id: int):
     if not athlete:
         return None
 
+    # Получаем первый активный абонемент для обратной совместимости
     subscription = athlete.current_subscription
     coach = athlete.coach
 

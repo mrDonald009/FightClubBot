@@ -20,7 +20,6 @@ from handlers.coach_handlers import (
     add_athlete_phone,
     add_athlete_medical,
     add_athlete_age_group,
-    add_athlete_subscription,
     handle_training_date_selection,
     athletes_list,
     athletes_list_filtered,
@@ -37,7 +36,6 @@ from handlers.coach_handlers import (
     ATHLETE_PHONE,
     ATHLETE_MEDICAL,
     ATHLETE_AGE_GROUP,
-    ATHLETE_SUBSCRIPTION,
     ATHLETE_TRAINING_DATE,
 )
 from handlers.card_handlers import (
@@ -45,6 +43,11 @@ from handlers.card_handlers import (
     show_subscription_card,
     handle_back_to_list,
     handle_back_to_menu,
+    show_my_subscription,
+    handle_athlete_back_to_menu,
+    show_subscription_history,
+    view_subscription_from_history,
+    handle_activate_subscription,
 )
 from handlers.attendance_handlers import (
     mark_attendance_start,
@@ -133,12 +136,6 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
             ],
             ATHLETE_AGE_GROUP: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_age_group)
-            ],
-            ATHLETE_SUBSCRIPTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_subscription)
-            ],
-            ATHLETE_TRAINING_DATE: [
-                CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_")
             ],
         },
         fallbacks=[
@@ -236,6 +233,30 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     # Обработчик клика по пустой кнопке календаря
     registrar.register(
         CallbackQueryHandler(handle_calendar_empty_click, pattern="^cal_empty$")
+    )
+
+    # Обработчики для спортсменов
+    registrar.register(
+        MessageHandler(filters.Regex("^(🎫 Мой абонемент)$"), show_my_subscription)
+    )
+    registrar.register(
+        CallbackQueryHandler(show_my_subscription, pattern="^athlete_subscription_refresh$")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_athlete_back_to_menu, pattern="^athlete_back_to_menu$")
+    )
+
+    # Обработчики истории абонементов
+    registrar.register(
+        CallbackQueryHandler(show_subscription_history, pattern="^subscription_history_")
+    )
+    registrar.register(
+        CallbackQueryHandler(view_subscription_from_history, pattern="^view_sub_")
+    )
+    
+    # Обработчик активации абонементов (обрабатывает activate_sub_*, activate_sub_new_*, activate_sub_type_*)
+    registrar.register(
+        CallbackQueryHandler(handle_activate_subscription, pattern="^activate_sub_")
     )
 
     logger.info("✅ Все обработчики зарегистрированы")

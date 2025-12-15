@@ -2,14 +2,17 @@ import logging
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 from database.models import Session, User, Athlete, Subscription, Training, Attendance
-from database.db_utils import get_user_by_telegram_id, create_athlete, create_subscription
+from database.db_utils import get_user_by_telegram_id, create_athlete
+from services.subscription_service import SubscriptionService
 from utils.training_manager import TrainingManager
 from keyboards.coach_kb import get_coach_main_menu
 from datetime import datetime, timedelta
 from sqlalchemy import func
+from sqlalchemy.orm import joinedload
 import random
 import re
 import calendar
+import html
 
 
 logger = logging.getLogger(__name__)
@@ -21,9 +24,8 @@ logger = logging.getLogger(__name__)
     ATHLETE_MEDICAL,
     ATHLETE_SPORT_TYPE,
     ATHLETE_AGE_GROUP,
-    ATHLETE_SUBSCRIPTION,
     ATHLETE_TRAINING_DATE
-) = range(7)
+) = range(6)
 
 # Список кнопок меню для проверки прерывания
 MENU_BUTTONS = [
@@ -207,6 +209,22 @@ async def add_athlete_full_name(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return ATHLETE_FULL_NAME
 
+    # Проверяем на дубликаты ФИО
+    session = Session()
+    try:
+        existing_athlete = session.query(Athlete).filter_by(full_name=full_name).first()
+        if existing_athlete:
+            await update.message.reply_text(
+                f"❌ <b>Спортсмен с таким ФИО уже существует!</b>\n\n"
+                f"ФИО: <b>{html.escape(full_name)}</b>\n"
+                f"Телефон: {existing_athlete.phone or 'Не указан'}\n\n"
+                f"Пожалуйста, введите другое ФИО или отмените добавление командой /cancel",
+                parse_mode='HTML'
+            )
+            return ATHLETE_FULL_NAME
+    finally:
+        session.close()
+
     context.user_data['full_name'] = full_name
     print(f"✅ ВВЕДЕНО ФИО: {full_name}, ПЕРЕХОДИМ В ATHLETE_PHONE")
 
@@ -263,6 +281,39 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Если формат правильный - сохраняем полный номер
     full_phone = f"+7-{cleaned_input}"
+    
+    # Проверяем на дубликаты телефона
+    session = Session()
+    try:
+        existing_athlete = session.query(Athlete).filter_by(phone=full_phone).first()
+        if existing_athlete:
+            await update.message.reply_text(
+                f"❌ <b>Спортсмен с таким телефоном уже существует!</b>\n\n"
+                f"Телефон: <b>{html.escape(full_phone)}</b>\n"
+                f"ФИО: {html.escape(existing_athlete.full_name)}\n\n"
+                f"Пожалуйста, введите другой телефон или отмените добавление командой /cancel",
+                parse_mode='HTML'
+            )
+            return ATHLETE_PHONE
+        
+        # Проверяем комбинацию ФИО + телефон (если ФИО уже было введено)
+        if 'full_name' in context.user_data:
+            existing_athlete = session.query(Athlete).filter_by(
+                full_name=context.user_data['full_name'],
+                phone=full_phone
+            ).first()
+            if existing_athlete:
+                await update.message.reply_text(
+                    f"❌ <b>Спортсмен с такими данными уже существует!</b>\n\n"
+                    f"ФИО: <b>{html.escape(context.user_data['full_name'])}</b>\n"
+                    f"Телефон: <b>{html.escape(full_phone)}</b>\n\n"
+                    f"Пожалуйста, проверьте данные или отмените добавление командой /cancel",
+                    parse_mode='HTML'
+                )
+                return ATHLETE_PHONE
+    finally:
+        session.close()
+    
     context.user_data['phone'] = full_phone
     print(f"✅ ВВЕДЕН ТЕЛЕФОН: {full_phone}, ПЕРЕХОДИМ В ATHLETE_MEDICAL")
 
@@ -321,16 +372,70 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
     age_group_ru = user_text
     age_group = "children" if age_group_ru == "Детская" else "adults"
     context.user_data['age_group'] = age_group
-    print(f"✅ ВЫБРАНА ВОЗРАСТНАЯ ГРУППА: {age_group_ru} ({age_group}), ПЕРЕХОДИМ В ATHLETE_SUBSCRIPTION")
+    print(f"✅ ВЫБРАНА ВОЗРАСТНАЯ ГРУППА: {age_group_ru} ({age_group}), СОЗДАЕМ СПОРТСМЕНА И АБОНЕМЕНТ")
 
-    keyboard = [[KeyboardButton("Месячный"), KeyboardButton("Разовый")]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    # Создаем спортсмена и абонемент (без типа, неактивный)
+    session = Session()
+    try:
+        temp_telegram_id = -random.randint(10000, 99999)
 
-    await update.message.reply_text(
-        "🎫 Выберите тип абонемента:",
-        reply_markup=reply_markup
-    )
-    return ATHLETE_SUBSCRIPTION
+        from database.db_utils import create_user
+        athlete_user = create_user(
+            session=session,
+            telegram_id=temp_telegram_id,
+            username=None,
+            first_name=context.user_data['full_name'].split()[0],
+            role="athlete"
+        )
+
+        athlete = create_athlete(
+            session=session,
+            user_id=athlete_user.id,
+            full_name=context.user_data['full_name'],
+            phone=context.user_data['phone'],
+            medical_info=context.user_data['medical_info'],
+            sport_type=context.user_data['sport_type'],
+            age_group=age_group,
+            created_by=context.user_data['coach_id']
+        )
+
+        # Создаем абонемент автоматически (без типа, неактивный)
+        from services.subscription_service import SubscriptionService
+        subscription = SubscriptionService.create_subscription(
+            session=session,
+            athlete_id=athlete.id,
+            subscription_type=None,  # Тип не определен, будет выбран при активации
+            sport_type=athlete.sport_type
+        )
+
+        # Конвертируем возрастную группу для отображения
+        age_group_display = "Детская" if age_group == "children" else "Взрослая"
+
+        # Очищаем данные процесса
+        context.user_data.clear()
+
+        print(f"✅ УСПЕШНО ДОБАВЛЕН СПОРТСМЕН С АБОНЕМЕНТОМ: {athlete.full_name}")
+
+        await update.message.reply_text(
+            f"✅ Спортсмен успешно добавлен!\n\n"
+            f"📝 ФИО: {athlete.full_name}\n"
+            f"📞 Телефон: {athlete.phone}\n"
+            f"🥊 Вид спорта: {athlete.sport_type}\n"
+            f"👥 Группа: {age_group_display}\n"
+            f"🏥 Мед. информация: {athlete.medical_info}\n"
+            f"🎫 Абонемент: ❌ Неактивен (тип не определен)\n\n"
+            f"💡 Активируйте абонемент в карточке спортсмена.",
+            reply_markup=get_coach_main_menu()
+        )
+
+    except Exception as e:
+        print(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}")
+        logger.error(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}", exc_info=True)
+        await update.message.reply_text("❌ Ошибка при добавлении спортсмена")
+    finally:
+        session.close()
+
+    return ConversationHandler.END
 
 
 def get_available_training_dates(sport_type, age_group, month=None, year=None, max_months=2):
@@ -435,52 +540,7 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
     context.user_data['subscription_type'] = subscription_type
     context.user_data['subscription_type_ru'] = subscription_type_ru
     
-    # Если разовый абонемент - показываем выбор даты
-    if subscription_type == "single":
-        sport_type = context.user_data.get('sport_type')
-        age_group = context.user_data.get('age_group')
-        
-        if not sport_type or not age_group:
-            await update.message.reply_text("❌ Ошибка: не найдены данные о виде спорта или возрастной группе")
-            return ConversationHandler.END
-        
-        keyboard = create_date_keyboard(sport_type, age_group)
-        
-        if not keyboard:
-            # Если расписание не найдено, сообщаем об этом
-            schedule_info = TrainingManager.get_training_schedule_info(sport_type, age_group)
-            if not schedule_info:
-                await update.message.reply_text(
-                    f"❌ Расписание не найдено для вида спорта '{sport_type}' и группы '{age_group}'.\n\n"
-                    "Обратитесь к администратору для настройки расписания."
-                )
-            else:
-                await update.message.reply_text(
-                    f"❌ Нет доступных дат для записи на ближайшие месяцы.\n\n"
-                    f"📆 Расписание: {schedule_info['full_schedule']}\n\n"
-                    "Пожалуйста, попробуйте позже или выберите месячный абонемент."
-                )
-            return ATHLETE_SUBSCRIPTION
-        
-        # Получаем информацию о расписании для сообщения
-        schedule_info = TrainingManager.get_training_schedule_info(sport_type, age_group)
-        schedule_text = schedule_info['full_schedule'] if schedule_info else "по расписанию"
-        
-        age_group_ru = "Детская" if age_group == "children" else "Взрослая"
-        
-        await update.message.reply_text(
-            f"📅 <b>ВЫБОР ДАТЫ ТРЕНИРОВКИ</b>\n\n"
-            f"🥊 Вид спорта: {sport_type}\n"
-            f"👥 Группа: {age_group_ru}\n"
-            f"📆 Расписание: {schedule_text}\n\n"
-            f"Выберите дату для разовой тренировки:",
-            reply_markup=keyboard,
-            parse_mode='HTML'
-        )
-        
-        return ATHLETE_TRAINING_DATE
-    
-    # Если месячный абонемент - создаем сразу
+    # Создаем спортсмена и абонемент сразу (для месячного и разового)
     session = Session()
     try:
         temp_telegram_id = -random.randint(10000, 99999)
@@ -505,15 +565,13 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
             created_by=context.user_data['coach_id']
         )
 
-        subscription = create_subscription(
+        # Используем SubscriptionService для создания абонемента
+        subscription = SubscriptionService.create_subscription(
             session=session,
             athlete_id=athlete.id,
-            subscription_type=subscription_type
+            subscription_type=subscription_type,
+            sport_type=athlete.sport_type
         )
-
-        # Устанавливаем текущий абонемент для спортсмена
-        athlete.current_subscription_id = subscription.id
-        session.commit()
 
         # Конвертируем возрастную группу для отображения
         age_group_display = "Детская" if athlete.age_group == "children" else "Взрослая"
@@ -615,15 +673,13 @@ async def handle_training_date_selection(update: Update, context: ContextTypes.D
             training.coach_id = coach_id
             session.flush()
         
-        subscription = create_subscription(
+        # Используем SubscriptionService для создания абонемента
+        subscription = SubscriptionService.create_subscription(
             session=session,
             athlete_id=athlete.id,
-            subscription_type=context.user_data['subscription_type']
+            subscription_type=context.user_data['subscription_type'],
+            sport_type=athlete.sport_type
         )
-        
-        # Устанавливаем текущий абонемент для спортсмена
-        athlete.current_subscription_id = subscription.id
-        session.commit()
         
         # Конвертируем возрастную группу для отображения
         age_group_display = "Детская" if athlete.age_group == "children" else "Взрослая"
@@ -770,7 +826,11 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         print(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ СПИСКА СПОРТСМЕНОВ: {e}")
+        print(f"❌ ТРАССИРОВКА: {error_trace}")
+        logger.error(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ СПИСКА СПОРТСМЕНОВ: {e}", exc_info=True)
         error_msg = "❌ Ошибка при загрузке списка спортсменов"
         if update.callback_query:
             await update.callback_query.answer(error_msg)
@@ -813,13 +873,13 @@ async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEF
                 await update.callback_query.answer("❌ У вас нет доступа")
             return
 
-        # Получаем спортсменов
+        # Получаем спортсменов с явной загрузкой subscription
         if user.role == 'admin':
-            athletes = session.query(Athlete).all()
+            athletes = session.query(Athlete).options(joinedload(Athlete.subscriptions)).all()
             message_header = "🏃‍♂️ <b>СПИСОК СПОРТСМЕНОВ</b>\n\n"
         else:
             # Фильтруем по тренеру и виду спорта
-            query = session.query(Athlete).filter_by(created_by=user.id)
+            query = session.query(Athlete).options(joinedload(Athlete.subscriptions)).filter_by(created_by=user.id)
             if user.sport_type:
                 query = query.filter_by(sport_type=user.sport_type)
             athletes = query.all()
@@ -904,13 +964,13 @@ async def show_athletes_list_by_filter(update: Update, context: ContextTypes.DEF
         # Запоминаем фильтр, чтобы возврат «📋 К списку» из карточки работал ожидаемо
         context.user_data["athletes_list_filter"] = filter_key
 
-        # Берем базовый список
+        # Берем базовый список с явной загрузкой subscriptions (один-ко-многим)
         if user.role == "admin":
-            athletes = session.query(Athlete).all()
+            athletes = session.query(Athlete).options(joinedload(Athlete.subscriptions)).all()
             header_base = "🏃‍♂️ <b>СПИСОК СПОРТСМЕНОВ</b>\n\n"
         else:
             # Фильтруем по тренеру и виду спорта
-            query = session.query(Athlete).filter_by(created_by=user.id)
+            query = session.query(Athlete).options(joinedload(Athlete.subscriptions)).filter_by(created_by=user.id)
             if user.sport_type:
                 query = query.filter_by(sport_type=user.sport_type)
             athletes = query.all()
@@ -1025,7 +1085,11 @@ async def show_athletes_list_by_filter(update: Update, context: ContextTypes.DEF
             await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="HTML")
 
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         print(f"❌ ОШИБКА ПРИ ПОКАЗЕ СПИСКА СПОРТСМЕНОВ (ФИЛЬТР={filter_key}): {e}")
+        print(f"❌ ТРАССИРОВКА: {error_trace}")
+        logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ СПИСКА СПОРТСМЕНОВ (ФИЛЬТР={filter_key}): {e}", exc_info=True)
         if update.callback_query:
             await update.callback_query.answer("❌ Ошибка при загрузке списка")
         else:
@@ -1079,12 +1143,12 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ У вас нет доступа к этому меню")
             return
 
-        # Получаем спортсменов
+        # Получаем спортсменов с явной загрузкой subscription
         if user.role == 'admin':
-            athletes = session.query(Athlete).all()
+            athletes = session.query(Athlete).options(joinedload(Athlete.subscriptions)).all()
         else:
             # Фильтруем по тренеру и виду спорта
-            query = session.query(Athlete).filter_by(created_by=user.id)
+            query = session.query(Athlete).options(joinedload(Athlete.subscriptions)).filter_by(created_by=user.id)
             if user.sport_type:
                 query = query.filter_by(sport_type=user.sport_type)
             athletes = query.all()
@@ -1347,7 +1411,10 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
 
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         print(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ КАЛЕНДАРЯ: {e}")
+        print(f"❌ ТРАССИРОВКА: {error_trace}")
         logger.error(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ КАЛЕНДАРЯ: {e}", exc_info=True)
         error_msg = "❌ Ошибка при загрузке календаря"
         if update.callback_query:
@@ -1499,6 +1566,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         
                         # Получаем спортсменов с активными абонементами на эту дату
                         # Проверяем, что выбранная дата попадает в диапазон действия абонемента (включительно)
+                        # Связь один-ко-многим через athlete_id
                         athletes_with_subscriptions = session.query(Athlete).join(
                             Subscription, Athlete.id == Subscription.athlete_id
                         ).filter(

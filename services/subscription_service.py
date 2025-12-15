@@ -45,27 +45,30 @@ class SubscriptionService:
         return subscription
     
     @staticmethod
-    def get_active_subscription(session: Session, athlete_id: int) -> Optional[Subscription]:
+    def get_active_subscription(session: Session, athlete_id: int, sport_type: str = None) -> Optional[Subscription]:
         """
         Получить активный абонемент спортсмена.
         
         Args:
             session: Сессия базы данных
             athlete_id: ID спортсмена
+            sport_type: Вид спорта (опционально, для фильтрации)
             
         Returns:
             Активный Subscription или None
         """
         athlete = AthleteService.get_athlete_or_raise(session, athlete_id)
-        if athlete.current_subscription_id:
-            return SubscriptionService.get_subscription_by_id(session, athlete.current_subscription_id)
-        return None
+        active_subs = [s for s in athlete.subscriptions if s.is_active]
+        if sport_type:
+            active_subs = [s for s in active_subs if s.sport_type == sport_type]
+        return active_subs[0] if active_subs else None
     
     @staticmethod
     def create_subscription(
         session: Session,
         athlete_id: int,
-        subscription_type: str,
+        subscription_type: str = None,
+        sport_type: str = None,
     ) -> Subscription:
         """
         Создать новый абонемент для спортсмена.
@@ -73,7 +76,8 @@ class SubscriptionService:
         Args:
             session: Сессия базы данных
             athlete_id: ID спортсмена
-            subscription_type: Тип абонемента (monthly, single)
+            subscription_type: Тип абонемента (monthly, single) или None (будет определен при активации)
+            sport_type: Вид спорта для абонемента (если None, берется из спортсмена)
             
         Returns:
             Созданный абонемент
@@ -84,33 +88,39 @@ class SubscriptionService:
         # Проверяем, что спортсмен существует
         athlete = AthleteService.get_athlete_or_raise(session, athlete_id)
         
-        # Валидация типа абонемента
-        if subscription_type not in ['monthly', 'single']:
+        # Валидация типа абонемента (если указан)
+        if subscription_type is not None and subscription_type not in ['monthly', 'single']:
             raise ValidationError(f"Неизвестный тип абонемента: {subscription_type}")
         
-        # Создаем абонемент
-        subscription = db_create_subscription(session, athlete_id, subscription_type)
+        # Если sport_type не указан, берем из спортсмена
+        if not sport_type:
+            sport_type = athlete.sport_type
         
-        # Обновляем текущий абонемент спортсмена
-        athlete.current_subscription_id = subscription.id
+        # Создаем новый абонемент (без деактивации старых - у спортсмена может быть несколько активных)
+        subscription = db_create_subscription(session, athlete_id, subscription_type, sport_type)
+        
         session.commit()
         
         return subscription
     
     @staticmethod
-    def get_athlete_subscriptions(session: Session, athlete_id: int) -> List[Subscription]:
+    def get_athlete_subscriptions(session: Session, athlete_id: int, sport_type: str = None) -> List[Subscription]:
         """
         Получить все абонементы спортсмена.
         
         Args:
             session: Сессия базы данных
             athlete_id: ID спортсмена
+            sport_type: Вид спорта (опционально, для фильтрации)
             
         Returns:
             Список абонементов
         """
         athlete = AthleteService.get_athlete_or_raise(session, athlete_id)
-        return athlete.subscriptions
+        subscriptions = list(athlete.subscriptions)
+        if sport_type:
+            subscriptions = [s for s in subscriptions if s.sport_type == sport_type]
+        return subscriptions
     
     @staticmethod
     def check_and_update_subscriptions() -> int:
