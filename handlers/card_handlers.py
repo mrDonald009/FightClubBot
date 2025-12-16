@@ -1,12 +1,23 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
-from database.models import Session, Athlete, Subscription, Training, Attendance, User
-from database.db_utils import get_user_by_telegram_id, get_athlete_card_info
+from database.models import Session, Athlete, Subscription, Training, Attendance, Coach, Admin
+from database.db_utils import get_user_by_telegram_id, get_user_role, get_athlete_card_info
+from typing import Union
 import html
 
 logger = logging.getLogger(__name__)
+
+
+def get_coach_sport_type(user: Union[Coach, Admin]) -> str:
+    """Получить вид спорта тренера из связи или строки (для обратной совместимости)"""
+    if isinstance(user, Coach):
+        if user.sport_type_rel:
+            return user.sport_type_rel.name
+        elif user.sport_type:
+            return user.sport_type
+    return None
 
 
 async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -34,7 +45,7 @@ async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = get_user_by_telegram_id(session, user_id)
 
-        if not user or user.role not in ['coach', 'admin']:
+        if not user or get_user_role(user) not in ['coach', 'admin']:
             if query:
                 await query.edit_message_text("❌ У вас нет доступа")
             else:
@@ -42,76 +53,60 @@ async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Получаем информацию для карточки
-        card_info = get_athlete_card_info(session, athlete_id)
-
-        if not card_info:
+        # Если тренер смотрит карточку, выбираем абонемент по его виду спорта
+        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+        if not athlete:
             if query:
                 await query.edit_message_text("❌ Спортсмен не найден")
             else:
                 await update.message.reply_text("❌ Спортсмен не найден")
             return
-
-        athlete = card_info['athlete']
-        subscription = card_info['subscription']
+        
+        # Связь 1:1 - у спортсмена только один активный абонемент
+        subscription = athlete.current_subscription
+        
+        # Получаем полную информацию для карточки
+        card_info = get_athlete_card_info(session, athlete_id)
+        if not card_info:
+            if query:
+                await query.edit_message_text("❌ Ошибка при загрузке карточки")
+            else:
+                await update.message.reply_text("❌ Ошибка при загрузке карточки")
+            return
+        
         stats = card_info['stats']
 
         # Проверяем права (тренер может видеть только своих спортсменов)
-        if user.role == 'coach' and athlete.created_by != user.id:
+        if isinstance(user, Coach) and athlete.created_by != user.id:
             if query:
                 await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
             else:
                 await update.message.reply_text("❌ Вы не можете просматривать этого спортсмена")
             return
 
-        # Формируем сообщение
+        # Формируем сообщение (только базовая информация)
         message = f"👤 <b>КАРТОЧКА СПОРТСМЕНА</b>\n\n"
         message += f"<b>{html.escape(athlete.full_name)}</b>\n"
-        message += f"📞 {athlete.phone}\n"
-        message += f"🥊 {athlete.sport_type} | {card_info['age_group_display']}\n"
-        message += f"👨‍🏫 Тренер: {athlete.coach.first_name if athlete.coach else 'Не указан'}\n"
-        message += f"📅 В клубе с: {athlete.created_at.strftime('%d.%m.%Y')}\n\n"
-
-        message += f"<b>📊 СТАТИСТИКА (30 дней)</b>\n"
-        message += f"• Посещено: {stats['attended_trainings']}/{stats['total_trainings']}\n"
-        message += f"• Пропущено: {stats['missed_trainings']}\n"
-        message += f"• Посещаемость: {stats['attendance_rate']}%\n\n"
-
-        message += f"<b>🏥 МЕДИЦИНСКАЯ ИНФОРМАЦИЯ</b>\n"
-        message += f"{card_info['medical_display'] or '—'}\n\n"
-
-        message += f"<b>🎫 АБОНЕМЕНТ</b>\n"
-        if subscription:
-            # Проверяем статус абонемента
-            from utils.subscription_checker import SubscriptionChecker
-            status_display = SubscriptionChecker.format_subscription_status(subscription)
-
-            trainings_remaining = subscription.trainings_remaining or 0
-            trainings_total = subscription.trainings_total or 0
-            trainings = f"{trainings_remaining}/{trainings_total}" if trainings_total else "—/—"
-            if subscription.total_restored > 0:
-                trainings += f" (🔄 +{subscription.total_restored})"
-            sub_type = "Месячный" if subscription.subscription_type == "monthly" else "Разовый" if subscription.subscription_type == "single" else "Тип не определен"
-            end_date = subscription.end_date.strftime("%d.%m.%Y") if subscription.end_date else "—"
-
-            # Добавляем информацию о том, когда истек
-            if subscription.end_date and subscription.end_date < datetime.utcnow():
-                days_expired = (datetime.utcnow() - subscription.end_date).days
-                status_display = f"🔴 Истек {days_expired} дней назад"
-
-            message += f"• Статус: {status_display}\n"
-            message += f"• Тип: {sub_type}\n"
-            message += f"• Тренировки: {trainings}\n"
-            message += f"• Действует до: {end_date}\n"
-
-            # Добавляем информацию о создании
-            if subscription.created_at:
-                message += f"• Активирован: {subscription.created_at.strftime('%d.%m.%Y')}\n"
+        message += f"📞 {athlete.phone or 'Не указан'}\n"
+        
+        # Дата рождения
+        if athlete.birth_date:
+            birth_date_str = athlete.birth_date.strftime('%d.%m.%Y')
+            message += f"🎂 Дата рождения: {birth_date_str}\n"
         else:
-            message += f"• ❌ Нет активного абонемента\n"
-
-        message += f"\n🆔 ID: {athlete_id}"
-        if not stats['has_telegram']:
-            message += f"\n⚠️ У спортсмена нет Telegram аккаунта"
+            message += f"🎂 Дата рождения: Не указана\n"
+        
+        # Дата регистрации в зале
+        if athlete.created_at:
+            registration_date_str = athlete.created_at.strftime('%d.%m.%Y')
+            message += f"📅 Дата регистрации: {registration_date_str}\n"
+        
+        message += f"\n"
+        
+        # Медицинская информация
+        message += f"<b>🏥 МЕДИЦИНСКАЯ ИНФОРМАЦИЯ</b>\n"
+        medical_info = athlete.medical_info or 'Не указана'
+        message += f"{html.escape(medical_info)}"
 
         # Создаем инлайн клавиатуру
         keyboard = []
@@ -131,7 +126,7 @@ async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Третий ряд: редактирование и отметка
         keyboard.append([
             InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_{athlete_id}"),
-            InlineKeyboardButton("📅 Отметить", callback_data=f"mark_{athlete_id}")
+            InlineKeyboardButton("📅 Отметить", callback_data=f"mark_attendance_{athlete_id}")
         ])
 
         # Четвертый ряд: навигация
@@ -188,7 +183,7 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
     try:
         user = get_user_by_telegram_id(session, query.from_user.id)
 
-        if not user or user.role not in ['coach', 'admin']:
+        if not user or get_user_role(user) not in ['coach', 'admin']:
             await query.edit_message_text("❌ У вас нет доступа")
             return
 
@@ -211,7 +206,7 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             subscription = card_info['subscription']
 
         # Проверяем права
-        if user.role == 'coach' and athlete.created_by != user.id:
+        if isinstance(user, Coach) and athlete.created_by != user.id:
             await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
             return
 
@@ -220,10 +215,16 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             from services.subscription_service import SubscriptionService
             all_subscriptions = SubscriptionService.get_athlete_subscriptions(session, athlete_id)
             
+            # Проверяем, есть ли абонемент по виду спорта текущего тренера
+            coach_sport_sub = None
+            coach_sport_type = get_coach_sport_type(user) if isinstance(user, Coach) else None
+            if isinstance(user, Coach) and coach_sport_type:
+                coach_sport_sub = next((s for s in all_subscriptions if s.sport_type == coach_sport_type), None)
+            
             if not all_subscriptions:
                 # Если нет абонементов, показываем кнопку создания абонемента
                 keyboard = [
-                    [InlineKeyboardButton("✅ Активировать", callback_data=f"activate_sub_new_{athlete_id}")],
+                    [InlineKeyboardButton("✅ Создать абонемент", callback_data=f"activate_sub_new_{athlete_id}")],
                     [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
@@ -231,11 +232,57 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
                 await query.edit_message_text(
                     f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
                     f"❌ У спортсмена нет абонемента.\n\n"
-                    f"Нажмите 'Активировать' для создания и активации абонемента.",
+                    f"Нажмите 'Создать абонемент' для создания и активации абонемента.",
                     reply_markup=reply_markup,
                     parse_mode='HTML'
                 )
                 return
+            
+            # Если есть абонементы, но нет абонемента по виду спорта тренера - предлагаем создать
+            if isinstance(user, Coach) and coach_sport_type and not coach_sport_sub:
+                # Добавляем кнопку создания абонемента по виду спорта тренера
+                message = f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+                message += f"🎫 <b>АБОНЕМЕНТЫ</b>\n\n"
+                message += f"⚠️ У спортсмена нет абонемента по виду спорта <b>{coach_sport_type}</b>\n\n"
+                message += f"Выберите существующий абонемент или создайте новый:\n\n"
+                
+                keyboard = []
+                from utils.subscription_checker import SubscriptionChecker
+                for sub in sorted(all_subscriptions, key=lambda s: s.created_at or datetime.min, reverse=True):
+                    status = SubscriptionChecker.get_subscription_status(sub)
+                    status_icon = "🟢" if status == "active" else "🔴" if status == "expired" else "⚪"
+                    sport_type_display = sub.sport_type or "—"
+                    sub_type = "Месячный" if sub.subscription_type == "monthly" else "Разовый"
+                    start_date_str = sub.start_date.strftime('%d.%m.%Y') if sub.start_date else "—"
+                    
+                    button_text = f"{status_icon} {sport_type_display} | {sub_type} | {start_date_str}"
+                    if len(button_text) > 64:
+                        button_text = f"{status_icon} {sport_type_display} | {sub_type}"
+                    
+                    keyboard.append([
+                        InlineKeyboardButton(button_text, callback_data=f"subscription_{sub.id}")
+                    ])
+                
+                # Кнопка создания нового абонемента по виду спорта тренера
+                keyboard.append([
+                    InlineKeyboardButton(f"✅ Создать абонемент ({coach_sport_type})", callback_data=f"activate_sub_new_{athlete_id}")
+                ])
+                keyboard.append([
+                    InlineKeyboardButton("📜 История абонемента", callback_data=f"subscription_history_{athlete_id}")
+                ])
+                keyboard.append([
+                    InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
+                ])
+                
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
+                return
+            
+            # Проверяем, есть ли абонемент по виду спорта текущего тренера
+            coach_sport_sub = None
+            coach_sport_type = get_coach_sport_type(user) if isinstance(user, Coach) else None
+            if isinstance(user, Coach) and coach_sport_type:
+                coach_sport_sub = next((s for s in all_subscriptions if s.sport_type == coach_sport_type), None)
             
             # Показываем список абонементов
             message = f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
@@ -258,6 +305,12 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
                     InlineKeyboardButton(button_text, callback_data=f"subscription_{sub.id}")
                 ])
             
+            # Если тренер смотрит и у спортсмена нет абонемента по его виду спорта - предлагаем создать
+            if isinstance(user, Coach) and coach_sport_type and not coach_sport_sub:
+                keyboard.append([
+                    InlineKeyboardButton(f"✅ Создать абонемент ({coach_sport_type})", callback_data=f"activate_sub_new_{athlete_id}")
+                ])
+            
             keyboard.append([
                 InlineKeyboardButton("📜 История абонемента", callback_data=f"subscription_history_{athlete_id}")
             ])
@@ -275,47 +328,34 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             migrate_existing_subscription(session, subscription.id)
             auto_deduct_daily_trainings(session)
 
-        # Получаем статистику использованных/неиспользованных тренировок
-        from database.models import Attendance
-        used_trainings = session.query(Attendance).filter_by(
-            subscription_id=subscription.id,
-            attended=True
-        ).count()
-        
-        unused_trainings = session.query(Attendance).filter_by(
-            subscription_id=subscription.id,
-            attended=False
-        ).count()
-        
-        # Расчет прогресса использования
-        total_deducted = used_trainings + unused_trainings
-        trainings_total = subscription.trainings_total or 0
-        trainings_remaining = subscription.trainings_remaining or 0
-        usage_percent = round((total_deducted / trainings_total) * 100, 1) if trainings_total > 0 else 0
+        # Получаем возрастную группу спортсмена
+        age_group_display = "Детская" if athlete.age_group == "children" else "Взрослая" if athlete.age_group else "Не указана"
 
-        # Формируем сообщение
-        message = f"🎫 <b>АБОНЕМЕНТ СПОРТСМЕНА</b>\n\n"
+        # Формируем сообщение (только необходимая информация)
+        message = f"🎫 <b>АБОНЕМЕНТ</b>\n\n"
         message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
 
-        message += f"<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
+        message += f"<b>📋 ИНФОРМАЦИЯ</b>\n"
         message += f"• Вид спорта: {subscription.sport_type or '—'}\n"
+        message += f"• Группа: {age_group_display}\n"
+        
         if subscription.subscription_type:
             sub_type_display = "Месячный" if subscription.subscription_type == "monthly" else "Разовый"
         else:
             sub_type_display = "Тип не определен"
-        message += f"• Тип: {sub_type_display}\n"
+        message += f"• Тип абонемента: {sub_type_display}\n"
 
-        # Используем наш новый checker для статуса
+        # Статус
         from utils.subscription_checker import SubscriptionChecker
         status_display = SubscriptionChecker.format_subscription_status(subscription)
         message += f"• Статус: {status_display}\n"
 
-        # Улучшенное отображение дат действия
-        start_date_str = subscription.start_date.strftime('%d.%m.%Y %H:%M') if subscription.start_date else "—"
+        # Даты
+        start_date_str = subscription.start_date.strftime('%d.%m.%Y') if subscription.start_date else "—"
         message += f"• Дата начала: {start_date_str}\n"
         
         if subscription.end_date:
-            end_date_str = subscription.end_date.strftime('%d.%m.%Y %H:%M')
+            end_date_str = subscription.end_date.strftime('%d.%m.%Y')
             days_left = (subscription.end_date - datetime.utcnow()).days
             message += f"• Дата окончания: {end_date_str}\n"
             
@@ -326,36 +366,16 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             
             # Осталось дней
             if days_left > 0:
-                message += f"• ⏰ Осталось дней: {days_left}\n"
+                message += f"• Осталось дней: {days_left}\n"
             elif days_left == 0:
-                message += f"• ⚠️ Истекает сегодня\n"
+                message += f"• Осталось дней: 0 (истекает сегодня)\n"
             else:
                 expired_days = abs(days_left)
-                message += f"• 🔴 Истек {expired_days} дн. назад\n"
+                message += f"• Осталось дней: истек {expired_days} дн. назад\n"
         else:
             message += f"• Дата окончания: —\n"
-        
-        # Дата создания абонемента
-        if subscription.created_at:
-            created_str = subscription.created_at.strftime('%d.%m.%Y %H:%M')
-            message += f"• Создан: {created_str}\n"
-
-        message += f"\n<b>🏋️ ТРЕНИРОВКИ</b>\n"
-        if trainings_total is not None:
-            message += f"• Всего: {trainings_total}\n"
-            message += f"• Использовано: {used_trainings}\n"
-            message += f"• Неиспользовано: {unused_trainings}\n"
-            message += f"• Осталось: {trainings_remaining}\n"
-        else:
-            message += f"• Всего: —\n"
-            message += f"• Использовано: {used_trainings}\n"
-            message += f"• Неиспользовано: {unused_trainings}\n"
-            message += f"• Осталось: —\n"
-
-        if subscription.total_restored > 0:
-            message += f"• Восстановлено: {subscription.total_restored}\n"
-            if subscription.restored_this_month > 0:
-                message += f"• Восстановлено в этом месяце: {subscription.restored_this_month}\n"
+            message += f"• Период действия: —\n"
+            message += f"• Осталось дней: —\n"
 
         # Создаем инлайн клавиатуру
         keyboard = []
@@ -437,7 +457,7 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
             return
         
         # Проверяем, что это спортсмен
-        if user.role not in ['athlete']:
+        if get_user_role(user) != 'athlete':
             error_msg = "❌ Эта функция доступна только для спортсменов"
             if query:
                 await query.edit_message_text(error_msg)
@@ -604,6 +624,151 @@ async def handle_athlete_back_to_menu(update: Update, context: ContextTypes.DEFA
     await show_athlete_menu(update, context)
 
 
+async def show_my_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать карточку спортсмена (для самого спортсмена)"""
+    query = update.callback_query
+    message = update.message
+    
+    user_id = query.from_user.id if query else update.effective_user.id
+    
+    if query:
+        await query.answer()
+    
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, user_id)
+        
+        if not user:
+            error_msg = "❌ Пользователь не найден"
+            if query:
+                await query.edit_message_text(error_msg)
+            elif message:
+                await message.reply_text(error_msg)
+            return
+        
+        # Проверяем, что это спортсмен
+        if get_user_role(user) != 'athlete':
+            error_msg = "❌ Эта функция доступна только для спортсменов"
+            if query:
+                await query.edit_message_text(error_msg)
+            elif message:
+                await message.reply_text(error_msg)
+            return
+        
+        # Получаем спортсмена по user_id
+        athlete = session.query(Athlete).filter_by(user_id=user.id).first()
+        
+        if not athlete:
+            error_msg = "❌ Профиль спортсмена не найден. Обратитесь к тренеру."
+            if query:
+                await query.edit_message_text(error_msg)
+            elif message:
+                await message.reply_text(error_msg)
+            return
+        
+        # Получаем информацию для карточки
+        card_info = get_athlete_card_info(session, athlete.id)
+        
+        if not card_info:
+            error_msg = "❌ Ошибка при загрузке карточки"
+            if query:
+                await query.edit_message_text(error_msg)
+            elif message:
+                await message.reply_text(error_msg)
+            return
+        
+        athlete = card_info['athlete']
+        subscription = card_info['subscription']
+        stats = card_info['stats']
+        
+        # Формируем сообщение
+        message_text = f"👤 <b>МОЯ КАРТОЧКА</b>\n\n"
+        message_text += f"<b>{html.escape(athlete.full_name)}</b>\n"
+        message_text += f"📞 {athlete.phone or 'Не указан'}\n"
+        message_text += f"🥊 {athlete.sport_type or 'Не указан'} | {card_info['age_group_display']}\n"
+        message_text += f"👨‍🏫 Тренер: {athlete.coach.first_name if athlete.coach else 'Не указан'}\n"
+        message_text += f"📅 В клубе с: {athlete.created_at.strftime('%d.%m.%Y')}\n\n"
+        
+        message_text += f"<b>📊 СТАТИСТИКА (30 дней)</b>\n"
+        message_text += f"• Посещено: {stats['attended_trainings']}/{stats['total_trainings']}\n"
+        message_text += f"• Пропущено: {stats['missed_trainings']}\n"
+        message_text += f"• Посещаемость: {stats['attendance_rate']}%\n\n"
+        
+        message_text += f"<b>🏥 МЕДИЦИНСКАЯ ИНФОРМАЦИЯ</b>\n"
+        message_text += f"{card_info['medical_display'] or '—'}\n\n"
+        
+        message_text += f"<b>🎫 АБОНЕМЕНТ</b>\n"
+        if subscription:
+            # Проверяем статус абонемента
+            from utils.subscription_checker import SubscriptionChecker
+            status_display = SubscriptionChecker.format_subscription_status(subscription)
+            
+            trainings_remaining = subscription.trainings_remaining or 0
+            trainings_total = subscription.trainings_total or 0
+            trainings = f"{trainings_remaining}/{trainings_total}" if trainings_total else "—/—"
+            if subscription.total_restored > 0:
+                trainings += f" (🔄 +{subscription.total_restored})"
+            sub_type = "Месячный" if subscription.subscription_type == "monthly" else "Разовый" if subscription.subscription_type == "single" else "Тип не определен"
+            end_date = subscription.end_date.strftime("%d.%m.%Y") if subscription.end_date else "—"
+            
+            # Добавляем информацию о том, когда истек
+            if subscription.end_date and subscription.end_date < datetime.utcnow():
+                days_expired = (datetime.utcnow() - subscription.end_date).days
+                status_display = f"🔴 Истек {days_expired} дней назад"
+            
+            message_text += f"• Статус: {status_display}\n"
+            message_text += f"• Тип: {sub_type}\n"
+            message_text += f"• Тренировки: {trainings}\n"
+            message_text += f"• Действует до: {end_date}\n"
+            
+            # Добавляем информацию о создании
+            if subscription.created_at:
+                message_text += f"• Активирован: {subscription.created_at.strftime('%d.%m.%Y')}\n"
+        else:
+            message_text += f"• ❌ Нет активного абонемента\n"
+        
+        message_text += f"\n🆔 ID: {athlete.id}"
+        
+        # Создаем инлайн клавиатуру
+        keyboard = []
+        
+        # Первый ряд: основные действия
+        keyboard.append([
+            InlineKeyboardButton("🎫 Мой абонемент", callback_data="athlete_subscription_refresh"),
+            InlineKeyboardButton("📊 Статистика", callback_data=f"stats_athlete_{athlete.id}")
+        ])
+        
+        # Второй ряд: навигация
+        keyboard.append([
+            InlineKeyboardButton("🏠 В меню", callback_data="athlete_back_to_menu")
+        ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if query:
+            await query.edit_message_text(
+                message_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+        else:
+            await message.reply_text(
+                message_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+    
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ КАРТОЧКИ СПОРТСМЕНА: {e}", exc_info=True)
+        error_msg = "❌ Ошибка при загрузке карточки"
+        if query:
+            await query.edit_message_text(error_msg)
+        elif message:
+            await message.reply_text(error_msg)
+    finally:
+        session.close()
+
+
 async def show_subscription_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать историю абонементов спортсмена"""
     query = update.callback_query
@@ -625,7 +790,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             return
         
         # Если спортсмен смотрит свою историю, получаем athlete_id из user_id
-        if user.role == 'athlete' and callback_data.startswith("athlete_"):
+        if isinstance(user, Athlete) and callback_data.startswith("athlete_"):
             athlete = session.query(Athlete).filter_by(user_id=user.id).first()
             if not athlete:
                 await query.edit_message_text("❌ Профиль спортсмена не найден")
@@ -639,9 +804,9 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                 return
         
         # Проверяем права доступа
-        is_athlete_viewing_own = (user.role == 'athlete' and athlete.user_id == user.id)
-        is_coach_viewing_athlete = (user.role in ['coach', 'admin'] and 
-                                   (user.role == 'admin' or athlete.created_by == user.id))
+        is_athlete_viewing_own = (isinstance(user, Athlete) and athlete.telegram_id == user.telegram_id)
+        is_coach_viewing_athlete = ((isinstance(user, Coach) or isinstance(user, Admin)) and 
+                                   (isinstance(user, Admin) or athlete.created_by == user.id))
         
         if not (is_athlete_viewing_own or is_coach_viewing_athlete):
             await query.edit_message_text("❌ У вас нет доступа")
@@ -783,9 +948,9 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
         athlete = subscription.athlete
         
         # Проверяем права доступа
-        is_athlete_viewing_own = (user.role == 'athlete' and athlete.user_id == user.id)
-        is_coach_viewing_athlete = (user.role in ['coach', 'admin'] and 
-                                   (user.role == 'admin' or athlete.created_by == user.id))
+        is_athlete_viewing_own = (isinstance(user, Athlete) and athlete.telegram_id == user.telegram_id)
+        is_coach_viewing_athlete = ((isinstance(user, Coach) or isinstance(user, Admin)) and 
+                                   (isinstance(user, Admin) or athlete.created_by == user.id))
         
         if not (is_athlete_viewing_own or is_coach_viewing_athlete):
             await query.edit_message_text("❌ У вас нет доступа")
@@ -926,7 +1091,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
     session = Session()
     try:
         user = get_user_by_telegram_id(session, query.from_user.id)
-        if not user or user.role not in ['coach', 'admin']:
+        if not user or get_user_role(user) not in ['coach', 'admin']:
             await query.edit_message_text("❌ У вас нет доступа")
             return
         
@@ -938,9 +1103,17 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 await query.edit_message_text("❌ Спортсмен не найден")
                 return
             
-            if user.role == 'coach' and athlete.created_by != user.id:
-                await query.edit_message_text("❌ Вы не можете создавать абонемент для этого спортсмена")
-                return
+            # Убираем ограничение - любой тренер может создать абонемент
+            # Но проверяем, что у тренера указан вид спорта
+            sport_type_for_sub = None
+            if isinstance(user, Coach):
+                sport_type_for_sub = get_coach_sport_type(user)
+                if not sport_type_for_sub:
+                    await query.edit_message_text("❌ У вас не указан вид спорта. Обратитесь к администратору.")
+                    return
+            elif isinstance(user, Admin):
+                # Для админа можно выбрать вид спорта из существующих абонементов или использовать из спортсмена
+                sport_type_for_sub = athlete.sport_type
             
             # Показываем выбор типа абонемента
             keyboard = [
@@ -950,13 +1123,17 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             
+            sport_type_display = sport_type_for_sub or "не указан"
             await query.edit_message_text(
                 f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
-                f"🎫 <b>АКТИВАЦИЯ АБОНЕМЕНТА</b>\n\n"
+                f"🎫 <b>СОЗДАНИЕ АБОНЕМЕНТА</b>\n\n"
+                f"Вид спорта: <b>{sport_type_display}</b>\n\n"
                 f"Выберите тип абонемента:",
                 reply_markup=reply_markup,
                 parse_mode='HTML'
             )
+            # Сохраняем вид спорта в контексте для использования при создании
+            context.user_data['new_subscription_sport_type'] = sport_type_for_sub
             return
         
         # Если это выбор типа для нового абонемента (activate_sub_type_123_monthly)
@@ -974,7 +1151,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     return
                 
                 athlete = subscription.athlete
-                if user.role == 'coach' and athlete.created_by != user.id:
+                if isinstance(user, Coach) and athlete.created_by != user.id:
                     await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
                     return
                 
@@ -999,12 +1176,17 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 else:
                     end_date = start_date + timedelta(days=30)
                 
+                # Связь 1:1 - деактивируем все старые активные абонементы
+                active_subs = [s for s in athlete.subscriptions if s.is_active and s.id != subscription.id]
+                for old_sub in active_subs:
+                    old_sub.is_active = False
+                
                 subscription.is_active = True
                 subscription.start_date = start_date
                 subscription.end_date = end_date
                 
                 # Для месячных абонементов создаем тренировки по расписанию
-                if subscription_type == "monthly" and athlete.sport_type and athlete.age_group:
+                if subscription_type == "monthly" and subscription.sport_type and athlete.age_group:
                     from database.db_utils import _create_and_deduct_scheduled_trainings
                     _create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
                 
@@ -1027,9 +1209,21 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     await query.edit_message_text("❌ Спортсмен не найден")
                     return
                 
-                if user.role == 'coach' and athlete.created_by != user.id:
-                    await query.edit_message_text("❌ Вы не можете создавать абонемент для этого спортсмена")
-                    return
+                # Убираем ограничение - любой тренер может создать абонемент
+                # Получаем вид спорта из контекста (сохранен при выборе типа)
+                sport_type_for_sub = context.user_data.get('new_subscription_sport_type')
+                
+                # Если не сохранен в контексте, берем из профиля тренера
+                if not sport_type_for_sub:
+                    if isinstance(user, Coach):
+                        sport_type_for_sub = get_coach_sport_type(user)
+                    if not sport_type_for_sub:
+                        sport_type_for_sub = athlete.sport_type
+                
+                # Связь 1:1 - деактивируем все старые активные абонементы
+                active_subs = [s for s in athlete.subscriptions if s.is_active]
+                for old_sub in active_subs:
+                    old_sub.is_active = False
                 
                 # Создаем абонемент и сразу активируем его
                 from services.subscription_service import SubscriptionService
@@ -1040,7 +1234,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     session=session,
                     athlete_id=athlete_id,
                     subscription_type=subscription_type,
-                    sport_type=athlete.sport_type
+                    sport_type=sport_type_for_sub  # Используем вид спорта из профиля тренера
                 )
                 
                 # Активируем абонемент и устанавливаем даты
@@ -1058,11 +1252,15 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 subscription.end_date = end_date
                 
                 # Для месячных абонементов создаем тренировки по расписанию
-                if subscription_type == "monthly" and athlete.sport_type and athlete.age_group:
+                # Используем вид спорта из абонемента, а не из спортсмена
+                if subscription_type == "monthly" and subscription.sport_type and athlete.age_group:
                     from database.db_utils import _create_and_deduct_scheduled_trainings
                     _create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
                 
                 session.commit()
+                
+                # Очищаем сохраненный вид спорта из контекста
+                context.user_data.pop('new_subscription_sport_type', None)
                 
                 subscription_type_ru = "Месячный" if subscription_type == "monthly" else "Разовый"
                 await query.answer(f"✅ Абонемент ({subscription_type_ru}) создан и активирован", show_alert=True)
@@ -1079,7 +1277,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             return
         
         athlete = subscription.athlete
-        if user.role == 'coach' and athlete.created_by != user.id:
+        if isinstance(user, Coach) and athlete.created_by != user.id:
             await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
             return
         
@@ -1114,12 +1312,17 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
         else:
             end_date = start_date + timedelta(days=30)  # По умолчанию 30 дней
         
+        # Связь 1:1 - деактивируем все старые активные абонементы
+        active_subs = [s for s in athlete.subscriptions if s.is_active and s.id != subscription.id]
+        for old_sub in active_subs:
+            old_sub.is_active = False
+        
         subscription.is_active = True
         subscription.start_date = start_date
         subscription.end_date = end_date
         
         # Для месячных абонементов создаем тренировки по расписанию
-        if subscription.subscription_type == "monthly" and athlete.sport_type and athlete.age_group:
+        if subscription.subscription_type == "monthly" and subscription.sport_type and athlete.age_group:
             from database.db_utils import _create_and_deduct_scheduled_trainings
             _create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
         
@@ -1162,3 +1365,532 @@ def deactivate_subscription(session, subscription_id: int) -> bool:
         logger.error(f"❌ ОШИБКА ПРИ ДЕАКТИВАЦИИ АБОНЕМЕНТА #{subscription_id}: {e}", exc_info=True)
         session.rollback()
         return False
+
+
+async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать историю посещений спортсмена"""
+    query = update.callback_query
+    await query.answer()
+    
+    athlete_id = int(query.data.replace("visits_", ""))
+    
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+        
+        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден")
+            return
+        
+        # Проверяем права
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
+            return
+        
+        # Получаем последние 20 посещений
+        attendances = session.query(Attendance).filter_by(
+            athlete_id=athlete_id
+        ).order_by(Attendance.created_at.desc()).limit(20).all()
+        
+        message = f"📅 <b>ИСТОРИЯ ПОСЕЩЕНИЙ</b>\n\n"
+        message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+        
+        if not attendances:
+            message += "❌ Нет записей о посещениях"
+        else:
+            message += f"Последние {len(attendances)} записей:\n\n"
+            
+            for idx, att in enumerate(attendances, 1):
+                status = "✅" if att.attended else "❌"
+                training_date = att.training.training_date.strftime('%d.%m.%Y %H:%M') if att.training else "—"
+                marked_date = att.created_at.strftime('%d.%m.%Y') if att.created_at else "—"
+                
+                message += f"{idx}. {status} {training_date}\n"
+                message += f"   Отмечено: {marked_date}\n"
+                if att.was_restored:
+                    message += f"   🔄 Восстановлено\n"
+                message += "\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ ПОСЕЩЕНИЙ: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при загрузке посещений")
+    finally:
+        session.close()
+
+
+async def show_athlete_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать детальную статистику спортсмена"""
+    query = update.callback_query
+    await query.answer()
+    
+    athlete_id = int(query.data.replace("stats_", ""))
+    
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+        
+        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден")
+            return
+        
+        # Проверяем права
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
+            return
+        
+        # Получаем статистику за разные периоды
+        now = datetime.utcnow()
+        week_ago = now - timedelta(days=7)
+        month_ago = now - timedelta(days=30)
+        three_months_ago = now - timedelta(days=90)
+        
+        # Статистика за неделю
+        week_trainings = session.query(Training).filter(
+            Training.sport_type == athlete.sport_type,
+            Training.age_group == athlete.age_group,
+            Training.training_date >= week_ago,
+            Training.is_cancelled == False
+        ).count()
+        
+        week_attended = session.query(Attendance).filter(
+            Attendance.athlete_id == athlete_id,
+            Attendance.attended == True,
+            Attendance.training.has(Training.training_date >= week_ago)
+        ).count()
+        
+        # Статистика за месяц
+        month_trainings = session.query(Training).filter(
+            Training.sport_type == athlete.sport_type,
+            Training.age_group == athlete.age_group,
+            Training.training_date >= month_ago,
+            Training.is_cancelled == False
+        ).count()
+        
+        month_attended = session.query(Attendance).filter(
+            Attendance.athlete_id == athlete_id,
+            Attendance.attended == True,
+            Attendance.training.has(Training.training_date >= month_ago)
+        ).count()
+        
+        # Статистика за 3 месяца
+        three_months_trainings = session.query(Training).filter(
+            Training.sport_type == athlete.sport_type,
+            Training.age_group == athlete.age_group,
+            Training.training_date >= three_months_ago,
+            Training.is_cancelled == False
+        ).count()
+        
+        three_months_attended = session.query(Attendance).filter(
+            Attendance.athlete_id == athlete_id,
+            Attendance.attended == True,
+            Attendance.training.has(Training.training_date >= three_months_ago)
+        ).count()
+        
+        # Общая статистика
+        total_attended = session.query(Attendance).filter_by(
+            athlete_id=athlete_id,
+            attended=True
+        ).count()
+        
+        total_missed = session.query(Attendance).filter_by(
+            athlete_id=athlete_id,
+            attended=False,
+            was_restored=False
+        ).count()
+        
+        message = f"📊 <b>СТАТИСТИКА СПОРТСМЕНА</b>\n\n"
+        message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+        
+        message += f"<b>📈 ПО ПЕРИОДАМ</b>\n"
+        message += f"<b>Неделя:</b>\n"
+        message += f"• Посещено: {week_attended}/{week_trainings}\n"
+        week_rate = round((week_attended / week_trainings * 100), 1) if week_trainings > 0 else 0
+        message += f"• Посещаемость: {week_rate}%\n\n"
+        
+        message += f"<b>Месяц:</b>\n"
+        message += f"• Посещено: {month_attended}/{month_trainings}\n"
+        month_rate = round((month_attended / month_trainings * 100), 1) if month_trainings > 0 else 0
+        message += f"• Посещаемость: {month_rate}%\n\n"
+        
+        message += f"<b>3 месяца:</b>\n"
+        message += f"• Посещено: {three_months_attended}/{three_months_trainings}\n"
+        three_months_rate = round((three_months_attended / three_months_trainings * 100), 1) if three_months_trainings > 0 else 0
+        message += f"• Посещаемость: {three_months_rate}%\n\n"
+        
+        message += f"<b>📋 ОБЩАЯ СТАТИСТИКА</b>\n"
+        message += f"• Всего посещено: {total_attended}\n"
+        message += f"• Всего пропущено: {total_missed}\n"
+        total_rate = round((total_attended / (total_attended + total_missed) * 100), 1) if (total_attended + total_missed) > 0 else 0
+        message += f"• Общая посещаемость: {total_rate}%\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ СТАТИСТИКИ: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при загрузке статистики")
+    finally:
+        session.close()
+
+
+async def show_restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать меню восстановления тренировок"""
+    query = update.callback_query
+    await query.answer()
+    
+    athlete_id = int(query.data.replace("restore_", ""))
+    
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+        
+        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден")
+            return
+        
+        # Проверяем права
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете восстанавливать тренировки для этого спортсмена")
+            return
+        
+        subscription = athlete.current_subscription
+        if not subscription:
+            await query.edit_message_text("❌ У спортсмена нет активного абонемента")
+            return
+        
+        # Получаем пропущенные тренировки (неиспользованные, не восстановленные)
+        missed_attendances = session.query(Attendance).filter(
+            Attendance.athlete_id == athlete_id,
+            Attendance.subscription_id == subscription.id,
+            Attendance.attended == False,
+            Attendance.was_restored == False
+        ).order_by(Attendance.created_at.desc()).limit(10).all()
+        
+        message = f"🔄 <b>ВОССТАНОВЛЕНИЕ ТРЕНИРОВОК</b>\n\n"
+        message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n"
+        message += f"🎫 Абонемент #{subscription.id}\n"
+        message += f"🏋️ Осталось тренировок: {subscription.trainings_remaining}\n\n"
+        
+        if not missed_attendances:
+            message += "❌ Нет пропущенных тренировок для восстановления"
+        else:
+            message += f"<b>Пропущенные тренировки (последние {len(missed_attendances)}):</b>\n\n"
+            
+            keyboard = []
+            for att in missed_attendances:
+                training_date = att.training.training_date.strftime('%d.%m.%Y %H:%M') if att.training else "—"
+                button_text = f"📅 {training_date}"
+                if len(button_text) > 64:
+                    button_text = f"📅 {training_date[:50]}"
+                keyboard.append([
+                    InlineKeyboardButton(button_text, callback_data=f"restore_att_{att.id}")
+                ])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                message,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ МЕНЮ ВОССТАНОВЛЕНИЯ: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при загрузке меню восстановления")
+    finally:
+        session.close()
+
+
+async def execute_restore_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Восстановить конкретную тренировку"""
+    query = update.callback_query
+    await query.answer()
+    
+    attendance_id = int(query.data.replace("restore_att_", ""))
+    
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+        
+        attendance = session.query(Attendance).filter_by(id=attendance_id).first()
+        if not attendance:
+            await query.edit_message_text("❌ Запись о посещении не найдена")
+            return
+        
+        athlete = attendance.athlete
+        subscription = attendance.subscription
+        
+        # Проверяем права
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете восстанавливать тренировки для этого спортсмена")
+            return
+        
+        # Проверяем, что тренировка еще не восстановлена
+        if attendance.was_restored:
+            await query.edit_message_text("❌ Эта тренировка уже была восстановлена")
+            return
+        
+        # Проверяем, что это пропущенная тренировка
+        if attendance.attended:
+            await query.edit_message_text("❌ Можно восстановить только пропущенные тренировки")
+            return
+        
+        # Восстанавливаем тренировку
+        attendance.was_restored = True
+        attendance.restoration_reason = "Восстановлено тренером"
+        
+        # Возвращаем тренировку в абонемент
+        if subscription:
+            subscription.trainings_remaining = (subscription.trainings_remaining or 0) + 1
+            subscription.total_restored = (subscription.total_restored or 0) + 1
+            
+            # Обновляем счетчик восстановлений за месяц
+            if attendance.created_at:
+                now = datetime.utcnow()
+                if attendance.created_at.year == now.year and attendance.created_at.month == now.month:
+                    subscription.restored_this_month = (subscription.restored_this_month or 0) + 1
+        
+        session.commit()
+        
+        training_date = attendance.training.training_date.strftime('%d.%m.%Y %H:%M') if attendance.training else "—"
+        
+        message = f"✅ <b>ТРЕНИРОВКА ВОССТАНОВЛЕНА</b>\n\n"
+        message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n"
+        message += f"📅 Тренировка: {training_date}\n"
+        message += f"🎫 Осталось тренировок: {subscription.trainings_remaining if subscription else '—'}\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Еще восстановить", callback_data=f"restore_{athlete.id}")],
+            [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete.id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ВОССТАНОВЛЕНИИ ТРЕНИРОВКИ: {e}", exc_info=True)
+        session.rollback()
+        await query.edit_message_text("❌ Ошибка при восстановлении тренировки")
+    finally:
+        session.close()
+
+
+async def select_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать список активных абонементов для выбора"""
+    query = update.callback_query
+    await query.answer()
+    
+    athlete_id = int(query.data.replace("select_sub_", ""))
+    
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+        
+        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден")
+            return
+        
+        # Проверяем права
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
+            return
+        
+        # Получаем все активные абонементы
+        active_subs = [s for s in athlete.subscriptions if s.is_active]
+        
+        if not active_subs:
+            await query.edit_message_text("❌ Нет активных абонементов")
+            return
+        
+        if len(active_subs) == 1:
+            # Если только один абонемент, просто показываем карточку
+            await show_athlete_card(update, context)
+            return
+        
+        message = f"🔄 <b>ВЫБОР АБОНЕМЕНТА</b>\n\n"
+        message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+        message += f"Выберите абонемент для просмотра:\n\n"
+        
+        keyboard = []
+        from utils.subscription_checker import SubscriptionChecker
+        
+        for sub in active_subs:
+            status = SubscriptionChecker.get_subscription_status(sub)
+            status_icon = "🟢" if status == "active" else "🟡" if status == "expiring_soon" else "🔴"
+            sport_type_display = sub.sport_type or "—"
+            trainings = f"{sub.trainings_remaining or 0}/{sub.trainings_total or 0}"
+            
+            button_text = f"{status_icon} {sport_type_display} ({trainings})"
+            if len(button_text) > 64:
+                button_text = f"{status_icon} {sport_type_display}"
+            
+            keyboard.append([
+                InlineKeyboardButton(button_text, callback_data=f"view_sub_card_{sub.id}")
+            ])
+        
+        keyboard.append([
+            InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
+        ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ВЫБОРЕ АБОНЕМЕНТА: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при загрузке абонементов")
+    finally:
+        session.close()
+
+
+async def view_subscription_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать карточку спортсмена с выбранным абонементом"""
+    query = update.callback_query
+    await query.answer()
+    
+    subscription_id = int(query.data.replace("view_sub_card_", ""))
+    
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+        
+        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+        if not subscription:
+            await query.edit_message_text("❌ Абонемент не найден")
+            return
+        
+        athlete = subscription.athlete
+        
+        # Проверяем права
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
+            return
+        
+        # Сохраняем выбранный абонемент в контексте и показываем карточку
+        context.user_data['selected_subscription_id'] = subscription_id
+        
+        # Показываем карточку спортсмена
+        await show_athlete_card(update, context)
+    
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ПРОСМОТРЕ АБОНЕМЕНТА: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при загрузке")
+    finally:
+        session.close()
+
+
+async def show_edit_athlete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать меню редактирования данных спортсмена"""
+    query = update.callback_query
+    await query.answer()
+    
+    athlete_id = int(query.data.replace("edit_", ""))
+    
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+        
+        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден")
+            return
+        
+        # Проверяем права
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете редактировать этого спортсмена")
+            return
+        
+        message = f"✏️ <b>РЕДАКТИРОВАНИЕ ДАННЫХ</b>\n\n"
+        message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+        message += "Выберите, что хотите изменить:"
+        
+        keyboard = [
+            [InlineKeyboardButton("📝 ФИО", callback_data=f"edit_name_{athlete_id}")],
+            [InlineKeyboardButton("📞 Телефон", callback_data=f"edit_phone_{athlete_id}")],
+            [InlineKeyboardButton("🏥 Медицинская информация", callback_data=f"edit_medical_{athlete_id}")],
+            [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            message,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ МЕНЮ РЕДАКТИРОВАНИЯ: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при загрузке меню редактирования")
+    finally:
+        session.close()

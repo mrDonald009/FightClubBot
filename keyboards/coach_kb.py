@@ -1,5 +1,5 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from database.models import User
+# Импорты моделей больше не нужны в этом файле
 
 
 def get_coach_main_menu():

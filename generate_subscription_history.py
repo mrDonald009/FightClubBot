@@ -135,3 +135,4 @@ if __name__ == "__main__":
         generate_subscription_history()
     else:
         print("❌ Операция отменена")
+

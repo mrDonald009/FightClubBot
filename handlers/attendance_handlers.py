@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CallbackQueryHandler
 from database.models import Session, Athlete, Subscription, Training, Attendance
-from database.db_utils import get_user_by_telegram_id
+from database.db_utils import get_user_by_telegram_id, get_user_role
 import html
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
         )
         
         # Если это тренер, показываем только его тренировки
-        if user and user.role == 'coach' and user.id:
+        if user and get_user_role(user) == 'coach' and getattr(user, "id", None):
             query_filter = query_filter.filter(Training.coach_id == user.id)
         
         trainings = query_filter.order_by(Training.training_date.desc()).limit(5).all()
@@ -158,7 +158,7 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
         # Проверяем, что тренер может отмечать посещения только для своих тренировок
         from database.db_utils import get_user_by_telegram_id
         user = get_user_by_telegram_id(session, query.from_user.id)
-        if user and user.role == 'coach' and training.coach_id and training.coach_id != user.id:
+        if user and get_user_role(user) == 'coach' and training.coach_id and training.coach_id != user.id:
             await query.edit_message_text("❌ Вы можете отмечать посещения только для своих тренировок")
             return
 

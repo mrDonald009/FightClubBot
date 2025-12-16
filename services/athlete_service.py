@@ -1,7 +1,7 @@
 """Сервис для работы со спортсменами."""
 from typing import List, Optional
 from sqlalchemy.orm import Session
-from database.models import Athlete, User
+from database.models import Athlete, Coach
 from database.db_utils import (
     create_athlete as db_create_athlete,
     get_athletes_by_coach,
@@ -94,7 +94,7 @@ class AthleteService:
             ValidationError: Если данные невалидны
         """
         # Проверяем, что тренер существует
-        coach = session.query(User).filter_by(id=coach_id).first()
+        coach = session.query(Coach).filter_by(id=coach_id).first()
         if not coach:
             raise ValidationError(f"Тренер с id={coach_id} не найден")
         

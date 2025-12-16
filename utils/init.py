@@ -1,4 +1,4 @@
-from database.models import Session, User, Athlete, Subscription, Training
+from database.models import Session, Coach, Admin, Athlete, Subscription, Training
 from database.db_utils import create_user, create_athlete, create_subscription
 from datetime import datetime, timedelta
 import logging
@@ -41,19 +41,10 @@ def init_database():
             sport_type="Тайский Бокс"
         )
 
-        # Создаем тестового спортсмена
-        athlete_user = create_user(
-            session=session,
-            telegram_id=555555555,  # TELEGRAM ID спортсмена
-            username="athlete",
-            first_name="Спортсмен",
-            role="athlete"
-        )
-
         # Создаем запись спортсмена для тренера MMA
         athlete_mma = create_athlete(
             session=session,
-            user_id=athlete_user.id,
+            telegram_id=555555555,  # TELEGRAM ID спортсмена
             full_name="Иванов Алексей Петрович",
             phone="+79123456789",
             medical_info="Нет противопоказаний",
@@ -67,7 +58,7 @@ def init_database():
         # Создаем запись спортсмена для тренера Тайский Бокс
         athlete_thai = create_athlete(
             session=session,
-            user_id=athlete_user.id,
+            telegram_id=555555556,  # Другой TELEGRAM ID для второго спортсмена
             full_name="Петров Дмитрий Сергеевич",
             phone="+79123456780",
             medical_info="Нет противопоказаний",

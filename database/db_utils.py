@@ -1,15 +1,49 @@
 from sqlalchemy.orm import Session
-from database.models import User, Athlete, Subscription, Training, Attendance, RestorationRequest
+from database.models import Coach, Admin, Assistant, Athlete, Subscription, Training, Attendance, RestorationRequest, SportType
 from datetime import datetime, timedelta
 import json
 import calendar
 from utils.subscription_checker import SubscriptionChecker
 from utils.training_manager import TrainingManager
+from typing import Optional, Union
 
 
-def get_user_by_telegram_id(session: Session, telegram_id: int):
-    """Получить пользователя по telegram_id"""
-    return session.query(User).filter_by(telegram_id=telegram_id).first()
+def get_user_role(user: Union[Coach, Admin, Assistant, Athlete]) -> str:
+    """Определить роль пользователя"""
+    if isinstance(user, Coach):
+        return "coach"
+    elif isinstance(user, Admin):
+        return "admin"
+    elif isinstance(user, Assistant):
+        return "assistant"
+    elif isinstance(user, Athlete):
+        return "athlete"
+    return "unknown"
+
+
+def get_user_by_telegram_id(session: Session, telegram_id: int) -> Optional[Union[Coach, Admin, Assistant, Athlete]]:
+    """Получить пользователя по telegram_id (проверяет все таблицы: coaches, admins, assistants, athletes)"""
+    # Проверяем тренеров
+    coach = session.query(Coach).filter_by(telegram_id=telegram_id).first()
+    if coach:
+        return coach
+    
+    # Проверяем админов
+    admin = session.query(Admin).filter_by(telegram_id=telegram_id).first()
+    if admin:
+        return admin
+    
+    # Проверяем ассистентов
+    assistant = session.query(Assistant).filter_by(telegram_id=telegram_id).first()
+    if assistant:
+        return assistant
+    
+    # Проверяем спортсменов
+    athlete = session.query(Athlete).filter_by(telegram_id=telegram_id).first()
+    if athlete:
+        return athlete
+    
+    return None
 
 
 def get_athletes_by_coach(session: Session, coach_id: int):
@@ -22,35 +56,86 @@ def get_athletes_by_coach(session: Session, coach_id: int):
     )
 
 
-def get_coach_by_sport_type(session: Session, sport_type: str):
+def get_coach_by_sport_type(session: Session, sport_type: str) -> Optional[Coach]:
     """Получить тренера по виду спорта"""
-    return session.query(User).filter(
-        User.role == 'coach',
-        User.sport_type == sport_type,
-        User.is_active == True
+    # Сначала пытаемся найти через связь с sport_types
+    sport_type_obj = session.query(SportType).filter_by(name=sport_type).first()
+    if sport_type_obj:
+        coach = session.query(Coach).filter(
+            Coach.sport_type_id == sport_type_obj.id,
+            Coach.is_active == True
+        ).first()
+        if coach:
+            return coach
+    
+    # Fallback: ищем по строке sport_type (для обратной совместимости)
+    return session.query(Coach).filter(
+        Coach.sport_type == sport_type,
+        Coach.is_active == True
     ).first()
 
 
 def create_user(session: Session, telegram_id: int, username: str, first_name: str, role: str = "athlete",
-                sport_type: str = None):
-    """Создать нового пользователя"""
-    user = User(
-        telegram_id=telegram_id,
-        username=username,
-        first_name=first_name,
-        role=role,
-        sport_type=sport_type
-    )
-    session.add(user)
-    session.commit()
-    return user
+                sport_type: str = None) -> Union[Coach, Admin, Assistant]:
+    """Создать нового пользователя в соответствующей таблице"""
+    if role == "coach":
+        # Получаем sport_type_id из таблицы sport_types
+        sport_type_id = None
+        if sport_type:
+            sport_type_obj = session.query(SportType).filter_by(name=sport_type).first()
+            if sport_type_obj:
+                sport_type_id = sport_type_obj.id
+            else:
+                # Если вида спорта нет, создаем его
+                sport_type_obj = SportType(name=sport_type, display_name=sport_type)
+                session.add(sport_type_obj)
+                session.flush()
+                sport_type_id = sport_type_obj.id
+        
+        if not sport_type_id:
+            raise ValueError(f"Не указан вид спорта для тренера или вид спорта '{sport_type}' не найден")
+        
+        coach = Coach(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            sport_type_id=sport_type_id,
+            sport_type=sport_type  # Для обратной совместимости
+        )
+        session.add(coach)
+        session.commit()
+        return coach
+    
+    elif role == "admin":
+        admin = Admin(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name
+        )
+        session.add(admin)
+        session.commit()
+        return admin
+    
+    elif role == "assistant":
+        assistant = Assistant(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name
+        )
+        session.add(assistant)
+        session.commit()
+        return assistant
+    
+    else:
+        # Для спортсменов не создаем запись в отдельной таблице, только в athletes
+        raise ValueError(f"Для создания спортсмена используйте create_athlete")
 
 
-def create_athlete(session: Session, user_id: int, full_name: str, phone: str, medical_info: str,
+def create_athlete(session: Session, telegram_id: int, full_name: str, phone: str, medical_info: str,
                    sport_type: str, age_group: str, created_by: int, height: int = None, weight: int = None):
     """Создать спортсмена"""
     athlete = Athlete(
-        user_id=user_id,
+        telegram_id=telegram_id,
         full_name=full_name,
         phone=phone,
         height=height,
@@ -58,7 +143,7 @@ def create_athlete(session: Session, user_id: int, full_name: str, phone: str, m
         medical_info=medical_info,
         sport_type=sport_type,
         age_group=age_group,
-        created_by=created_by
+        created_by=created_by  # ID тренера из таблицы coaches
     )
     session.add(athlete)
     session.commit()
@@ -585,7 +670,17 @@ def get_athlete_card_info(session: Session, athlete_id: int):
 
     # Получаем первый активный абонемент для обратной совместимости
     subscription = athlete.current_subscription
-    coach = athlete.coach
+    
+    # Получаем тренера по виду спорта из абонемента (если есть), иначе по виду спорта спортсмена
+    coach = None
+    if subscription and subscription.sport_type:
+        coach = get_coach_by_sport_type(session, subscription.sport_type)
+    elif athlete.sport_type:
+        coach = get_coach_by_sport_type(session, athlete.sport_type)
+    
+    # Если не найден, используем тренера, который добавил спортсмена
+    if not coach:
+        coach = athlete.coach
 
     # АВТОМАТИЧЕСКАЯ ПРОВЕРКА СТАТУСА АБОНЕМЕНТА
     if subscription and subscription.is_active and subscription.end_date:
@@ -597,14 +692,19 @@ def get_athlete_card_info(session: Session, athlete_id: int):
             print(f"🔄 Автоматически деактивирован абонемент #{subscription.id} для {athlete.full_name}")
 
     # Получаем статистику посещений за последние 30 дней
+    # Используем вид спорта из абонемента, если он есть, иначе из спортсмена
+    sport_type_for_stats = subscription.sport_type if subscription and subscription.sport_type else athlete.sport_type
+    
     month_ago = datetime.utcnow() - timedelta(days=30)
 
-    total_trainings = session.query(Training).filter(
-        Training.sport_type == athlete.sport_type,
-        Training.age_group == athlete.age_group,
-        Training.training_date >= month_ago,
-        Training.is_cancelled == False
-    ).count()
+    total_trainings = 0
+    if sport_type_for_stats:
+        total_trainings = session.query(Training).filter(
+            Training.sport_type == sport_type_for_stats,
+            Training.age_group == athlete.age_group,
+            Training.training_date >= month_ago,
+            Training.is_cancelled == False
+        ).count()
 
     attended_trainings = session.query(Attendance).filter(
         Attendance.athlete_id == athlete_id,
@@ -638,7 +738,8 @@ def get_athlete_card_info(session: Session, athlete_id: int):
             "attended_trainings": attended_trainings,
             "missed_trainings": missed_trainings,
             "attendance_rate": attendance_rate,
-            "has_telegram": bool(athlete.user_id)
+            # В новой схеме связь с Telegram хранится прямо в athletes.telegram_id
+            "has_telegram": bool(getattr(athlete, "telegram_id", None))
         },
         "medical_display": medical_display,
         "age_group_display": "Детская" if athlete.age_group == "children" else "Взрослая",

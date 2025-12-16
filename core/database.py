@@ -15,7 +15,8 @@ def get_db_session() -> Generator[Session, None, None]:
         
     Example:
         with get_db_session() as session:
-            user = session.query(User).first()
+            from database.models import Coach
+            coach = session.query(Coach).first()
     """
     session = DBSession()
     try:

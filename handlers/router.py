@@ -11,6 +11,7 @@ from telegram.ext import (
 from core.application import HandlerRegistrar
 from core.database import get_db_session
 from services.user_service import UserService
+from database.db_utils import get_user_role
 from services.subscription_service import SubscriptionService
 from handlers.start import start
 from handlers.coach_handlers import (
@@ -48,6 +49,14 @@ from handlers.card_handlers import (
     show_subscription_history,
     view_subscription_from_history,
     handle_activate_subscription,
+    show_my_athlete_card,
+    show_athlete_visits,
+    show_athlete_stats,
+    show_restore_menu,
+    execute_restore_training,
+    show_edit_athlete_menu,
+    select_subscription,
+    view_subscription_card,
 )
 from handlers.attendance_handlers import (
     mark_attendance_start,
@@ -91,7 +100,7 @@ async def check_all_subscriptions(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or user.role not in ['coach', 'admin']:
+            if not user or get_user_role(user) not in ['coach', 'admin']:
                 await update.message.reply_text("❌ У вас нет прав для этой команды")
                 return
     except Exception as e:
@@ -119,7 +128,26 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     Args:
         registrar: Регистратор обработчиков
     """
-    # ConversationHandler для добавления спортсмена
+    logger.info("🔧 Начинаем регистрацию обработчиков...")
+    
+    # Сначала регистрируем обычные обработчики кнопок меню (они должны иметь приоритет)
+    # Обработчики для кнопок меню
+    logger.info("📝 Регистрируем обработчики кнопок меню...")
+    registrar.register(
+        MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list)
+    )
+    logger.info("✅ Зарегистрирован обработчик: 📋 Список спортсменов")
+    registrar.register(
+        MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training)
+    )
+    logger.info("✅ Зарегистрирован обработчик: 🏋️ Начать тренировку")
+    registrar.register(
+        MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar)
+    )
+    logger.info("✅ Зарегистрирован обработчик: 📅 Мой календарь")
+
+    # ConversationHandler для добавления спортсмена (регистрируем после обычных обработчиков)
+    logger.info("📝 Регистрируем ConversationHandler для добавления спортсмена...")
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start)
@@ -140,12 +168,18 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         },
         fallbacks=[
             CommandHandler("cancel", cancel_athlete_creation),
+            # Добавляем кнопки меню в fallbacks, чтобы они могли прерывать разговор
+            MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
+            MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training),
+            MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
+            MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
         ],
         name="add_athlete_conversation",
         persistent=False,
         allow_reentry=True
     )
     registrar.register(conv_handler)
+    logger.info("✅ Зарегистрирован ConversationHandler для добавления спортсмена")
 
     # Обработчики для списка спортсменов
     registrar.register(
@@ -174,6 +208,29 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(
         CallbackQueryHandler(handle_back_to_menu, pattern="^back_to_menu")
     )
+    
+    # Обработчики для функций карточки спортсмена
+    registrar.register(
+        CallbackQueryHandler(show_athlete_visits, pattern="^visits_")
+    )
+    registrar.register(
+        CallbackQueryHandler(show_athlete_stats, pattern="^stats_")
+    )
+    registrar.register(
+        CallbackQueryHandler(execute_restore_training, pattern="^restore_att_")
+    )
+    registrar.register(
+        CallbackQueryHandler(show_restore_menu, pattern="^restore_")
+    )
+    registrar.register(
+        CallbackQueryHandler(show_edit_athlete_menu, pattern="^edit_")
+    )
+    registrar.register(
+        CallbackQueryHandler(select_subscription, pattern="^select_sub_")
+    )
+    registrar.register(
+        CallbackQueryHandler(view_subscription_card, pattern="^view_sub_card_")
+    )
 
     # Обработчики для отметки посещения
     registrar.register(
@@ -199,10 +256,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     # Команда для проверки абонементов
     registrar.register(CommandHandler("check_subs", check_all_subscriptions))
 
-    # Обработчики для кнопок меню
-    registrar.register(
-        MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list)
-    )
+    # Остальные обработчики для кнопок меню (не дублируем уже зарегистрированные)
     registrar.register(
         MessageHandler(filters.Regex("^(📊 Статистика посещений)$"), handle_statistics)
     )
@@ -211,12 +265,6 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     registrar.register(
         MessageHandler(filters.Regex("^(📅 Отметить посещение)$"), handle_attendance)
-    )
-    registrar.register(
-        MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training)
-    )
-    registrar.register(
-        MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar)
     )
     registrar.register(
         MessageHandler(filters.Regex("^(⚙️ Настройки)$"), handle_settings)
@@ -236,6 +284,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
 
     # Обработчики для спортсменов
+    registrar.register(
+        MessageHandler(filters.Regex("^(👤 Моя карточка)$"), show_my_athlete_card)
+    )
     registrar.register(
         MessageHandler(filters.Regex("^(🎫 Мой абонемент)$"), show_my_subscription)
     )

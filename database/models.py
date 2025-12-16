@@ -1,5 +1,5 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text, and_
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text, and_, UniqueConstraint
+from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
 import enum
@@ -16,16 +16,58 @@ class RestorationStatus(enum.Enum):
     COMPLETED = "completed"
 
 
-class User(Base):
-    __tablename__ = 'users'
-    __table_args__ = {'extend_existing': True}  # Добавляем этот флаг
+class SportType(Base):
+    """Таблица видов спорта"""
+    __tablename__ = 'sport_types'
+    __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False)
+    name = Column(String(50), unique=True, nullable=False)  # MMA, Тайский Бокс, Бокс и т.д.
+    display_name = Column(String(100))  # Отображаемое название
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Coach(Base):
+    """Таблица тренеров"""
+    __tablename__ = 'coaches'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, nullable=False)  # Telegram ID
     username = Column(String(100))
     first_name = Column(String(100))
-    role = Column(String(20), default='athlete')  # admin, coach, assistant, athlete
-    sport_type = Column(String(50), nullable=True)  # MMA, Thai - только для тренеров
+    sport_type_id = Column(Integer, ForeignKey('sport_types.id'), nullable=False)  # Вид спорта, который преподает
+    sport_type = Column(String(50), nullable=True)  # Для обратной совместимости
+    created_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+    
+    # Связи
+    sport_type_rel = relationship("SportType", foreign_keys=[sport_type_id])
+
+
+class Admin(Base):
+    """Таблица администраторов"""
+    __tablename__ = 'admins'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, nullable=False)  # Telegram ID
+    username = Column(String(100))
+    first_name = Column(String(100))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+
+
+class Assistant(Base):
+    """Таблица ассистентов"""
+    __tablename__ = 'assistants'
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(Integer, unique=True, nullable=False)  # Telegram ID
+    username = Column(String(100))
+    first_name = Column(String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
 
@@ -35,20 +77,20 @@ class Athlete(Base):
     __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # Может быть NULL
+    telegram_id = Column(Integer, unique=True, nullable=True)  # Telegram ID спортсмена (может быть NULL)
     full_name = Column(String(200), nullable=False)
     phone = Column(String(20))
+    birth_date = Column(DateTime, nullable=True)  # Дата рождения
     height = Column(Integer)  # рост в см
     weight = Column(Integer)  # вес в кг
     medical_info = Column(Text)
     sport_type = Column(String(50))
     age_group = Column(String(20))  # children, adults
-    created_by = Column(Integer, ForeignKey('users.id'))  # тренер, который добавил
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(Integer, ForeignKey('coaches.id'), nullable=True)  # Тренер, который добавил
+    created_at = Column(DateTime, default=datetime.utcnow)  # Дата регистрации в зале
 
     # Связи
-    user = relationship("User", foreign_keys=[user_id])
-    coach = relationship("User", foreign_keys=[created_by])
+    coach = relationship("Coach", foreign_keys=[created_by])  # Связь с таблицей тренеров
 
     # Связь один-ко-многим с абонементами
     subscriptions = relationship(
@@ -80,11 +122,15 @@ class Athlete(Base):
 
 class Subscription(Base):
     __tablename__ = 'subscriptions'
-    __table_args__ = {'extend_existing': True}  # Ключевой флаг
+    __table_args__ = (
+        UniqueConstraint('athlete_id', 'sport_type', name='uq_athlete_sport'),  # Один спортсмен - один абонемент на вид спорта
+        {'extend_existing': True}
+    )
 
     id = Column(Integer, primary_key=True)
-    athlete_id = Column(Integer, ForeignKey('athletes.id'))
-    sport_type = Column(String(50))  # Вид спорта для абонемента (mma, thai_boxing и т.д.)
+    athlete_id = Column(Integer, ForeignKey('athletes.id'), nullable=False)
+    sport_type_id = Column(Integer, ForeignKey('sport_types.id'), nullable=True)  # Связь с таблицей видов спорта
+    sport_type = Column(String(50))  # Вид спорта для абонемента (для обратной совместимости)
     subscription_type = Column(String(20))  # monthly, single
     start_date = Column(DateTime, default=datetime.utcnow)
     end_date = Column(DateTime)
@@ -99,13 +145,15 @@ class Subscription(Base):
     # Поле created_at без default для SQLite
     created_at = Column(DateTime)
 
-    # Связи - один-ко-многим
+    # Связи
     athlete = relationship(
         "Athlete",
         foreign_keys=[athlete_id],
         back_populates="subscriptions",
         uselist=False
     )
+    
+    sport_type_rel = relationship("SportType", foreign_keys=[sport_type_id])  # Связь с таблицей видов спорта
 
     attendances = relationship(
         "Attendance",
@@ -123,10 +171,10 @@ class Training(Base):
     age_group = Column(String(20))  # children, adults
     training_date = Column(DateTime)
     is_cancelled = Column(Boolean, default=False)
-    coach_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # Тренер, проводящий тренировку
+    coach_id = Column(Integer, ForeignKey('coaches.id'), nullable=True)  # Тренер, проводящий тренировку
 
     # Связи
-    coach = relationship("User", foreign_keys=[coach_id])
+    coach = relationship("Coach", foreign_keys=[coach_id])  # Связь с таблицей тренеров
 
 
 class Attendance(Base):
@@ -138,7 +186,8 @@ class Attendance(Base):
     training_id = Column(Integer, ForeignKey('trainings.id'))
     subscription_id = Column(Integer, ForeignKey('subscriptions.id'))
     attended = Column(Boolean, default=False)  # True - присутствовал, False - отсутствовал
-    marked_by = Column(Integer, ForeignKey('users.id'))
+    # В БД исторически хранится один идентификатор отметившего (telegram_id или legacy id)
+    marked_by = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Флаги восстановления
@@ -153,7 +202,6 @@ class Attendance(Base):
         foreign_keys=[subscription_id],
         back_populates="attendances"
     )
-    marker = relationship("User", foreign_keys=[marked_by])
 
 
 class RestorationRequest(Base):
@@ -172,13 +220,13 @@ class RestorationRequest(Base):
     notes = Column(Text, nullable=True)
 
     # Аудит
-    restored_by = Column(Integer, ForeignKey('users.id'))
+    # В БД исторически хранится один идентификатор восстановившего (telegram_id или legacy id)
+    restored_by = Column(Integer, nullable=True)
     restored_at = Column(DateTime, default=datetime.utcnow)
 
     # Связи
     athlete = relationship("Athlete")
     subscription = relationship("Subscription")
-    restorer = relationship("User", foreign_keys=[restored_by])
 
 
 # Путь к базе данных
