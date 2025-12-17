@@ -142,6 +142,7 @@ def _seed_athletes_and_subscriptions(
     cur: sqlite3.Cursor,
     coach: CoachInfo,
     count: int,
+    mode: str,
 ) -> Tuple[int, int]:
     first_names_m = ["Иван", "Павел", "Алексей", "Дмитрий", "Андрей", "Никита", "Егор", "Михаил", "Сергей", "Владимир"]
     first_names_f = ["Анна", "Мария", "Екатерина", "Алина", "Дарья", "Ксения", "Ольга", "Виктория", "Полина", "Софья"]
@@ -225,31 +226,41 @@ def _seed_athletes_and_subscriptions(
         athlete_id = cur.lastrowid
         athletes_created += 1
 
-        # Подписка: часть без типа (неактивна), часть active monthly, часть inactive single
-        r = random.random()
-        if r < 0.55:
+        # Абонемент:
+        # - inactive_only: как при добавлении спортсмена в боте (неактивен, тип не определен, даты пустые)
+        # - mixed: смесь для отладки
+        if mode == "inactive_only":
             subscription_type = None
             is_active = 0
             trainings_total = None
             trainings_remaining = None
             start_date = None
             end_date = None
-        elif r < 0.85:
-            subscription_type = "monthly"
-            is_active = 1
-            trainings_total = 12
-            trainings_remaining = random.randint(0, 12)
-            start_dt = _now() - timedelta(days=random.randint(0, 10))
-            end_dt = _calculate_end_date(start_dt, months=1)
-            start_date = _dt_str(start_dt)
-            end_date = _dt_str(end_dt)
         else:
-            subscription_type = "single"
-            is_active = 0
-            trainings_total = 1
-            trainings_remaining = 1
-            start_date = None
-            end_date = None
+            r = random.random()
+            if r < 0.55:
+                subscription_type = None
+                is_active = 0
+                trainings_total = None
+                trainings_remaining = None
+                start_date = None
+                end_date = None
+            elif r < 0.85:
+                subscription_type = "monthly"
+                is_active = 1
+                trainings_total = 12
+                trainings_remaining = 12
+                start_dt = _now() - timedelta(days=random.randint(0, 10))
+                end_dt = _calculate_end_date(start_dt, months=1)
+                start_date = _dt_str(start_dt)
+                end_date = _dt_str(end_dt)
+            else:
+                subscription_type = "single"
+                is_active = 0
+                trainings_total = 1
+                trainings_remaining = 1
+                start_date = None
+                end_date = None
 
         cur.execute(
             """
@@ -283,6 +294,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--count", type=int, default=25, help="Сколько спортсменов создать")
     parser.add_argument("--seed", type=int, default=None, help="Seed для random (для воспроизводимости)")
+    parser.add_argument(
+        "--mode",
+        choices=["inactive_only", "mixed"],
+        default="inactive_only",
+        help="Как создавать абонементы: inactive_only (как при добавлении в боте) или mixed (для отладки)",
+    )
     args = parser.parse_args()
 
     if args.count <= 0:
@@ -316,7 +333,7 @@ def main() -> int:
                 _delete_all_athletes_related(cur)
             else:
                 raise
-        created_athletes, created_subs = _seed_athletes_and_subscriptions(cur, coach, args.count)
+        created_athletes, created_subs = _seed_athletes_and_subscriptions(cur, coach, args.count, args.mode)
 
         con.commit()
 

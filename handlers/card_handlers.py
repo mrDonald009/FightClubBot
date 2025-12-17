@@ -49,7 +49,7 @@ def _build_activation_calendar(
     - строка дней недели
     - ровно 5 строк по 7 "квадратных" кнопок
     - навигация по месяцам + "Сегодня"
-    Доступны для выбора только тренировочные дни по расписанию и не в прошлом.
+    Доступны для выбора только тренировочные дни по расписанию (сегодня и будущие даты).
     """
     schedule = _get_schedule(sport_type, age_group)
     training_days = set(schedule["days"]) if schedule else set()
@@ -81,7 +81,9 @@ def _build_activation_calendar(
             weekday = date_obj.weekday()
 
             has_scheduled_training = weekday in training_days
-            enabled = (date_obj >= today) and has_scheduled_training
+            # Разрешаем выбирать только сегодня и будущие даты
+            is_future_or_today = date_obj >= today
+            enabled = has_scheduled_training and is_future_or_today
 
             # Тот же стиль подсветки, что и в "Мой календарь"
             if date_obj == today:
@@ -248,6 +250,12 @@ async def handle_activation_date_pick(update: Update, context: ContextTypes.DEFA
                 )
                 session.add(training)
                 session.flush()
+            elif coach_id and not getattr(training, "coach_id", None):
+                training.coach_id = coach_id
+                session.flush()
+            # Важно: не списываем тренировку при активации.
+            # Списание должно происходить по факту (авто-списание/отметка посещения),
+            # а отображение в календаре делаем по активным абонементам и диапазону дат.
 
         session.commit()
 
@@ -363,22 +371,14 @@ async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📅 Посещения", callback_data=f"visits_{athlete_id}")
         ])
 
-        # Второй ряд: восстановление и статистика
-        keyboard.append([
-            InlineKeyboardButton("📊 Статистика", callback_data=f"stats_{athlete_id}"),
-            InlineKeyboardButton("🔄 Восстановить", callback_data=f"restore_{athlete_id}")
-        ])
-
-        # Третий ряд: редактирование и отметка
-        keyboard.append([
-            InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_{athlete_id}"),
-            InlineKeyboardButton("📅 Отметить", callback_data=f"mark_attendance_{athlete_id}")
-        ])
-
-        # Четвертый ряд: навигация
+        # Второй ряд: навигация
         keyboard.append([
             InlineKeyboardButton("📋 К списку", callback_data="back_to_list"),
-            InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu")
+        ])
+
+        # Третий ряд: редактирование
+        keyboard.append([
+            InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_{athlete_id}"),
         ])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -632,18 +632,15 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
                 period_days = (subscription.end_date - subscription.start_date).days
                 message += f"• Период действия: {period_days} дней\n"
             
-            # Осталось дней
-            if days_left > 0:
-                message += f"• Осталось дней: {days_left}\n"
-            elif days_left == 0:
-                message += f"• Осталось дней: 0 (истекает сегодня)\n"
+            # Осталось тренировок (вместо дней)
+            if subscription.trainings_remaining is None or subscription.trainings_total is None:
+                message += f"• Осталось тренировок: —\n"
             else:
-                expired_days = abs(days_left)
-                message += f"• Осталось дней: истек {expired_days} дн. назад\n"
+                message += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
         else:
             message += f"• Дата окончания: —\n"
             message += f"• Период действия: —\n"
-            message += f"• Осталось дней: —\n"
+            message += f"• Осталось тренировок: —\n"
 
         # Создаем инлайн клавиатуру
         keyboard = []
@@ -823,17 +820,14 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
                 period_days = (subscription.end_date - subscription.start_date).days
                 message_text += f"• Период действия: {period_days} дней\n"
             
-            # Осталось дней
-            if days_left > 0:
-                message_text += f"• ⏰ Осталось дней: {days_left}\n"
-            elif days_left == 0:
-                message_text += f"• ⚠️ Истекает сегодня\n"
+            # Осталось тренировок (вместо дней)
+            if subscription.trainings_remaining is None or subscription.trainings_total is None:
+                message_text += f"• Осталось тренировок: —\n"
             else:
-                expired_days = abs(days_left)
-                message_text += f"• 🔴 Истек {expired_days} дн. назад\n"
+                message_text += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
         else:
             message_text += f"• Дата окончания: —\n"
-        
+            message_text += f"• Осталось тренировок: —\n"
         # Дата создания абонемента
         if subscription.created_at:
             created_str = subscription.created_at.strftime('%d.%m.%Y %H:%M')
@@ -1272,16 +1266,14 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
                 period_days = (subscription.end_date - subscription.start_date).days
                 message += f"• Период действия: {period_days} дней\n"
             
-            # Осталось дней
-            if days_left > 0:
-                message += f"• ⏰ Осталось дней: {days_left}\n"
-            elif days_left == 0:
-                message += f"• ⚠️ Истекает сегодня\n"
+            # Осталось тренировок (вместо дней)
+            if subscription.trainings_remaining is None or subscription.trainings_total is None:
+                message += f"• Осталось тренировок: —\n"
             else:
-                expired_days = abs(days_left)
-                message += f"• 🔴 Истек {expired_days} дн. назад\n"
+                message += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
         else:
             message += f"• Дата окончания: —\n"
+            message += f"• Осталось тренировок: —\n"
         
         # Дата создания абонемента
         if subscription.created_at:

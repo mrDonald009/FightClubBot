@@ -203,8 +203,9 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
                 created_at=datetime.utcnow()
             )
 
-            # Если присутствовал - списываем тренировку (только для старых абонементов)
-            if attended and subscription.trainings_remaining > 0:
+            # Списываем тренировку при создании записи (как "использовано" или "неиспользовано").
+            # Важно: и присутствие, и отсутствие потребляют тренировку.
+            if subscription.trainings_remaining is not None and subscription.trainings_remaining > 0:
                 subscription.trainings_remaining -= 1
 
             session.add(attendance)

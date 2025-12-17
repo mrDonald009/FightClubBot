@@ -1731,31 +1731,38 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                 time_str = training.training_date.strftime("%H:%M")
                 message += f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru})\n"
                 
-                # Получаем спортсменов, записанных на эту тренировку (с активными абонементами)
-                # Проверяем, что дата тренировки попадает в диапазон действия абонемента
+                # Получаем спортсменов по активным абонементам (а Attendance используем только для статуса).
+                # Это нужно, чтобы новые/разовые абонементы отображались в календаре сразу после активации,
+                # даже если еще не создана запись Attendance.
                 training_date_only = training.training_date.date()
-                attendances = session.query(Attendance).join(
-                    Subscription, Attendance.subscription_id == Subscription.id
-                ).join(
-                    Athlete, Attendance.athlete_id == Athlete.id
+                subs = session.query(Subscription).join(
+                    Athlete, Subscription.athlete_id == Athlete.id
                 ).filter(
-                    Attendance.training_id == training.id,
                     Subscription.is_active == True,
-                    func.date(Subscription.start_date) <= training_date_only,  # Дата начала <= дата тренировки
-                    func.date(Subscription.end_date) >= training_date_only,    # Дата окончания >= дата тренировки
-                    Athlete.sport_type == training.sport_type,
-                    Athlete.age_group == training.age_group
+                    Subscription.sport_type == training.sport_type,
+                    Athlete.age_group == training.age_group,
+                    func.date(Subscription.start_date) <= training_date_only,
+                    func.date(Subscription.end_date) >= training_date_only,
                 ).all()
                 
-                if attendances:
-                    message += f"  <b>Записано спортсменов: {len(attendances)}</b>\n"
-                    for attendance in attendances[:10]:  # Показываем до 10 спортсменов
-                        athlete = session.query(Athlete).filter_by(id=attendance.athlete_id).first()
-                        if athlete:
-                            status_icon = "✅" if attendance.attended else "❌"
-                            message += f"    {status_icon} {athlete.full_name}\n"
-                    if len(attendances) > 10:
-                        message += f"    ... и еще {len(attendances) - 10}\n"
+                if subs:
+                    message += f"  <b>Записано спортсменов: {len(subs)}</b>\n"
+                    for sub in subs[:10]:
+                        ath = session.query(Athlete).filter_by(id=sub.athlete_id).first()
+                        if not ath:
+                            continue
+                        att = session.query(Attendance).filter_by(
+                            athlete_id=ath.id,
+                            training_id=training.id,
+                            subscription_id=sub.id
+                        ).first()
+                        if att is None:
+                            status_icon = "⏳"
+                        else:
+                            status_icon = "✅" if att.attended else "❌"
+                        message += f"    {status_icon} {ath.full_name}\n"
+                    if len(subs) > 10:
+                        message += f"    ... и еще {len(subs) - 10}\n"
                 else:
                     message += f"  Нет записанных спортсменов\n"
                 
@@ -1805,7 +1812,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         )
                         
                         # Фильтруем по тренеру, если это тренер
-                        if user.role == 'coach':
+                        if isinstance(user, Coach):
                             athletes_with_subscriptions = athletes_with_subscriptions.filter(
                                 Athlete.created_by == user.id
                             )

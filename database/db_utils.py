@@ -6,6 +6,7 @@ import calendar
 from utils.subscription_checker import SubscriptionChecker
 from utils.training_manager import TrainingManager
 from typing import Optional, Union
+from sqlalchemy import func
 
 
 def get_user_role(user: Union[Coach, Admin, Assistant, Athlete]) -> str:
@@ -273,8 +274,6 @@ def _create_and_deduct_scheduled_trainings(
     current_day = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
     end_day = end_date.replace(hour=23, minute=59, second=59, microsecond=999)
     
-    first_training_deducted = False
-    
     while current_day <= end_day:
         # Проверяем, это ли день тренировки по расписанию
         if current_day.weekday() in days:
@@ -307,26 +306,8 @@ def _create_and_deduct_scheduled_trainings(
             else:
                 training = existing_training
             
-            # Автоматически списываем первую тренировку в день активации, только если это тренировочный день
-            if not first_training_deducted and training_datetime.date() == start_date.date():
-                # Проверяем, что день активации - это тренировочный день
-                if start_date.weekday() in days:
-                    # Создаем запись о посещении с attended=False (неиспользовано)
-                    attendance = Attendance(
-                        athlete_id=athlete.id,
-                        training_id=training.id,
-                        subscription_id=subscription.id,
-                        attended=False,  # По умолчанию неиспользовано
-                        marked_by=None,  # Автоматическое списание
-                        created_at=datetime.utcnow()
-                    )
-                    session.add(attendance)
-                    
-                    # Списываем тренировку
-                    if subscription.trainings_remaining > 0:
-                        subscription.trainings_remaining -= 1
-                    
-                    first_training_deducted = True
+            # Важно: НЕ списываем тренировку при активации.
+            # Списание делается по факту (авто-списание в день тренировки или отметка посещения).
         
         current_day += timedelta(days=1)
 
@@ -339,6 +320,8 @@ def auto_deduct_daily_trainings(session: Session):
     from utils.subscription_checker import SubscriptionChecker
     
     now = datetime.utcnow()
+    today_date = now.date()
+    today_date = now.date()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = now.replace(hour=23, minute=59, second=59, microsecond=999)
     
@@ -375,12 +358,14 @@ def auto_deduct_daily_trainings(session: Session):
         # Создаем datetime для сегодняшней тренировки
         training_datetime = today_start.replace(hour=hour, minute=minute, second=0, microsecond=0)
         
-        # Пропускаем, если тренировка еще не наступила (для будущих тренировок)
-        if training_datetime > now:
-            continue
+        # Важно: считаем тренировку "к списанию" по дате (а не по времени),
+        # чтобы списание шло с даты начала абонемента.
+        # (т.е. тренировка за текущую дату считается наступившей в течение этого дня)
         
-        # Проверяем, что тренировка в пределах действия абонемента
-        if training_datetime < subscription.start_date or training_datetime > subscription.end_date:
+        # Проверяем, что тренировка в пределах действия абонемента (по датам)
+        if not subscription.start_date or not subscription.end_date:
+            continue
+        if training_datetime.date() < subscription.start_date.date() or training_datetime.date() > subscription.end_date.date():
             continue
         
         # Проверяем, есть ли уже запись о посещении на эту тренировку
@@ -474,17 +459,17 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
     start_date = subscription.start_date if subscription.start_date else datetime.utcnow()
     end_date = subscription.end_date
     
-    current_day = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_day = end_date.replace(hour=23, minute=59, second=59, microsecond=999)
-    
-    now = datetime.utcnow()
+    # Считаем списания по календарным датам (не по времени суток)
+    current_date = start_date.date()
+    end_date_only = end_date.date()
+    today_date = datetime.utcnow().date()
     trainings_created = 0
     trainings_deducted = 0
     
-    while current_day <= end_day and current_day <= now:
+    while current_date <= end_date_only and current_date <= today_date:
         # Проверяем, это ли день тренировки по расписанию
-        if current_day.weekday() in days:
-            training_datetime = current_day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if current_date.weekday() in days:
+            training_datetime = datetime(current_date.year, current_date.month, current_date.day, hour, minute, 0)
             
             if training_datetime > end_date:
                 break
@@ -519,8 +504,8 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
                 subscription_id=subscription.id
             ).first()
             
-            # Списываем прошедшие тренировки как "неиспользовано"
-            if not existing_attendance and training_datetime <= now and subscription.trainings_remaining > 0:
+            # Списываем тренировки по календарной дате (а не времени), начиная с start_date
+            if not existing_attendance and subscription.trainings_remaining > 0:
                 attendance = Attendance(
                     athlete_id=athlete.id,
                     training_id=training.id,
@@ -533,7 +518,20 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
                 subscription.trainings_remaining -= 1
                 trainings_deducted += 1
         
-        current_day += timedelta(days=1)
+        current_date += timedelta(days=1)
+
+    # Финальная синхронизация: trainings_remaining должен соответствовать фактически списанным тренировкам.
+    # Считаем "использовано" как количество Attendance по этому абонементу (по датам до сегодня).
+    if subscription.trainings_total is not None:
+        prev_remaining = subscription.trainings_remaining
+        used_count = session.query(Attendance).join(Training).filter(
+            Attendance.subscription_id == subscription.id,
+            func.date(Training.training_date) <= today_date
+        ).count()
+        new_remaining = max(subscription.trainings_total - used_count, 0)
+        if prev_remaining != new_remaining:
+            subscription.trainings_remaining = new_remaining
+            changes.append(f"Синхронизация остатка: {prev_remaining} -> {new_remaining}")
     
     if changes or trainings_created > 0 or trainings_deducted > 0:
         session.commit()
