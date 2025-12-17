@@ -131,13 +131,25 @@ def create_user(session: Session, telegram_id: int, username: str, first_name: s
         raise ValueError(f"Для создания спортсмена используйте create_athlete")
 
 
-def create_athlete(session: Session, telegram_id: int, full_name: str, phone: str, medical_info: str,
-                   sport_type: str, age_group: str, created_by: int, height: int = None, weight: int = None):
+def create_athlete(
+    session: Session,
+    telegram_id: int,
+    full_name: str,
+    phone: str,
+    medical_info: str,
+    sport_type: str,
+    age_group: str,
+    created_by: int,
+    birth_date: datetime = None,
+    height: int = None,
+    weight: int = None
+):
     """Создать спортсмена"""
     athlete = Athlete(
         telegram_id=telegram_id,
         full_name=full_name,
         phone=phone,
+        birth_date=birth_date,
         height=height,
         weight=weight,
         medical_info=medical_info,

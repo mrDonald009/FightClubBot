@@ -14,19 +14,48 @@ import random
 import re
 import calendar
 import html
+import asyncio
 
 
 logger = logging.getLogger(__name__)
+
+
+async def _set_reply_keyboard_silently(message, reply_markup):
+    """
+    Telegram не позволяет совмещать InlineKeyboardMarkup и ReplyKeyboardMarkup в одном сообщении,
+    поэтому меню приходится "устанавливать" отдельным сообщением.
+    Иногда Telegram отклоняет пустые/невидимые символы (400 Text must be non-empty),
+    поэтому используем невидимый символ и самый крайний fallback удаляем.
+    """
+    # Telegram не позволяет применить ReplyKeyboard без сообщения.
+    # Поэтому отправляем служебное сообщение и сразу удаляем его — клавиатура при этом остается.
+    for text in ("\u3164", "\u200e", "."):  # HANGUL FILLER, LRM, крайний fallback
+        try:
+            tmp = await message.reply_text(text, reply_markup=reply_markup)
+            # Даем клиенту шанс применить клавиатуру
+            try:
+                await asyncio.sleep(0.2)
+            except Exception:
+                pass
+            try:
+                await tmp.delete()
+            except Exception:
+                pass
+            return
+        except Exception:
+            continue
+    return
 
 # Состояния для добавления спортсмена
 (
     ATHLETE_FULL_NAME,
     ATHLETE_PHONE,
+    ATHLETE_BIRTH_DATE,
     ATHLETE_MEDICAL,
     ATHLETE_SPORT_TYPE,
     ATHLETE_AGE_GROUP,
     ATHLETE_TRAINING_DATE
-) = range(6)
+) = range(7)
 
 # Список кнопок меню для проверки прерывания
 MENU_BUTTONS = [
@@ -63,8 +92,8 @@ def is_phone_number(text):
 
 def is_valid_name_format(name):
     """Проверяет корректность формата ФИО"""
-    # Разрешаем буквы, пробелы, дефисы и апострофы
-    name_pattern = r'^[a-zA-Zа-яА-ЯёЁ\s\-'']+$'
+    # Разрешаем кириллицу, пробелы, дефисы и апострофы
+    name_pattern = r"^[а-яА-ЯёЁ\s'-]+$"
 
     if not re.match(name_pattern, name):
         return False
@@ -80,6 +109,53 @@ def is_valid_name_format(name):
             return False
 
     return True
+
+
+def normalize_full_name(text: str) -> str:
+    """Нормализует ФИО: убирает лишние пробелы."""
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def validate_full_name_strict(full_name: str):
+    """
+    Более строгая проверка ФИО для шага ввода.
+    Возвращает: (ok: bool, normalized: str, error: str|None)
+    """
+    normalized = normalize_full_name(full_name)
+
+    if not normalized or len(normalized) < 2:
+        return False, normalized, "ФИО слишком короткое."
+
+    # Явная проверка на латиницу (частая ошибка раскладки)
+    if re.search(r"[A-Za-z]", normalized):
+        return False, normalized, "Обнаружена латиница. Введите ФИО кириллицей."
+
+    # Ограничение на длину, чтобы не принимать «полотно текста»
+    if len(normalized) > 80:
+        return False, normalized, "ФИО слишком длинное. Введите только ФИО без лишнего текста."
+
+    # Базовая проверка символов + минимум 2 слова
+    if not is_valid_name_format(normalized):
+        return False, normalized, "Некорректные символы в ФИО."
+
+    words = normalized.split()
+
+    # Защита от «слишком много слов»
+    if len(words) > 5:
+        return False, normalized, "Слишком много слов. Введите только Фамилию и Имя (и при необходимости Отчество)."
+
+    # Проверки на структуру слов (без нач./конеч. дефисов/апострофов и без двойных знаков)
+    for w in words:
+        if w[0] in "-'" or w[-1] in "-'":
+            return False, normalized, "Слова не должны начинаться или заканчиваться дефисом/апострофом."
+        if "--" in w or "''" in w or "-'" in w or "'-" in w:
+            return False, normalized, "Некорректное использование дефисов/апострофов."
+
+        letters_only = [c for c in w if c.isalpha()]
+        if len(letters_only) < 2:
+            return False, normalized, "Каждая часть ФИО должна содержать минимум 2 буквы."
+
+    return True, normalized, None
 
 
 def has_digits(text):
@@ -191,7 +267,7 @@ async def add_athlete_full_name(update: Update, context: ContextTypes.DEFAULT_TY
         await cancel_athlete_creation(update, context)
         return ConversationHandler.END
 
-    full_name = user_text.strip()
+    full_name = normalize_full_name(user_text)
 
     # ВАЛИДАЦИЯ ФИО - проверяем, что это не номер телефона
     if is_phone_number(full_name):
@@ -205,31 +281,25 @@ async def add_athlete_full_name(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return ATHLETE_FULL_NAME
 
-    # Проверяем, что введен текст (не пустой и не слишком короткий)
-    if not full_name or len(full_name) < 2:
+    # Дополнительная строгая валидация ФИО (структура/пробелы/мусор)
+    ok, normalized, error = validate_full_name_strict(full_name)
+    if not ok:
         await update.message.reply_text(
-            "❌ ФИО слишком короткое!\n"
-            "Пожалуйста, введите полное ФИО спортсмена:"
-        )
-        return ATHLETE_FULL_NAME
-
-    # Проверяем, что в ФИО есть только буквы, пробелы, дефисы
-    if not is_valid_name_format(full_name):
-        await update.message.reply_text(
-            "❌ <b>Некорректный формат ФИО!</b>\n\n"
-            "ФИО должно содержать только:\n"
-            "• Буквы русского/английского алфавита\n"
-            "• Пробелы\n"
-            "• Дефисы\n\n"
-            "<i>Пример: Петров-Сидоров Иван Александрович</i>",
+            "❌ <b>Некорректное ФИО!</b>\n\n"
+            f"Причина: <b>{html.escape(error or 'Проверьте ввод')}</b>\n\n"
+            "Требования:\n"
+            "• Минимум 2 слова (Фамилия Имя)\n"
+            "• Только кириллица, пробелы, дефис и апостроф\n"
+            "• Без цифр и лишнего текста\n\n"
+            "<i>Пример: Иванов Иван Иванович</i>",
             parse_mode='HTML'
         )
         return ATHLETE_FULL_NAME
 
     # ВАЖНО: одинаковые ФИО допускаются. Уникальность проверяем по номеру телефона на следующем шаге.
 
-    context.user_data['full_name'] = full_name
-    print(f"✅ ВВЕДЕНО ФИО: {full_name}, ПЕРЕХОДИМ В ATHLETE_PHONE")
+    context.user_data['full_name'] = normalized
+    print(f"✅ ВВЕДЕНО ФИО: {normalized}, ПЕРЕХОДИМ В ATHLETE_PHONE")
 
     await update.message.reply_text(
         "📞 Теперь введите номер телефона спортсмена в формате:\n"
@@ -318,10 +388,93 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.close()
     
     context.user_data['phone'] = full_phone
-    print(f"✅ ВВЕДЕН ТЕЛЕФОН: {full_phone}, ПЕРЕХОДИМ В ATHLETE_MEDICAL")
+    print(f"✅ ВВЕДЕН ТЕЛЕФОН: {full_phone}, ПЕРЕХОДИМ В ATHLETE_BIRTH_DATE")
 
     await update.message.reply_text(
-        "🏥 Введите медицинские противопоказания (или нажмите 'нет' если отсутствуют):"
+        "🎂 Введите дату рождения спортсмена в формате:\n"
+        "<b>ДД.ММ.ГГГГ</b>\n\n"
+        "<i>Пример: 31.12.2010</i>\n"
+        "Если дата неизвестна — напишите <b>нет</b>.",
+        parse_mode="HTML"
+    )
+    return ATHLETE_BIRTH_DATE
+
+
+async def add_athlete_birth_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка даты рождения спортсмена"""
+    user_id = update.effective_user.id
+    user_text = (update.message.text or "").strip()
+    print(f"🎯 ВХОД В add_athlete_birth_date ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
+
+    # Проверяем, не является ли ввод кнопкой меню
+    if user_text in MENU_BUTTONS:
+        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВВОД ДАТЫ РОЖДЕНИЯ, ВЫБРАВ: {user_text}")
+        await cancel_athlete_creation(update, context)
+        return ConversationHandler.END
+
+    if user_text.lower() == "нет":
+        context.user_data["birth_date"] = None
+        print(f"✅ ДАТА РОЖДЕНИЯ НЕ УКАЗАНА (нет)")
+    else:
+        # Принимаем DD.MM.YYYY (и мягко позволяем DD-MM-YYYY / DD/MM/YYYY),
+        # а также 1-2 цифры для дня/месяца (например 9.6.1991).
+        normalized = re.sub(r"[/-]", ".", user_text)
+        if not re.match(r"^\d{1,2}\.\d{1,2}\.\d{4}$", normalized):
+            await update.message.reply_text(
+                "❌ <b>Неверный формат даты!</b>\n\n"
+                "Введите дату рождения в формате <b>ДД.ММ.ГГГГ</b>\n"
+                "<i>Пример: 19.06.1991</i>\n\n"
+                "Если дата неизвестна — напишите <b>нет</b>.",
+                parse_mode="HTML"
+            )
+            return ATHLETE_BIRTH_DATE
+
+        day_s, month_s, year_s = normalized.split(".")
+        day, month, year = int(day_s), int(month_s), int(year_s)
+
+        # Поясняем пользователю типовые ошибки (месяц 1–12, день 1–31)
+        if not (1 <= month <= 12):
+            await update.message.reply_text(
+                f"❌ Неверная дата: месяц <b>{month}</b> должен быть от <b>1</b> до <b>12</b>.\n"
+                "Введите дату рождения в формате <b>ДД.ММ.ГГГГ</b> или <b>нет</b>.",
+                parse_mode="HTML"
+            )
+            return ATHLETE_BIRTH_DATE
+
+        if not (1 <= day <= 31):
+            await update.message.reply_text(
+                f"❌ Неверная дата: день <b>{day}</b> должен быть от <b>1</b> до <b>31</b>.\n"
+                "Введите дату рождения в формате <b>ДД.ММ.ГГГГ</b> или <b>нет</b>.",
+                parse_mode="HTML"
+            )
+            return ATHLETE_BIRTH_DATE
+
+        try:
+            bd = datetime(year, month, day)
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Такой даты не существует (проверьте день и месяц).\n"
+                "Введите дату рождения в формате <b>ДД.ММ.ГГГГ</b> или <b>нет</b>.",
+                parse_mode="HTML"
+            )
+            return ATHLETE_BIRTH_DATE
+
+        # Простые проверки здравого смысла
+        now = datetime.utcnow()
+        if bd > now:
+            await update.message.reply_text("❌ Дата рождения не может быть в будущем. Введите корректную дату:")
+            return ATHLETE_BIRTH_DATE
+
+        if bd.year < 1900:
+            await update.message.reply_text("❌ Слишком ранний год. Введите корректную дату рождения:")
+            return ATHLETE_BIRTH_DATE
+
+        context.user_data["birth_date"] = bd
+        print(f"✅ СОХРАНЕНА ДАТА РОЖДЕНИЯ: {bd.strftime('%d.%m.%Y')}")
+
+    await update.message.reply_text(
+        "🏥 Введите медицинские противопоказания (или напишите <b>нет</b>, если отсутствуют):",
+        parse_mode="HTML"
     )
     return ATHLETE_MEDICAL
 
@@ -387,6 +540,7 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
             telegram_id=temp_telegram_id,
             full_name=context.user_data['full_name'],
             phone=context.user_data['phone'],
+            birth_date=context.user_data.get('birth_date'),
             medical_info=context.user_data['medical_info'],
             sport_type=context.user_data['sport_type'],
             age_group=age_group,
@@ -410,6 +564,12 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
 
         print(f"✅ УСПЕШНО ДОБАВЛЕН СПОРТСМЕН С АБОНЕМЕНТОМ: {athlete.full_name}")
 
+        birth_date_display = (
+            athlete.birth_date.strftime('%d.%m.%Y')
+            if getattr(athlete, "birth_date", None)
+            else "Не указана"
+        )
+
         # Сообщение + "ссылка" на абонемент через инлайн-кнопку
         inline_kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("🎫 Абонемент", callback_data=f"subscription_athlete_{athlete.id}")
@@ -419,6 +579,7 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
             f"✅ Спортсмен успешно добавлен!\n\n"
             f"📝 ФИО: {athlete.full_name}\n"
             f"📞 Телефон: {athlete.phone}\n"
+            f"🎂 Дата рождения: {birth_date_display}\n"
             f"🥊 Вид спорта: {athlete.sport_type}\n"
             f"👥 Группа: {age_group_display}\n"
             f"🏥 Мед. информация: {athlete.medical_info}\n"
@@ -431,8 +592,7 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
         # Отдельно возвращаем ReplyKeyboard меню тренера (без лишнего текста).
         # Telegram не позволяет одновременно InlineKeyboardMarkup и ReplyKeyboardMarkup в одном сообщении,
         # поэтому отправляем "почти пустое" сообщение только для установки меню.
-        # \u2800 (BRAILLE PATTERN BLANK) визуально пустой, но не считается "empty message".
-        await update.message.reply_text("\u2800", reply_markup=get_coach_main_menu())
+        await _set_reply_keyboard_silently(update.message, get_coach_main_menu())
 
     except Exception as e:
         print(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}")
@@ -556,6 +716,7 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
             telegram_id=temp_telegram_id,
             full_name=context.user_data['full_name'],
             phone=context.user_data['phone'],
+            birth_date=context.user_data.get('birth_date'),
             medical_info=context.user_data['medical_info'],
             sport_type=context.user_data['sport_type'],
             age_group=context.user_data['age_group'],
@@ -578,10 +739,17 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
 
         print(f"✅ УСПЕШНО ДОБАВЛЕН СПОРТСМЕН: {athlete.full_name}")
 
+        birth_date_display = (
+            athlete.birth_date.strftime('%d.%m.%Y')
+            if getattr(athlete, "birth_date", None)
+            else "Не указана"
+        )
+
         await update.message.reply_text(
             f"✅ Спортсмен успешно добавлен!\n\n"
             f"📝 ФИО: {athlete.full_name}\n"
             f"📞 Телефон: {athlete.phone}\n"
+            f"🎂 Дата рождения: {birth_date_display}\n"
             f"🥊 Вид спорта: {athlete.sport_type}\n"
             f"👥 Группа: {age_group_display}\n"
             f"🎫 Абонемент: {subscription_type_ru}\n"
@@ -629,6 +797,7 @@ async def handle_training_date_selection(update: Update, context: ContextTypes.D
             telegram_id=temp_telegram_id,
             full_name=context.user_data['full_name'],
             phone=context.user_data['phone'],
+            birth_date=context.user_data.get('birth_date'),
             medical_info=context.user_data['medical_info'],
             sport_type=context.user_data['sport_type'],
             age_group=context.user_data['age_group'],
@@ -677,11 +846,18 @@ async def handle_training_date_selection(update: Update, context: ContextTypes.D
         context.user_data.clear()
         
         print(f"✅ УСПЕШНО ДОБАВЛЕН СПОРТСМЕН С РАЗОВОЙ ТРЕНИРОВКОЙ: {athlete.full_name}")
+
+        birth_date_display = (
+            athlete.birth_date.strftime('%d.%m.%Y')
+            if getattr(athlete, "birth_date", None)
+            else "Не указана"
+        )
         
         await query.edit_message_text(
             f"✅ Спортсмен успешно добавлен!\n\n"
             f"📝 ФИО: {athlete.full_name}\n"
             f"📞 Телефон: {athlete.phone}\n"
+            f"🎂 Дата рождения: {birth_date_display}\n"
             f"🥊 Вид спорта: {athlete.sport_type}\n"
             f"👥 Группа: {age_group_display}\n"
             f"🎫 Абонемент: {subscription_type_ru}\n"
@@ -691,10 +867,7 @@ async def handle_training_date_selection(update: Update, context: ContextTypes.D
         )
         
         # Отправляем сообщение с клавиатурой меню
-        await query.message.reply_text(
-            "Выберите действие из меню:",
-            reply_markup=get_coach_main_menu()
-        )
+        await _set_reply_keyboard_silently(query.message, get_coach_main_menu())
         
     except Exception as e:
         print(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА С РАЗОВОЙ ТРЕНИРОВКОЙ: {e}")

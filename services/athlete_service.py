@@ -108,7 +108,7 @@ class AthleteService:
         # Создаем спортсмена
         athlete = db_create_athlete(
             session=session,
-            user_id=None,  # Спортсмен может не иметь Telegram аккаунта
+            telegram_id=None,  # Спортсмен может не иметь Telegram аккаунта
             full_name=full_name.strip(),
             phone=phone.strip(),
             medical_info=medical_info.strip() if medical_info else "",

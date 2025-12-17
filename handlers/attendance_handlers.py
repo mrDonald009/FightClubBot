@@ -80,7 +80,7 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback_data)])
 
         keyboard.append([
-            InlineKeyboardButton("🔙 Назад", callback_data=f"subscription_{athlete_id}"),
+            InlineKeyboardButton("🔙 Назад", callback_data=f"subscription_athlete_{athlete_id}"),
             InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu")
         ])
 
@@ -221,7 +221,7 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
         keyboard = [
             [
                 InlineKeyboardButton("📅 Еще тренировка", callback_data=f"mark_attendance_{athlete_id}"),
-                InlineKeyboardButton("🎫 К абонементу", callback_data=f"subscription_{athlete_id}")
+                InlineKeyboardButton("🎫 К абонементу", callback_data=f"subscription_athlete_{athlete_id}")
             ],
             [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu")]
         ]

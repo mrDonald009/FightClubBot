@@ -49,3 +49,10 @@ class Config:
         from database.models import Base, engine
         Base.metadata.create_all(bind=engine)
         print("✅ Таблицы БД созданы/проверены")
+
+        # Применяем легкую миграцию (добавление отсутствующих колонок в существующей БД)
+        try:
+            from database.migration import migrate_database
+            migrate_database()
+        except Exception as e:
+            print(f"⚠️ Не удалось выполнить миграцию БД: {e}")

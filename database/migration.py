@@ -42,6 +42,12 @@ def migrate_database():
         cursor.execute("PRAGMA table_info(athletes)")
         columns = [row[1] for row in cursor.fetchall()]
 
+        # Добавляем birth_date если его нет
+        if 'birth_date' not in columns:
+            print("🔧 Добавляю birth_date в таблицу athletes...")
+            cursor.execute("ALTER TABLE athletes ADD COLUMN birth_date DATETIME")
+            print("✅ birth_date добавлен")
+
         # Добавляем subscription_id если его нет (связь один-к-одному)
         if 'subscription_id' not in columns:
             print("🔧 Добавляю subscription_id в таблицу athletes...")

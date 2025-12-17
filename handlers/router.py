@@ -19,6 +19,7 @@ from handlers.coach_handlers import (
     add_athlete_start,
     add_athlete_full_name,
     add_athlete_phone,
+    add_athlete_birth_date,
     add_athlete_medical,
     add_athlete_age_group,
     handle_training_date_selection,
@@ -35,6 +36,7 @@ from handlers.coach_handlers import (
     handle_calendar_empty_click,
     ATHLETE_FULL_NAME,
     ATHLETE_PHONE,
+    ATHLETE_BIRTH_DATE,
     ATHLETE_MEDICAL,
     ATHLETE_AGE_GROUP,
     ATHLETE_TRAINING_DATE,
@@ -49,6 +51,9 @@ from handlers.card_handlers import (
     show_subscription_history,
     view_subscription_from_history,
     handle_activate_subscription,
+    handle_activation_calendar_nav,
+    handle_activation_date_pick,
+    handle_activation_ignore,
     show_my_athlete_card,
     show_athlete_visits,
     show_athlete_stats,
@@ -158,6 +163,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
             ],
             ATHLETE_PHONE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_phone)
+            ],
+            ATHLETE_BIRTH_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_birth_date)
             ],
             ATHLETE_MEDICAL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_medical)
@@ -309,6 +317,10 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(
         CallbackQueryHandler(handle_activate_subscription, pattern="^activate_sub_")
     )
+    # Календарь выбора даты активации (после выбора типа)
+    registrar.register(CallbackQueryHandler(handle_activation_calendar_nav, pattern="^act_cal_"))
+    registrar.register(CallbackQueryHandler(handle_activation_date_pick, pattern="^act_date_"))
+    registrar.register(CallbackQueryHandler(handle_activation_ignore, pattern="^act_ignore$"))
 
     logger.info("✅ Все обработчики зарегистрированы")
 

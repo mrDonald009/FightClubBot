@@ -132,7 +132,8 @@ class Subscription(Base):
     sport_type_id = Column(Integer, ForeignKey('sport_types.id'), nullable=True)  # Связь с таблицей видов спорта
     sport_type = Column(String(50))  # Вид спорта для абонемента (для обратной совместимости)
     subscription_type = Column(String(20))  # monthly, single
-    start_date = Column(DateTime, default=datetime.utcnow)
+    # Дата начала должна выставляться ТОЛЬКО при активации абонемента (а не при создании записи)
+    start_date = Column(DateTime, nullable=True)
     end_date = Column(DateTime)
     trainings_total = Column(Integer)  # 12 для месячных, 1 для разовых
     trainings_remaining = Column(Integer)
