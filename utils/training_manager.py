@@ -81,20 +81,30 @@ class TrainingManager:
             training_dates = []
 
             # Проходим по всем дням с начала абонемента
-            current_day = start_date
+            # Нормализуем start_date до начала дня для корректной итерации
+            current_day = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
             while current_day <= current_date:
                 # Проверяем, это ли день тренировки
                 if current_day.weekday() in days:
-                    # Устанавливаем время тренировки
-                    training_datetime = current_day.replace(
+                    # Устанавливаем время начала тренировки
+                    training_start_datetime = current_day.replace(
                         hour=hour, minute=minute, second=0, microsecond=0
                     )
+                    
+                    # Время окончания тренировки = время начала + 1.5 часа
+                    training_end_datetime = training_start_datetime + timedelta(hours=1.5)
+                    
+                    # Проверяем, прошло ли время окончания тренировки
+                    if training_end_datetime > current_date:
+                        # Тренировка еще не закончилась, пропускаем
+                        current_day += timedelta(days=1)
+                        continue
 
                     # Проверяем, была ли эта тренировка
                     training = session.query(Training).filter_by(
                         sport_type=athlete.sport_type,
                         age_group=athlete.age_group,
-                        training_date=training_datetime,
+                        training_date=training_start_datetime,
                         is_cancelled=False
                     ).first()
 
@@ -109,7 +119,7 @@ class TrainingManager:
                             if not attendance.attended and not attendance.was_restored:
                                 missed_trainings += 1
                                 training_dates.append({
-                                    'date': training_datetime,
+                                    'date': training_start_datetime,
                                     'status': 'missed',
                                     'training_id': training.id
                                 })
@@ -117,7 +127,7 @@ class TrainingManager:
                             # Если нет записи о посещении - считаем пропущенной
                             missed_trainings += 1
                             training_dates.append({
-                                'date': training_datetime,
+                                'date': training_start_datetime,
                                 'status': 'missed_no_record',
                                 'training_id': training.id
                             })
