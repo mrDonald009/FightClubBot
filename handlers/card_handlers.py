@@ -12,6 +12,47 @@ from utils.training_manager import TrainingManager
 logger = logging.getLogger(__name__)
 
 
+def calculate_actual_trainings_remaining(session, subscription):
+    """
+    Пересчитать фактическое количество оставшихся тренировок на основе завершенных тренировок.
+    
+    Учитывает только:
+    - Завершенные тренировки (начало + 1.5 часа < текущее время)
+    - Не восстановленные (was_restored = False или NULL)
+    
+    Args:
+        session: Сессия базы данных
+        subscription: Объект Subscription
+        
+    Returns:
+        Фактическое количество оставшихся тренировок
+    """
+    if subscription.trainings_total is None:
+        return None
+    
+    from datetime import datetime, timedelta
+    from sqlalchemy import or_
+    from database.models import Attendance, Training
+    
+    current_time = datetime.utcnow()
+    
+    # Считаем количество завершенных и невосстановленных тренировок
+    used_count = session.query(Attendance).join(
+        Training, Attendance.training_id == Training.id
+    ).filter(
+        Attendance.subscription_id == subscription.id,
+        # Тренировка завершилась (начало + 1.5 часа <= текущее время)
+        Training.training_date + timedelta(hours=1.5) <= current_time,
+        # Не восстановлена
+        or_(Attendance.was_restored == False, Attendance.was_restored == None)
+    ).count()
+    
+    # Рассчитываем фактическое количество оставшихся
+    actual_remaining = max(subscription.trainings_total - used_count, 0)
+    
+    return actual_remaining
+
+
 def get_coach_sport_type(user: Union[Coach, Admin]) -> str:
     """Получить вид спорта тренера из связи или строки (для обратной совместимости)"""
     if isinstance(user, Coach):
@@ -203,17 +244,23 @@ async def handle_activation_date_pick(update: Update, context: ContextTypes.DEFA
             await query.edit_message_text("❌ Расписание для этой группы не найдено. Обратитесь к администратору.")
             return
 
-        hour, minute = map(int, schedule["time"].split(":"))
-        start_date = datetime(year, month, day, hour, minute, 0)
+        # Дата, выбранная тренером (без времени)
+        coach_selected_date = datetime(year, month, day, 0, 0, 0)
+        
+        # Находим ближайшую дату тренировки согласно расписанию
+        from database.db_utils import _find_nearest_training_date
+        start_date = _find_nearest_training_date(coach_selected_date, sport_type, age_group)
 
         # Рассчитываем end_date
-        from database.db_utils import _calculate_end_date
+        from database.db_utils import _calculate_12th_training_date, _calculate_end_date
         from datetime import timedelta as _td
 
         if subscription.subscription_type == "monthly":
-            end_date = _calculate_end_date(start_date, months=1)
+            # Дата окончания = дата 12-й тренировки + 1,5 часа (окончание последней тренировки)
+            end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
         elif subscription.subscription_type == "single":
-            end_date = start_date + _td(days=1)
+            # Дата окончания = дата начала + 1,5 часа (окончание тренировки)
+            end_date = start_date + _td(hours=1.5)
         else:
             # Тип еще не выбран — просим вернуться назад
             await query.edit_message_text("❌ Сначала выберите тип абонемента.")
@@ -627,19 +674,21 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             days_left = (subscription.end_date - datetime.utcnow()).days
             message += f"• Дата окончания: {end_date_str}\n"
             
-            # Период действия
-            if subscription.start_date:
-                period_days = (subscription.end_date - subscription.start_date).days
-                message += f"• Период действия: {period_days} дней\n"
-            
-            # Осталось тренировок (вместо дней)
-            if subscription.trainings_remaining is None or subscription.trainings_total is None:
+            # Осталось тренировок (пересчитываем на лету для актуальности)
+            if subscription.trainings_total is None:
                 message += f"• Осталось тренировок: —\n"
             else:
-                message += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
+                actual_remaining = calculate_actual_trainings_remaining(session, subscription)
+                if actual_remaining is not None:
+                    message += f"• Осталось тренировок: {actual_remaining}/{subscription.trainings_total}\n"
+                    # Обновляем значение в БД для синхронизации
+                    if subscription.trainings_remaining != actual_remaining:
+                        subscription.trainings_remaining = actual_remaining
+                        session.commit()
+                else:
+                    message += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
         else:
             message += f"• Дата окончания: —\n"
-            message += f"• Период действия: —\n"
             message += f"• Осталось тренировок: —\n"
 
         # Создаем инлайн клавиатуру
@@ -815,16 +864,19 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
             days_left = (subscription.end_date - datetime.utcnow()).days
             message_text += f"• Дата окончания: {end_date_str}\n"
             
-            # Период действия
-            if subscription.start_date:
-                period_days = (subscription.end_date - subscription.start_date).days
-                message_text += f"• Период действия: {period_days} дней\n"
-            
-            # Осталось тренировок (вместо дней)
-            if subscription.trainings_remaining is None or subscription.trainings_total is None:
+            # Осталось тренировок (пересчитываем на лету для актуальности)
+            if subscription.trainings_total is None:
                 message_text += f"• Осталось тренировок: —\n"
             else:
-                message_text += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
+                actual_remaining = calculate_actual_trainings_remaining(session, subscription)
+                if actual_remaining is not None:
+                    message_text += f"• Осталось тренировок: {actual_remaining}/{subscription.trainings_total}\n"
+                    # Обновляем значение в БД для синхронизации
+                    if subscription.trainings_remaining != actual_remaining:
+                        subscription.trainings_remaining = actual_remaining
+                        session.commit()
+                else:
+                    message_text += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
         else:
             message_text += f"• Дата окончания: —\n"
             message_text += f"• Осталось тренировок: —\n"
@@ -1261,16 +1313,19 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
             days_left = (subscription.end_date - datetime.utcnow()).days
             message += f"• Дата окончания: {end_date_str}\n"
             
-            # Период действия
-            if subscription.start_date:
-                period_days = (subscription.end_date - subscription.start_date).days
-                message += f"• Период действия: {period_days} дней\n"
-            
-            # Осталось тренировок (вместо дней)
-            if subscription.trainings_remaining is None or subscription.trainings_total is None:
+            # Осталось тренировок (пересчитываем на лету для актуальности)
+            if subscription.trainings_total is None:
                 message += f"• Осталось тренировок: —\n"
             else:
-                message += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
+                actual_remaining = calculate_actual_trainings_remaining(session, subscription)
+                if actual_remaining is not None:
+                    message += f"• Осталось тренировок: {actual_remaining}/{subscription.trainings_total}\n"
+                    # Обновляем значение в БД для синхронизации
+                    if subscription.trainings_remaining != actual_remaining:
+                        subscription.trainings_remaining = actual_remaining
+                        session.commit()
+                else:
+                    message += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
         else:
             message += f"• Дата окончания: —\n"
             message += f"• Осталось тренировок: —\n"
@@ -1559,15 +1614,22 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             return
         
         # Если тип уже определен, активируем абонемент
-        from database.db_utils import _calculate_end_date
+        from database.db_utils import _calculate_end_date, _find_nearest_training_date
         from datetime import timedelta
         
-        start_date = datetime.utcnow()
+        # Находим ближайшую дату тренировки согласно расписанию, начиная с текущей даты
+        sport_type = subscription.sport_type or athlete.sport_type
+        age_group = athlete.age_group
+        coach_selected_date = datetime.utcnow()
+        start_date = _find_nearest_training_date(coach_selected_date, sport_type, age_group)
         
         if subscription.subscription_type == "monthly":
-            end_date = _calculate_end_date(start_date, months=1)
+            # Дата окончания = дата 12-й тренировки + 1,5 часа (окончание последней тренировки)
+            from database.db_utils import _calculate_12th_training_date
+            end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
         elif subscription.subscription_type == "single":
-            end_date = start_date + timedelta(days=1)
+            # Дата окончания = дата начала + 1,5 часа (окончание тренировки)
+            end_date = start_date + timedelta(hours=1.5)
         else:
             end_date = start_date + timedelta(days=30)  # По умолчанию 30 дней
         

@@ -178,6 +178,18 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
             await query.edit_message_text("❌ Нет доступных тренировок в абонементе")
             return
 
+        # Проверяем, что тренировка уже завершилась (начало + 1.5 часа)
+        training_end_datetime = training.training_date + timedelta(hours=1.5)
+        current_time = datetime.utcnow()
+        if current_time < training_end_datetime:
+            await query.edit_message_text(
+                f"⏳ Тренировка еще не завершилась.\n\n"
+                f"Начало: {training.training_date.strftime('%d.%m.%Y %H:%M')}\n"
+                f"Окончание: {training_end_datetime.strftime('%d.%m.%Y %H:%M')}\n\n"
+                f"Отметка посещения возможна только после завершения тренировки."
+            )
+            return
+
         # Проверяем, не отмечена ли уже эта тренировка
         existing_attendance = session.query(Attendance).filter(
             Attendance.athlete_id == athlete_id,
