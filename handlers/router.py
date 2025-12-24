@@ -62,6 +62,11 @@ from handlers.card_handlers import (
     show_edit_athlete_menu,
     select_subscription,
     view_subscription_card,
+    handle_freeze_subscription_start,
+    handle_freeze_calendar_nav,
+    handle_freeze_date_pick,
+    handle_freeze_ignore,
+    handle_unfreeze_subscription,
 )
 from handlers.attendance_handlers import (
     mark_attendance_start,
@@ -321,6 +326,23 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(CallbackQueryHandler(handle_activation_calendar_nav, pattern="^act_cal_"))
     registrar.register(CallbackQueryHandler(handle_activation_date_pick, pattern="^act_date_"))
     registrar.register(CallbackQueryHandler(handle_activation_ignore, pattern="^act_ignore$"))
+    
+    # Обработчики для заморозки абонемента
+    registrar.register(
+        CallbackQueryHandler(handle_freeze_subscription_start, pattern="^freeze_sub_")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_freeze_calendar_nav, pattern="^freeze_cal_")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_freeze_date_pick, pattern="^freeze_date_")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_freeze_ignore, pattern="^freeze_ignore$")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_unfreeze_subscription, pattern="^unfreeze_sub_")
+    )
 
     logger.info("✅ Все обработчики зарегистрированы")
 

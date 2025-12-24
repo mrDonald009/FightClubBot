@@ -664,13 +664,23 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
         from utils.subscription_checker import SubscriptionChecker
         status_display = SubscriptionChecker.format_subscription_status(subscription)
         message += f"• Статус: {status_display}\n"
+        
+        # Статус заморозки
+        if subscription.is_frozen and subscription.frozen_until:
+            frozen_until_str = subscription.frozen_until.strftime('%d.%m.%Y %H:%M')
+            message += f"• ❄️ Заморожен до: {frozen_until_str}\n"
+            if subscription.frozen_from:
+                frozen_from_str = subscription.frozen_from.strftime('%d.%m.%Y %H:%M')
+                message += f"• ❄️ Заморожен с: {frozen_from_str}\n"
+            if subscription.frozen_count:
+                message += f"• ❄️ Заморожен раз: {subscription.frozen_count}\n"
 
         # Даты (до активации не показываем "дату начала", даже если она случайно заполнена в БД)
         start_date_str = subscription.start_date.strftime('%d.%m.%Y') if (subscription.is_active and subscription.start_date) else "—"
         message += f"• Дата начала: {start_date_str}\n"
         
         if subscription.is_active and subscription.end_date:
-            end_date_str = subscription.end_date.strftime('%d.%m.%Y')
+            end_date_str = subscription.end_date.strftime('%d.%m.%Y %H:%M')
             days_left = (subscription.end_date - datetime.utcnow()).days
             message += f"• Дата окончания: {end_date_str}\n"
             
@@ -699,6 +709,17 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             keyboard.append([
                 InlineKeyboardButton("✅ Активировать", callback_data=f"activate_sub_{subscription.id}")
             ])
+        
+        # Кнопки заморозки/разморозки (только для активных абонементов)
+        if subscription.is_active:
+            if subscription.is_frozen:
+                keyboard.append([
+                    InlineKeyboardButton("❄️ Разморозить", callback_data=f"unfreeze_sub_{subscription.id}")
+                ])
+            else:
+                keyboard.append([
+                    InlineKeyboardButton("❄️ Заморозить", callback_data=f"freeze_sub_{subscription.id}")
+                ])
 
         # История абонемента: показываем только если есть хотя бы 2 абонемента
         has_history = session.query(Subscription).filter_by(athlete_id=athlete_id).count() > 1
@@ -2213,5 +2234,275 @@ async def show_edit_athlete_menu(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ МЕНЮ РЕДАКТИРОВАНИЯ: {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка при загрузке меню редактирования")
+    finally:
+        session.close()
+
+
+def _build_freeze_calendar(
+    subscription_id: int,
+    sport_type: str,
+    age_group: str,
+    year: int,
+    month: int
+) -> InlineKeyboardMarkup:
+    """
+    Календарь выбора даты окончания заморозки.
+    Аналогичен календарю активации, но для выбора даты окончания заморозки.
+    """
+    schedule = _get_schedule(sport_type, age_group)
+    training_days = set(schedule["days"]) if schedule else set()
+
+    today = datetime.utcnow().date()
+
+    cal = py_calendar.monthcalendar(year, month)
+
+    keyboard = []
+
+    # Строка дней недели
+    day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    keyboard.append([InlineKeyboardButton(f"{d}.", callback_data="freeze_ignore") for d in day_names])
+
+    # Ровно 5 недель
+    weeks_to_show = cal[:5]
+    while len(weeks_to_show) < 5:
+        weeks_to_show.append([0, 0, 0, 0, 0, 0, 0])
+
+    for week in weeks_to_show:
+        row = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(" ", callback_data="freeze_ignore"))
+                continue
+
+            date_obj = datetime(year, month, day).date()
+            weekday = date_obj.weekday()
+
+            has_scheduled_training = weekday in training_days
+            # Разрешаем выбирать только будущие даты (после сегодня)
+            is_future = date_obj > today
+            enabled = has_scheduled_training and is_future
+
+            if date_obj == today:
+                btn_text = f"[{day:2d}]"
+            elif has_scheduled_training:
+                btn_text = f"({day:2d})"
+            else:
+                btn_text = f"{day:2d}"
+
+            cb = f"freeze_date_{subscription_id}_{year}_{month}_{day}" if enabled else "freeze_ignore"
+            row.append(InlineKeyboardButton(btn_text, callback_data=cb))
+
+        keyboard.append(row)
+
+    # Навигация
+    prev_year, prev_month = year, month - 1
+    next_year, next_month = year, month + 1
+    if prev_month == 0:
+        prev_month = 12
+        prev_year -= 1
+    if next_month == 13:
+        next_month = 1
+        next_year += 1
+
+    keyboard.append([
+        InlineKeyboardButton("◀️ Предыдущий", callback_data=f"freeze_cal_{subscription_id}_{prev_year}_{prev_month}"),
+        InlineKeyboardButton("Следующий ▶️", callback_data=f"freeze_cal_{subscription_id}_{next_year}_{next_month}"),
+    ])
+
+    # Кнопка "Сегодня"
+    now = datetime.utcnow().date()
+    if month != now.month or year != now.year:
+        keyboard.append([
+            InlineKeyboardButton("📅 Сегодня", callback_data=f"freeze_cal_{subscription_id}_{now.year}_{now.month}")
+        ])
+
+    # Навигация/выход
+    keyboard.append([
+        InlineKeyboardButton("🔙 Назад", callback_data=f"subscription_{subscription_id}"),
+        InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main"),
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def handle_freeze_subscription_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало процесса заморозки абонемента - показываем календарь"""
+    query = update.callback_query
+    await query.answer()
+
+    subscription_id = int(query.data.replace("freeze_sub_", ""))
+
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+
+        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+        if not subscription:
+            await query.edit_message_text("❌ Абонемент не найден")
+            return
+
+        athlete = subscription.athlete
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
+            return
+
+        if not subscription.is_active:
+            await query.edit_message_text("❌ Можно заморозить только активный абонемент")
+            return
+
+        if subscription.is_frozen:
+            await query.edit_message_text("❌ Абонемент уже заморожен")
+            return
+
+        sport_type = subscription.sport_type or athlete.sport_type
+        age_group = athlete.age_group
+
+        now = datetime.utcnow()
+        reply_markup = _build_freeze_calendar(subscription_id, sport_type, age_group, now.year, now.month)
+
+        await query.edit_message_text(
+            f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+            f"❄️ <b>ЗАМОРОЗКА АБОНЕМЕНТА</b>\n\n"
+            f"Выберите дату <b>окончания заморозки</b> (тренировочный день):",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ НАЧАЛЕ ЗАМОРОЗКИ: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при загрузке календаря заморозки")
+    finally:
+        session.close()
+
+
+async def handle_freeze_calendar_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Навигация по календарю заморозки"""
+    query = update.callback_query
+    await query.answer()
+
+    # freeze_cal_{subscription_id}_{YYYY}_{MM}
+    parts = query.data.split("_")
+    subscription_id = int(parts[2])
+    year = int(parts[3])
+    month = int(parts[4])
+
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+
+        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+        if not subscription:
+            await query.edit_message_text("❌ Абонемент не найден")
+            return
+
+        athlete = subscription.athlete
+        sport_type = subscription.sport_type or athlete.sport_type
+        age_group = athlete.age_group
+
+        reply_markup = _build_freeze_calendar(subscription_id, sport_type, age_group, year, month)
+        await query.edit_message_reply_markup(reply_markup=reply_markup)
+    finally:
+        session.close()
+
+
+async def handle_freeze_date_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выбор даты окончания заморозки"""
+    query = update.callback_query
+    await query.answer()
+
+    # freeze_date_{subscription_id}_{YYYY}_{MM}_{DD}
+    parts = query.data.split("_")
+    subscription_id = int(parts[2])
+    year = int(parts[3])
+    month = int(parts[4])
+    day = int(parts[5])
+
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+
+        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+        if not subscription:
+            await query.edit_message_text("❌ Абонемент не найден")
+            return
+
+        athlete = subscription.athlete
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
+            return
+
+        # Дата, выбранная тренером (без времени)
+        selected_date = datetime(year, month, day, 0, 0, 0)
+
+        # Замораживаем абонемент
+        from database.db_utils import freeze_subscription
+        result = freeze_subscription(session, subscription_id, selected_date)
+
+        if not result["success"]:
+            await query.edit_message_text(f"❌ {result['message']}")
+            return
+
+        # Показываем карточку абонемента
+        await show_subscription_card(update, context, override_query_data=f"subscription_{subscription.id}")
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ЗАМОРОЗКЕ: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при заморозке абонемента")
+    finally:
+        session.close()
+
+
+async def handle_freeze_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Игнор-кнопка для календаря заморозки"""
+    query = update.callback_query
+    await query.answer()
+
+
+async def handle_unfreeze_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Разморозить абонемент"""
+    query = update.callback_query
+    await query.answer()
+
+    subscription_id = int(query.data.replace("unfreeze_sub_", ""))
+
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        if not user or get_user_role(user) not in ['coach', 'admin']:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+
+        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+        if not subscription:
+            await query.edit_message_text("❌ Абонемент не найден")
+            return
+
+        athlete = subscription.athlete
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
+            return
+
+        # Размораживаем абонемент
+        from database.db_utils import unfreeze_subscription
+        result = unfreeze_subscription(session, subscription_id)
+
+        if not result["success"]:
+            await query.edit_message_text(f"❌ {result['message']}")
+            return
+
+        await query.answer("✅ Абонемент разморожен", show_alert=True)
+
+        # Показываем карточку абонемента
+        await show_subscription_card(update, context, override_query_data=f"subscription_{subscription.id}")
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ РАЗМОРОЗКЕ: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при разморозке абонемента")
     finally:
         session.close()

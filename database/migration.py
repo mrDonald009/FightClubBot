@@ -87,6 +87,32 @@ def migrate_database():
             cursor.execute("ALTER TABLE subscriptions ADD COLUMN restored_this_month INTEGER DEFAULT 0")
             print("✅ restored_this_month добавлен")
 
+        # Добавляем поля заморозки если их нет
+        if 'is_frozen' not in columns:
+            print("🔧 Добавляю is_frozen в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN is_frozen BOOLEAN DEFAULT FALSE")
+            print("✅ is_frozen добавлен")
+
+        if 'frozen_from' not in columns:
+            print("🔧 Добавляю frozen_from в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN frozen_from DATETIME")
+            print("✅ frozen_from добавлен")
+
+        if 'frozen_until' not in columns:
+            print("🔧 Добавляю frozen_until в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN frozen_until DATETIME")
+            print("✅ frozen_until добавлен")
+
+        if 'frozen_count' not in columns:
+            print("🔧 Добавляю frozen_count в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN frozen_count INTEGER DEFAULT 0")
+            print("✅ frozen_count добавлен")
+
+        if 'frozen_days_total' not in columns:
+            print("🔧 Добавляю frozen_days_total в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN frozen_days_total INTEGER DEFAULT 0")
+            print("✅ frozen_days_total добавлен")
+
         # Добавляем created_at если его нет (без DEFAULT для SQLite)
         if 'created_at' not in columns:
             print("🔧 Добавляю created_at в таблицу subscriptions...")

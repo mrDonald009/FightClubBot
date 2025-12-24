@@ -448,9 +448,10 @@ def auto_deduct_daily_trainings(session: Session):
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = now.replace(hour=23, minute=59, second=59, microsecond=999)
     
-    # Получаем все активные абонементы
+    # Получаем все активные абонементы (исключая замороженные)
     active_subscriptions = session.query(Subscription).filter(
         Subscription.is_active == True,
+        Subscription.is_frozen == False,  # Пропускаем замороженные абонементы
         Subscription.end_date >= today_start
     ).all()
     
@@ -888,3 +889,292 @@ def get_athlete_card_info(session: Session, athlete_id: int):
         "age_group_display": "Детская" if athlete.age_group == "children" else "Взрослая",
         "status_display": status_display  # Добавляем отформатированный статус
     }
+
+
+def _find_freeze_start_date(selected_date: datetime, sport_type: str, age_group: str) -> datetime:
+    """
+    Найти дату начала заморозки (ближайший тренировочный день + начало тренировки).
+    
+    Args:
+        selected_date: Дата, выбранная тренером для начала заморозки
+        sport_type: Вид спорта
+        age_group: Возрастная группа (children, adults)
+        
+    Returns:
+        Дата начала заморозки (тренировочный день + начало тренировки)
+    """
+    schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+    if not schedule:
+        # Если расписание не найдено, возвращаем дату как есть (fallback)
+        return selected_date
+    
+    days = schedule['days']
+    time_str = schedule['time']
+    hour, minute = map(int, time_str.split(':'))
+    
+    # Нормализуем дату до начала дня
+    date_only = selected_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Создаем datetime для тренировки в выбранный день
+    training_datetime = date_only.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    
+    # Проверяем, соответствует ли выбранная дата дню тренировки
+    if date_only.weekday() in days:
+        # Это день тренировки - проверяем, не прошло ли время
+        current_time = datetime.utcnow()
+        if training_datetime >= current_time:
+            # Время тренировки еще не прошло - используем эту дату
+            return training_datetime
+        else:
+            # Время уже прошло - начинаем поиск со следующего дня
+            date_only += timedelta(days=1)
+    
+    # Ищем ближайший день тренировки (максимум 7 дней вперед)
+    for i in range(7):
+        check_date = date_only + timedelta(days=i)
+        if check_date.weekday() in days:
+            # Нашли день тренировки - возвращаем с правильным временем
+            return check_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    
+    # Если не нашли (не должно произойти), возвращаем исходную дату с временем тренировки
+    return date_only.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _count_training_days_between(start_date: datetime, end_date: datetime, sport_type: str, age_group: str) -> int:
+    """
+    Подсчитать количество тренировочных дней между двумя датами.
+    
+    Args:
+        start_date: Дата начала (включительно)
+        end_date: Дата окончания (включительно)
+        sport_type: Вид спорта
+        age_group: Возрастная группа
+        
+    Returns:
+        Количество тренировочных дней между датами
+    """
+    schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+    if not schedule:
+        # Если расписание не найдено, возвращаем количество календарных дней (fallback)
+        return (end_date.date() - start_date.date()).days + 1
+    
+    days = schedule['days']
+    
+    # Нормализуем даты до начала дня
+    start = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Считаем количество тренировочных дней
+    training_days_count = 0
+    current_date = start
+    
+    while current_date <= end:
+        if current_date.weekday() in days:
+            training_days_count += 1
+        current_date += timedelta(days=1)
+    
+    return training_days_count
+
+
+def _find_freeze_end_date(selected_date: datetime, sport_type: str, age_group: str) -> datetime:
+    """
+    Найти дату окончания заморозки (тренировочный день + конец тренировки = начало + 1.5 часа).
+    
+    Args:
+        selected_date: Дата, выбранная тренером для окончания заморозки
+        sport_type: Вид спорта
+        age_group: Возрастная группа (children, adults)
+        
+    Returns:
+        Дата окончания заморозки (тренировочный день + конец тренировки)
+    """
+    schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+    if not schedule:
+        # Если расписание не найдено, возвращаем дату + 1.5 часа (fallback)
+        return selected_date + timedelta(hours=1.5)
+    
+    days = schedule['days']
+    time_str = schedule['time']
+    hour, minute = map(int, time_str.split(':'))
+    
+    # Нормализуем дату до начала дня
+    date_only = selected_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    # Создаем datetime для тренировки в выбранный день
+    training_start = date_only.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    
+    # Проверяем, соответствует ли выбранная дата дню тренировки
+    if date_only.weekday() in days:
+        # Это день тренировки - возвращаем начало тренировки + 1.5 часа
+        return training_start + timedelta(hours=1.5)
+    else:
+        # Ищем ближайший день тренировки (максимум 7 дней вперед)
+        for i in range(7):
+            check_date = date_only + timedelta(days=i)
+            if check_date.weekday() in days:
+                # Нашли день тренировки - возвращаем начало тренировки + 1.5 часа
+                training_start = check_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                return training_start + timedelta(hours=1.5)
+    
+    # Если не нашли (не должно произойти), возвращаем исходную дату + 1.5 часа
+    return selected_date + timedelta(hours=1.5)
+
+
+def freeze_subscription(
+    session: Session,
+    subscription_id: int,
+    freeze_end_date: datetime
+) -> dict:
+    """
+    Заморозить абонемент.
+    
+    Дата начала заморозки = ближайший тренировочный день + начало тренировки
+    Дата окончания заморозки = тренировочный день + конец тренировки (начало + 1.5 часа)
+    Срок действия абонемента продлевается на период заморозки.
+    
+    Args:
+        session: Сессия базы данных
+        subscription_id: ID абонемента
+        freeze_end_date: Дата окончания заморозки (выбранная тренером)
+        
+    Returns:
+        dict с результатом операции
+    """
+    subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+    if not subscription:
+        return {"success": False, "message": "Абонемент не найден"}
+    
+    if not subscription.is_active:
+        return {"success": False, "message": "Можно заморозить только активный абонемент"}
+    
+    if subscription.is_frozen:
+        return {"success": False, "message": "Абонемент уже заморожен"}
+    
+    athlete = subscription.athlete
+    if not athlete or not athlete.sport_type or not athlete.age_group:
+        return {"success": False, "message": "Данные спортсмена неполные"}
+    
+    sport_type = subscription.sport_type or athlete.sport_type
+    age_group = athlete.age_group
+    
+    # Находим дату начала заморозки (ближайший тренировочный день + начало тренировки)
+    freeze_start = _find_freeze_start_date(datetime.utcnow(), sport_type, age_group)
+    
+    # Находим дату окончания заморозки (тренировочный день + конец тренировки)
+    freeze_until = _find_freeze_end_date(freeze_end_date, sport_type, age_group)
+    
+    if freeze_until <= freeze_start:
+        return {"success": False, "message": "Дата окончания заморозки должна быть позже даты начала"}
+    
+    # Подсчитываем количество тренировочных дней между датой начала и окончания заморозки
+    training_days_count = _count_training_days_between(freeze_start, freeze_until, sport_type, age_group)
+    
+    # Логируем для отладки
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(
+        f"Заморозка абонемента #{subscription_id}: "
+        f"freeze_start={freeze_start.strftime('%d.%m.%Y %H:%M')}, "
+        f"freeze_until={freeze_until.strftime('%d.%m.%Y %H:%M')}, "
+        f"training_days_count={training_days_count}, "
+        f"текущая end_date={subscription.end_date.strftime('%d.%m.%Y %H:%M') if subscription.end_date else 'None'}"
+    )
+    
+    # Продлеваем срок действия абонемента на количество тренировочных дней
+    # Дата окончания абонемента = Дата окончания абонемента + кол-во тренировочных дней между датами заморозки
+    if subscription.end_date:
+        schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+        if schedule:
+            days = schedule['days']
+            time_str = schedule['time']
+            hour, minute = map(int, time_str.split(':'))
+            
+            # Находим дату окончания абонемента (без времени)
+            end_date_only = subscription.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # Начинаем поиск с даты окончания абонемента (не со следующего дня!)
+            current_date = end_date_only
+            added_training_days = 0
+            max_days_to_search = 90  # Защита от бесконечного цикла (примерно 3 месяца)
+            days_searched = 0
+            
+            # Ищем тренировочные дни и добавляем их
+            while added_training_days < training_days_count and days_searched < max_days_to_search:
+                # Если текущая дата - тренировочный день, добавляем его
+                if current_date.weekday() in days:
+                    added_training_days += 1
+                    if added_training_days == training_days_count:
+                        # Это последний тренировочный день - устанавливаем дату окончания с временем окончания тренировки
+                        subscription.end_date = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(hours=1.5)
+                        break
+                # Переходим к следующему дню
+                current_date += timedelta(days=1)
+                days_searched += 1
+            
+            # Логируем результат продления
+            logger.info(
+                f"Продление абонемента #{subscription_id}: "
+                f"начальная end_date={end_date_only.strftime('%d.%m.%Y')}, "
+                f"training_days_count={training_days_count}, "
+                f"найдено тренировочных дней={added_training_days}, "
+                f"новая end_date={subscription.end_date.strftime('%d.%m.%Y %H:%M') if subscription.end_date else 'None'}"
+            )
+            
+            # Если не нашли нужное количество тренировочных дней, логируем предупреждение
+            if added_training_days < training_days_count:
+                logger.warning(
+                    f"Не удалось найти {training_days_count} тренировочных дней для продления абонемента. "
+                    f"Найдено: {added_training_days}, дней проверено: {days_searched}, "
+                    f"текущая дата окончания: {subscription.end_date}"
+                )
+        else:
+            # Если расписание не найдено, просто добавляем календарные дни (fallback)
+            subscription.end_date = subscription.end_date + timedelta(days=training_days_count)
+    
+    # Устанавливаем параметры заморозки
+    subscription.is_frozen = True
+    subscription.frozen_from = freeze_start
+    subscription.frozen_until = freeze_until
+    subscription.frozen_count = (subscription.frozen_count or 0) + 1
+    # frozen_days_total - общее количество календарных дней заморозки (для статистики)
+    freeze_calendar_days = (freeze_until.date() - freeze_start.date()).days
+    subscription.frozen_days_total = (subscription.frozen_days_total or 0) + freeze_calendar_days
+    
+    session.commit()
+    
+    return {
+        "success": True,
+        "message": f"Абонемент заморожен до {freeze_until.strftime('%d.%m.%Y %H:%M')}",
+        "freeze_start": freeze_start,
+        "freeze_until": freeze_until,
+        "training_days_count": training_days_count,
+        "freeze_calendar_days": freeze_calendar_days
+    }
+
+
+def unfreeze_subscription(session: Session, subscription_id: int) -> dict:
+    """
+    Разморозить абонемент.
+    
+    Args:
+        session: Сессия базы данных
+        subscription_id: ID абонемента
+        
+    Returns:
+        dict с результатом операции
+    """
+    subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+    if not subscription:
+        return {"success": False, "message": "Абонемент не найден"}
+    
+    if not subscription.is_frozen:
+        return {"success": False, "message": "Абонемент не заморожен"}
+    
+    # Размораживаем абонемент
+    subscription.is_frozen = False
+    subscription.frozen_from = None
+    subscription.frozen_until = None
+    
+    session.commit()
+    
+    return {"success": True, "message": "Абонемент разморожен"}

@@ -143,6 +143,13 @@ class Subscription(Base):
     total_restored = Column(Integer, default=0)  # Всего восстановлено
     restored_this_month = Column(Integer, default=0)  # Восстановлено в этом месяце
 
+    # Заморозка абонемента
+    is_frozen = Column(Boolean, default=False)  # Заморожен ли абонемент
+    frozen_from = Column(DateTime, nullable=True)  # Дата начала заморозки (тренировочный день + начало тренировки)
+    frozen_until = Column(DateTime, nullable=True)  # Дата окончания заморозки (тренировочный день + конец тренировки)
+    frozen_count = Column(Integer, default=0)  # Сколько раз был заморожен
+    frozen_days_total = Column(Integer, default=0)  # Общее количество дней заморозки
+
     # Поле created_at без default для SQLite
     created_at = Column(DateTime)
 
