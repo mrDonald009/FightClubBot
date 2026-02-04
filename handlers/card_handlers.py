@@ -19,6 +19,7 @@ def calculate_actual_trainings_remaining(session, subscription):
     Учитывает только:
     - Завершенные тренировки (начало + 1.5 часа < текущее время)
     - Не восстановленные (was_restored = False или NULL)
+    - В пределах периода абонемента (start_date <= training_date <= end_date)
     
     Args:
         session: Сессия базы данных
@@ -31,21 +32,28 @@ def calculate_actual_trainings_remaining(session, subscription):
         return None
     
     from datetime import datetime, timedelta
-    from sqlalchemy import or_
+    from sqlalchemy import or_, and_
     from database.models import Attendance, Training
     
     current_time = datetime.utcnow()
     
-    # Считаем количество завершенных и невосстановленных тренировок
-    used_count = session.query(Attendance).join(
-        Training, Attendance.training_id == Training.id
-    ).filter(
+    filters = [
         Attendance.subscription_id == subscription.id,
         # Тренировка завершилась (начало + 1.5 часа <= текущее время)
         Training.training_date + timedelta(hours=1.5) <= current_time,
         # Не восстановлена
         or_(Attendance.was_restored == False, Attendance.was_restored == None)
-    ).count()
+    ]
+    
+    # Учитываем только тренировки в пределах периода абонемента
+    if subscription.start_date:
+        filters.append(Training.training_date >= subscription.start_date)
+    if subscription.end_date:
+        filters.append(Training.training_date <= subscription.end_date)
+    
+    used_count = session.query(Attendance).join(
+        Training, Attendance.training_id == Training.id
+    ).filter(and_(*filters)).count()
     
     # Рассчитываем фактическое количество оставшихся
     actual_remaining = max(subscription.trainings_total - used_count, 0)
@@ -672,8 +680,8 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             if subscription.frozen_from:
                 frozen_from_str = subscription.frozen_from.strftime('%d.%m.%Y %H:%M')
                 message += f"• ❄️ Заморожен с: {frozen_from_str}\n"
-            if subscription.frozen_count:
-                message += f"• ❄️ Заморожен раз: {subscription.frozen_count}\n"
+        if (subscription.frozen_training_days_total or 0) > 0:
+            message += f"• ❄️ Заморожено тренировочных дней: {subscription.frozen_training_days_total}\n"
 
         # Даты (до активации не показываем "дату начала", даже если она случайно заполнена в БД)
         start_date_str = subscription.start_date.strftime('%d.%m.%Y') if (subscription.is_active and subscription.start_date) else "—"
@@ -682,7 +690,8 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
         if subscription.is_active and subscription.end_date:
             end_date_str = subscription.end_date.strftime('%d.%m.%Y %H:%M')
             days_left = (subscription.end_date - datetime.utcnow()).days
-            message += f"• Дата окончания: {end_date_str}\n"
+            freeze_note = f" (продлена на {subscription.frozen_training_days_total} тр. дней)" if (subscription.frozen_training_days_total or 0) > 0 and not subscription.is_frozen else ""
+            message += f"• Дата окончания: {end_date_str}{freeze_note}\n"
             
             # Осталось тренировок (пересчитываем на лету для актуальности)
             if subscription.trainings_total is None:
@@ -883,7 +892,8 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
         if subscription.end_date:
             end_date_str = subscription.end_date.strftime('%d.%m.%Y %H:%M')
             days_left = (subscription.end_date - datetime.utcnow()).days
-            message_text += f"• Дата окончания: {end_date_str}\n"
+            freeze_note = f" (продлена на {subscription.frozen_training_days_total} тр. дней)" if (subscription.frozen_training_days_total or 0) > 0 and not subscription.is_frozen else ""
+            message_text += f"• Дата окончания: {end_date_str}{freeze_note}\n"
             
             # Осталось тренировок (пересчитываем на лету для актуальности)
             if subscription.trainings_total is None:
@@ -920,6 +930,9 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
         
         if subscription.total_restored > 0:
             message_text += f"• Восстановлено: {subscription.total_restored}\n"
+        
+        if (subscription.frozen_training_days_total or 0) > 0:
+            message_text += f"• Заморожено тренировочных дней: {subscription.frozen_training_days_total}\n"
         
         # Прогресс-бар использования
         message_text += f"\n<b>📊 ИСПОЛЬЗОВАНИЕ</b>\n"
@@ -1044,6 +1057,7 @@ async def show_my_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYP
                 trainings += f" (🔄 +{subscription.total_restored})"
             sub_type = "Месячный" if subscription.subscription_type == "monthly" else "Разовый" if subscription.subscription_type == "single" else "Тип не определен"
             end_date = subscription.end_date.strftime("%d.%m.%Y") if subscription.end_date else "—"
+            freeze_note = f" (продлена на {subscription.frozen_training_days_total} тр. дней)" if (subscription.frozen_training_days_total or 0) > 0 and not subscription.is_frozen else ""
             
             # Добавляем информацию о том, когда истек
             if subscription.end_date and subscription.end_date < datetime.utcnow():
@@ -1053,7 +1067,7 @@ async def show_my_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYP
             message_text += f"• Статус: {status_display}\n"
             message_text += f"• Тип: {sub_type}\n"
             message_text += f"• Тренировки: {trainings}\n"
-            message_text += f"• Действует до: {end_date}\n"
+            message_text += f"• Действует до: {end_date}{freeze_note}\n"
             
             # Добавляем информацию о создании
             if subscription.created_at:
@@ -1332,7 +1346,8 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
         if subscription.end_date:
             end_date_str = subscription.end_date.strftime('%d.%m.%Y %H:%M')
             days_left = (subscription.end_date - datetime.utcnow()).days
-            message += f"• Дата окончания: {end_date_str}\n"
+            freeze_note = f" (продлена на {subscription.frozen_training_days_total} тр. дней)" if (subscription.frozen_training_days_total or 0) > 0 and not subscription.is_frozen else ""
+            message += f"• Дата окончания: {end_date_str}{freeze_note}\n"
             
             # Осталось тренировок (пересчитываем на лету для актуальности)
             if subscription.trainings_total is None:
@@ -1374,6 +1389,9 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
             message += f"• Восстановлено: {subscription.total_restored}\n"
             if subscription.restored_this_month > 0:
                 message += f"• Восстановлено в этом месяце: {subscription.restored_this_month}\n"
+        
+        if (subscription.frozen_training_days_total or 0) > 0:
+            message += f"• Заморожено тренировочных дней: {subscription.frozen_training_days_total}\n"
         
         # Прогресс-бар использования
         message += f"\n<b>📊 ИСПОЛЬЗОВАНИЕ</b>\n"

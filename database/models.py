@@ -147,8 +147,8 @@ class Subscription(Base):
     is_frozen = Column(Boolean, default=False)  # Заморожен ли абонемент
     frozen_from = Column(DateTime, nullable=True)  # Дата начала заморозки (тренировочный день + начало тренировки)
     frozen_until = Column(DateTime, nullable=True)  # Дата окончания заморозки (тренировочный день + конец тренировки)
-    frozen_count = Column(Integer, default=0)  # Сколько раз был заморожен
-    frozen_days_total = Column(Integer, default=0)  # Общее количество дней заморозки
+    frozen_days_total = Column(Integer, default=0)  # Общее количество календарных дней заморозки
+    frozen_training_days_total = Column(Integer, default=0)  # Общее количество замороженных тренировочных дней
 
     # Поле created_at без default для SQLite
     created_at = Column(DateTime)

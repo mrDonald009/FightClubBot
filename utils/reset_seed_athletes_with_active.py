@@ -124,6 +124,7 @@ def _seed_athletes_and_subscriptions(
     cur: sqlite3.Cursor,
     coach: CoachInfo,
     count: int,
+    add_only: bool = False,
 ) -> Tuple[int, int]:
     first_names_m = ["Иван", "Павел", "Алексей", "Дмитрий", "Андрей", "Никита", "Егор", "Михаил", "Сергей", "Владимир"]
     first_names_f = ["Анна", "Мария", "Екатерина", "Алина", "Дарья", "Ксения", "Ольга", "Виктория", "Полина", "Софья"]
@@ -142,6 +143,9 @@ def _seed_athletes_and_subscriptions(
     ]
 
     used_phones = set()
+    if add_only:
+        cur.execute("SELECT phone FROM athletes WHERE phone IS NOT NULL")
+        used_phones = {row[0] for row in cur.fetchall()}
 
     # Для реализма часть спортсменов будет "детская" группа
     now = _now()
@@ -277,6 +281,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--count", type=int, default=25, help="Сколько спортсменов создать")
     parser.add_argument("--seed", type=int, default=None, help="Seed для random (для воспроизводимости)")
+    parser.add_argument("--add-only", action="store_true", help="Добавить спортсменов без удаления существующих")
     args = parser.parse_args()
 
     if args.count <= 0:
@@ -298,17 +303,22 @@ def main() -> int:
         coach = _get_primary_coach(cur)
         print(f"[INFO] Coach: id={coach.id}, sport_type='{coach.sport_type}', sport_type_id={coach.sport_type_id}")
 
-        try:
-            _delete_all_athletes_related(cur)
-        except sqlite3.OperationalError as e:
-            msg = str(e).lower()
-            if "no such table" in msg:
-                print(f"[WARN] FK schema mismatch detected ({e}). Retrying with foreign_keys=OFF...")
-                con.execute("PRAGMA foreign_keys = OFF")
+        if not args.add_only:
+            try:
                 _delete_all_athletes_related(cur)
-            else:
-                raise
-        created_athletes, created_subs = _seed_athletes_and_subscriptions(cur, coach, args.count)
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "no such table" in msg:
+                    print(f"[WARN] FK schema mismatch detected ({e}). Retrying with foreign_keys=OFF...")
+                    con.execute("PRAGMA foreign_keys = OFF")
+                    _delete_all_athletes_related(cur)
+                else:
+                    raise
+        else:
+            print("[INFO] Режим --add-only: существующие спортсмены сохранены")
+            con.execute("PRAGMA foreign_keys = OFF")
+
+        created_athletes, created_subs = _seed_athletes_and_subscriptions(cur, coach, args.count, add_only=args.add_only)
 
         con.commit()
 
@@ -331,4 +341,12 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
+
+
+
+
 

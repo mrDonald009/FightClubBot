@@ -19,7 +19,7 @@ sys.path.append(str(Path(__file__).parent))
 
 from database.models import Session, Subscription, Attendance, Training
 from datetime import datetime, timedelta
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 
 def recalculate_trainings_remaining():
     """Пересчитать trainings_remaining для всех абонементов на основе фактических записей Attendance."""
@@ -43,15 +43,20 @@ def recalculate_trainings_remaining():
             # Учитываем только те тренировки, которые:
             # 1. Уже завершились (training_date + 1.5 часа < текущее время)
             # 2. Не были восстановлены (was_restored = False или NULL)
+            # 3. В пределах периода абонемента (start_date <= training_date <= end_date)
+            filters = [
+                Attendance.subscription_id == subscription.id,
+                Training.training_date + timedelta(hours=1.5) <= current_time,
+                or_(Attendance.was_restored == False, Attendance.was_restored == None)
+            ]
+            if subscription.start_date:
+                filters.append(Training.training_date >= subscription.start_date)
+            if subscription.end_date:
+                filters.append(Training.training_date <= subscription.end_date)
+            
             used_count = session.query(func.count(Attendance.id)).join(
                 Training, Attendance.training_id == Training.id
-            ).filter(
-                Attendance.subscription_id == subscription.id,
-                # Тренировка завершилась (начало + 1.5 часа < текущее время)
-                Training.training_date + timedelta(hours=1.5) <= current_time,
-                # Не восстановлена
-                or_(Attendance.was_restored == False, Attendance.was_restored == None)
-            ).scalar() or 0
+            ).filter(and_(*filters)).scalar() or 0
             
             # Рассчитываем новое значение trainings_remaining
             new_remaining = max(subscription.trainings_total - used_count, 0)

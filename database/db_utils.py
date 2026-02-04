@@ -6,7 +6,7 @@ import calendar
 from utils.subscription_checker import SubscriptionChecker
 from utils.training_manager import TrainingManager
 from typing import Optional, Union
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 
 
 def get_user_role(user: Union[Coach, Admin, Assistant, Athlete]) -> str:
@@ -567,7 +567,8 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
     changes = []
     
     # 1. Пересчитываем дату окончания (дата 12-й тренировки + 1,5 часа)
-    if subscription.start_date:
+    # НЕ перезаписываем end_date, если абонемент заморожен или был продлён заморозкой
+    if subscription.start_date and not subscription.is_frozen and not (subscription.frozen_training_days_total or 0):
         correct_end_date = _calculate_12th_training_date(subscription.start_date, athlete.sport_type, athlete.age_group)
         if subscription.end_date != correct_end_date:
             old_end = subscription.end_date
@@ -649,19 +650,20 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
         current_date += timedelta(days=1)
 
     # Финальная синхронизация: trainings_remaining должен соответствовать фактически списанным тренировкам.
-    # Считаем "использовано" как количество завершенных и невосстановленных тренировок.
+    # Считаем "использовано" как количество завершенных и невосстановленных тренировок в пределах периода абонемента.
     if subscription.trainings_total is not None:
         prev_remaining = subscription.trainings_remaining
         current_time = datetime.utcnow()
-        # Учитываем только завершенные тренировки (начало + 1.5 часа < текущее время)
-        # и не восстановленные (was_restored = False или NULL)
-        used_count = session.query(Attendance).join(Training).filter(
+        sync_filters = [
             Attendance.subscription_id == subscription.id,
-            # Тренировка завершилась (начало + 1.5 часа <= текущее время)
             Training.training_date + timedelta(hours=1.5) <= current_time,
-            # Не восстановлена
             or_(Attendance.was_restored == False, Attendance.was_restored == None)
-        ).count()
+        ]
+        if subscription.start_date:
+            sync_filters.append(Training.training_date >= subscription.start_date)
+        if subscription.end_date:
+            sync_filters.append(Training.training_date <= subscription.end_date)
+        used_count = session.query(Attendance).join(Training).filter(and_(*sync_filters)).count()
         new_remaining = max(subscription.trainings_total - used_count, 0)
         if prev_remaining != new_remaining:
             subscription.trainings_remaining = new_remaining
@@ -1080,8 +1082,8 @@ def freeze_subscription(
         f"текущая end_date={subscription.end_date.strftime('%d.%m.%Y %H:%M') if subscription.end_date else 'None'}"
     )
     
-    # Продлеваем срок действия абонемента на количество тренировочных дней
-    # Дата окончания абонемента = Дата окончания абонемента + кол-во тренировочных дней между датами заморозки
+    # Продлеваем срок действия абонемента при активации заморозки:
+    # Дата окончания = Дата окончания + Кол-во замороженных тренировочных дней
     if subscription.end_date:
         schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
         if schedule:
@@ -1135,10 +1137,11 @@ def freeze_subscription(
     subscription.is_frozen = True
     subscription.frozen_from = freeze_start
     subscription.frozen_until = freeze_until
-    subscription.frozen_count = (subscription.frozen_count or 0) + 1
     # frozen_days_total - общее количество календарных дней заморозки (для статистики)
     freeze_calendar_days = (freeze_until.date() - freeze_start.date()).days
     subscription.frozen_days_total = (subscription.frozen_days_total or 0) + freeze_calendar_days
+    # frozen_training_days_total - общее количество замороженных тренировочных дней
+    subscription.frozen_training_days_total = (subscription.frozen_training_days_total or 0) + training_days_count
     
     session.commit()
     

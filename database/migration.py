@@ -113,6 +113,11 @@ def migrate_database():
             cursor.execute("ALTER TABLE subscriptions ADD COLUMN frozen_days_total INTEGER DEFAULT 0")
             print("✅ frozen_days_total добавлен")
 
+        if 'frozen_training_days_total' not in columns:
+            print("🔧 Добавляю frozen_training_days_total в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN frozen_training_days_total INTEGER DEFAULT 0")
+            print("✅ frozen_training_days_total добавлен")
+
         # Добавляем created_at если его нет (без DEFAULT для SQLite)
         if 'created_at' not in columns:
             print("🔧 Добавляю created_at в таблицу subscriptions...")
