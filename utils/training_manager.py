@@ -2,6 +2,7 @@ import logging
 from datetime import datetime, timedelta
 from database.models import Session, Athlete, Subscription, Training, Attendance
 from utils.subscription_checker import SubscriptionChecker
+from utils.time_utils import now_moscow, training_end_time
 
 logger = logging.getLogger(__name__)
 
@@ -24,20 +25,39 @@ class TrainingManager:
         'Тайский Бокс': {
             'children': {
                 'days': [1, 3, 5],  # Вт, Чт, Сб
-                'time': '18:00'
+                'time': '18:00',
+                # Точечные переопределения времени по дням недели (0=Пн ... 6=Вс)
+                'day_times': {
+                    5: '12:30',  # Суббота
+                },
             },
             'adults': {
                 'days': [1, 3, 5],
-                'time': '20:00'
+                'time': '20:00',
+                'day_times': {
+                    5: '14:00',  # Суббота
+                },
             }
         }
     }
 
     @staticmethod
+    def get_time_str_for_weekday(schedule: dict, weekday: int) -> str:
+        """Получить строку времени тренировки для конкретного дня недели."""
+        day_times = schedule.get('day_times') or {}
+        return day_times.get(weekday, schedule['time'])
+
+    @staticmethod
+    def get_hour_minute_for_weekday(schedule: dict, weekday: int):
+        """Получить (hour, minute) для конкретного дня недели."""
+        time_str = TrainingManager.get_time_str_for_weekday(schedule, weekday)
+        return map(int, time_str.split(':'))
+
+    @staticmethod
     def get_next_training_date(sport_type, age_group, start_date=None):
         """Получить дату следующей тренировки"""
         if not start_date:
-            start_date = datetime.now()
+            start_date = now_moscow()
 
         schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
         if not schedule:
@@ -70,12 +90,9 @@ class TrainingManager:
 
             # Дата начала абонемента
             start_date = subscription.start_date
-            current_date = datetime.utcnow()
+            current_date = now_moscow()
 
             days = schedule['days']
-            time_str = schedule['time']
-            hour, minute = map(int, time_str.split(':'))
-
             missed_trainings = 0
             total_passed_trainings = 0
             training_dates = []
@@ -86,13 +103,14 @@ class TrainingManager:
             while current_day <= current_date:
                 # Проверяем, это ли день тренировки
                 if current_day.weekday() in days:
+                    hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, current_day.weekday())
                     # Устанавливаем время начала тренировки
                     training_start_datetime = current_day.replace(
                         hour=hour, minute=minute, second=0, microsecond=0
                     )
                     
                     # Время окончания тренировки = время начала + 1.5 часа
-                    training_end_datetime = training_start_datetime + timedelta(hours=1.5)
+                    training_end_datetime = training_end_time(training_start_datetime)
                     
                     # Проверяем, прошло ли время окончания тренировки
                     if training_end_datetime > current_date:
@@ -249,10 +267,14 @@ class TrainingManager:
             return None
 
         day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        days_text = ", ".join([day_names[day] for day in schedule['days']])
+        day_entries = []
+        for day in schedule['days']:
+            day_time = TrainingManager.get_time_str_for_weekday(schedule, day)
+            day_entries.append(f"{day_names[day]} {day_time}")
+        days_text = ", ".join(day_entries)
 
         return {
-            "days": days_text,
+            "days": ", ".join([day_names[day] for day in schedule['days']]),
             "time": schedule['time'],
-            "full_schedule": f"{days_text} в {schedule['time']}"
+            "full_schedule": days_text,
         }

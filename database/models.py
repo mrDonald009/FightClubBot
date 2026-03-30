@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text, and_, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text, and_, UniqueConstraint, Index, CheckConstraint
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -74,7 +74,15 @@ class Assistant(Base):
 
 class Athlete(Base):
     __tablename__ = 'athletes'
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = (
+        Index('ix_athletes_created_by', 'created_by'),  # частые выборки по тренеру
+        Index('ix_athletes_sport_age', 'sport_type', 'age_group'),  # календарь/фильтры
+        CheckConstraint(
+            "age_group IS NULL OR age_group IN ('children', 'adults')",
+            name='ck_athletes_age_group'
+        ),
+        {'extend_existing': True}
+    )
 
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer, unique=True, nullable=True)  # Telegram ID спортсмена (может быть NULL)
@@ -123,12 +131,31 @@ class Athlete(Base):
 class Subscription(Base):
     __tablename__ = 'subscriptions'
     __table_args__ = (
-        UniqueConstraint('athlete_id', 'sport_type', name='uq_athlete_sport'),  # Один спортсмен - один абонемент на вид спорта
+        Index('ix_subscriptions_active_end', 'is_active', 'end_date'),
+        Index('ix_subscriptions_athlete_active', 'athlete_id', 'is_active'),
+        CheckConstraint(
+            "subscription_type IS NULL OR subscription_type IN ('monthly', 'single')",
+            name='ck_subscriptions_type'
+        ),
+        CheckConstraint(
+            "trainings_total IS NULL OR trainings_total >= 0",
+            name='ck_subscriptions_total_nonnegative'
+        ),
+        CheckConstraint(
+            "trainings_remaining IS NULL OR trainings_remaining >= 0",
+            name='ck_subscriptions_remaining_nonnegative'
+        ),
+        CheckConstraint(
+            "trainings_total IS NULL OR trainings_remaining IS NULL OR trainings_remaining <= trainings_total",
+            name='ck_subscriptions_remaining_lte_total'
+        ),
         {'extend_existing': True}
     )
 
     id = Column(Integer, primary_key=True)
-    athlete_id = Column(Integer, ForeignKey('athletes.id'), nullable=False)
+    # По бизнес-логике: у одного спортсмена один абонемент.
+    # История/несколько строк не храним (в этом приложении абонемент обновляется).
+    athlete_id = Column(Integer, ForeignKey('athletes.id'), nullable=False, unique=True)
     sport_type_id = Column(Integer, ForeignKey('sport_types.id'), nullable=True)  # Связь с таблицей видов спорта
     sport_type = Column(String(50))  # Вид спорта для абонемента (для обратной совместимости)
     subscription_type = Column(String(20))  # monthly, single
@@ -172,7 +199,11 @@ class Subscription(Base):
 
 class Training(Base):
     __tablename__ = 'trainings'
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = (
+        Index('ix_trainings_coach_date', 'coach_id', 'training_date'),
+        Index('ix_trainings_sport_age_date', 'sport_type', 'age_group', 'training_date'),
+        {'extend_existing': True}
+    )
 
     id = Column(Integer, primary_key=True)
     sport_type = Column(String(50))  # MMA, Thai
@@ -187,7 +218,12 @@ class Training(Base):
 
 class Attendance(Base):
     __tablename__ = 'attendances'
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = (
+        UniqueConstraint('athlete_id', 'training_id', name='uq_attendances_athlete_training'),
+        Index('ix_attendances_subscription', 'subscription_id'),
+        Index('ix_attendances_athlete_created', 'athlete_id', 'created_at'),
+        {'extend_existing': True}
+    )
 
     id = Column(Integer, primary_key=True)
     athlete_id = Column(Integer, ForeignKey('athletes.id'))
@@ -234,6 +270,44 @@ class RestorationRequest(Base):
 
     # Связи
     athlete = relationship("Athlete")
+    subscription = relationship("Subscription")
+
+
+class GlobalFreeze(Base):
+    """Массовая заморозка клуба (праздники/каникулы)."""
+    __tablename__ = 'global_freezes'
+    __table_args__ = (
+        Index('ix_global_freezes_active_range', 'is_active', 'start_date', 'end_date'),
+        {'extend_existing': True}
+    )
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String(200), nullable=False)
+    start_date = Column(DateTime, nullable=False)
+    end_date = Column(DateTime, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_by = Column(Integer, nullable=True)  # telegram_id инициатора
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class GlobalFreezeApplication(Base):
+    """Фиксация применения массовой заморозки к конкретному абонементу."""
+    __tablename__ = 'global_freeze_applications'
+    __table_args__ = (
+        UniqueConstraint('global_freeze_id', 'subscription_id', name='uq_global_freeze_subscription'),
+        Index('ix_gfa_subscription', 'subscription_id'),
+        {'extend_existing': True}
+    )
+
+    id = Column(Integer, primary_key=True)
+    global_freeze_id = Column(Integer, ForeignKey('global_freezes.id'), nullable=False)
+    subscription_id = Column(Integer, ForeignKey('subscriptions.id'), nullable=False)
+    training_days_added = Column(Integer, default=0)
+    old_end_date = Column(DateTime, nullable=True)
+    new_end_date = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    global_freeze = relationship("GlobalFreeze")
     subscription = relationship("Subscription")
 
 

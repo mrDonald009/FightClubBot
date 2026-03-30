@@ -72,6 +72,19 @@ def migrate_database():
                 cursor.execute("UPDATE athletes SET current_subscription_id = subscription_id WHERE subscription_id IS NOT NULL")
                 print("✅ Данные скопированы")
 
+        # Нормализация age_group в athletes (безопасно для существующих данных)
+        cursor.execute("""
+            UPDATE athletes
+            SET age_group = CASE
+                WHEN age_group IN ('children', 'adults') THEN age_group
+                WHEN age_group IN ('Детская', 'детская', 'child', 'kids') THEN 'children'
+                WHEN age_group IN ('Взрослая', 'взрослая', 'adult') THEN 'adults'
+                ELSE age_group
+            END
+            WHERE age_group IS NOT NULL
+        """)
+        print("✅ Нормализованы значения age_group (если были legacy-значения)")
+
         # Проверяем таблицу subscriptions
         cursor.execute("PRAGMA table_info(subscriptions)")
         columns = [row[1] for row in cursor.fetchall()]
@@ -146,6 +159,39 @@ def migrate_database():
             """)
             print("✅ Обновлены существующие записи в subscriptions с sport_type из спортсменов")
 
+        # Нормализация subscription_type в subscriptions (legacy значения -> текущие)
+        cursor.execute("""
+            UPDATE subscriptions
+            SET subscription_type = CASE
+                WHEN subscription_type IN ('monthly', 'single') THEN subscription_type
+                WHEN subscription_type IN ('Месячный', 'месячный', 'month') THEN 'monthly'
+                WHEN subscription_type IN ('Разовый', 'разовый', 'one_time', 'single_use') THEN 'single'
+                ELSE subscription_type
+            END
+            WHERE subscription_type IS NOT NULL
+        """)
+        print("✅ Нормализованы значения subscription_type (если были legacy-значения)")
+
+        # Защита от некорректных остатков: неотрицательные и не больше total
+        cursor.execute("""
+            UPDATE subscriptions
+            SET trainings_total = 0
+            WHERE trainings_total IS NOT NULL AND trainings_total < 0
+        """)
+        cursor.execute("""
+            UPDATE subscriptions
+            SET trainings_remaining = 0
+            WHERE trainings_remaining IS NOT NULL AND trainings_remaining < 0
+        """)
+        cursor.execute("""
+            UPDATE subscriptions
+            SET trainings_remaining = trainings_total
+            WHERE trainings_total IS NOT NULL
+              AND trainings_remaining IS NOT NULL
+              AND trainings_remaining > trainings_total
+        """)
+        print("✅ Нормализованы trainings_total/trainings_remaining")
+
         # Проверяем таблицу attendances
         cursor.execute("PRAGMA table_info(attendances)")
         columns = [row[1] for row in cursor.fetchall()]
@@ -181,6 +227,95 @@ def migrate_database():
             )
         """)
         print("✅ Таблица restoration_requests создана")
+
+        # Массовые заморозки клуба
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS global_freezes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title VARCHAR(200) NOT NULL,
+                start_date DATETIME NOT NULL,
+                end_date DATETIME NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_by INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        print("✅ Таблица global_freezes создана")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS global_freeze_applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                global_freeze_id INTEGER NOT NULL,
+                subscription_id INTEGER NOT NULL,
+                training_days_added INTEGER DEFAULT 0,
+                old_end_date DATETIME,
+                new_end_date DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        print("✅ Таблица global_freeze_applications создана")
+
+        # --- СТРУКТУРНЫЕ ОГРАНИЧЕНИЯ (SQLite UNIQUE INDEX) ---
+        # Правило домена: у одного спортсмена (athlete_id) один абонемент.
+        # В SQLite добавляем это через UNIQUE INDEX.
+
+        cursor.execute("""
+            SELECT athlete_id, COUNT(*) as cnt
+            FROM subscriptions
+            GROUP BY athlete_id
+            HAVING COUNT(*) > 1
+        """)
+        duplicates = cursor.fetchall()
+        if duplicates:
+            print(f"⚠️ Найдены дубли subscriptions по athlete_id. UNIQUE athlete_id не включаем. Пример: {duplicates[0]}")
+        else:
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_id
+                ON subscriptions (athlete_id)
+            """)
+            print("✅ UNIQUE: uq_subscriptions_athlete_id создана")
+
+        # Защита от дублей посещений: один athlete не должен иметь более одной записи на одну training.
+        cursor.execute("""
+            SELECT athlete_id, training_id, COUNT(*) as cnt
+            FROM attendances
+            GROUP BY athlete_id, training_id
+            HAVING COUNT(*) > 1
+        """)
+        attendance_dups = cursor.fetchall()
+        if attendance_dups:
+            print(f"⚠️ Найдены дубли attendances по (athlete_id, training_id). UNIQUE не включаем. Пример: {attendance_dups[0]}")
+        else:
+            cursor.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_attendances_athlete_training
+                ON attendances (athlete_id, training_id)
+            """)
+            print("✅ UNIQUE: uq_attendances_athlete_training создана")
+
+        # Индексы для частых проверок статуса абонементов
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS ix_subscriptions_active_end
+            ON subscriptions (is_active, end_date)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS ix_subscriptions_athlete_active
+            ON subscriptions (athlete_id, is_active)
+        """)
+        print("✅ Индексы subscriptions (active/end, athlete/active) созданы")
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS ix_global_freezes_active_range
+            ON global_freezes (is_active, start_date, end_date)
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_global_freeze_subscription
+            ON global_freeze_applications (global_freeze_id, subscription_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS ix_gfa_subscription
+            ON global_freeze_applications (subscription_id)
+        """)
+        print("✅ Индексы global_freezes/global_freeze_applications созданы")
 
         # Проверяем таблицу trainings
         cursor.execute("PRAGMA table_info(trainings)")

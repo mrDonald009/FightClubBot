@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CallbackQueryHandler
 from database.models import Session, Athlete, Subscription, Training, Attendance
-from database.db_utils import get_user_by_telegram_id, get_user_role
+from database.db_utils import get_user_by_telegram_id, get_user_role, is_training_in_global_freeze
+from utils.time_utils import now_moscow, training_end_time
 import html
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
         from utils.training_manager import TrainingManager
 
         # Рассчитываем дату неделю назад
-        week_ago = datetime.utcnow() - timedelta(days=7)
+        week_ago = now_moscow() - timedelta(days=7)
 
         # Фильтруем тренировки по тренеру (если это тренер)
         query_filter = session.query(Training).filter(
@@ -155,6 +156,15 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
             await query.edit_message_text("❌ Спортсмен или тренировка не найдены")
             return
 
+        # Массовая заморозка = период без списаний и с ограничением действий.
+        # Блокируем любые изменения Attendance, чтобы не плодить неконсистентные записи.
+        if is_training_in_global_freeze(session, training.training_date):
+            await query.edit_message_text(
+                "⛔️ В период массовой заморозки отметка посещений недоступна."
+                "\n\nСписание тренировок в этот период не производится."
+            )
+            return
+
         # Проверяем, что тренер может отмечать посещения только для своих тренировок
         from database.db_utils import get_user_by_telegram_id
         user = get_user_by_telegram_id(session, query.from_user.id)
@@ -179,8 +189,8 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
             return
 
         # Проверяем, что тренировка уже завершилась (начало + 1.5 часа)
-        training_end_datetime = training.training_date + timedelta(hours=1.5)
-        current_time = datetime.utcnow()
+        training_end_datetime = training_end_time(training.training_date)
+        current_time = now_moscow()
         if current_time < training_end_datetime:
             await query.edit_message_text(
                 f"⏳ Тренировка еще не завершилась.\n\n"
@@ -212,12 +222,22 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
                 subscription_id=subscription.id,
                 attended=attended,
                 marked_by=query.from_user.id,
-                created_at=datetime.utcnow()
+                created_at=now_moscow()
             )
 
             # Списываем тренировку при создании записи (как "использовано" или "неиспользовано").
-            # Важно: и присутствие, и отсутствие потребляют тренировку.
-            if subscription.trainings_remaining is not None and subscription.trainings_remaining > 0:
+            # НЕ списываем, если тренировка пришлась на период заморозки абонемента.
+            training_in_freeze = (
+                subscription.is_frozen
+                and subscription.frozen_from
+                and subscription.frozen_until
+                and subscription.frozen_from <= training.training_date <= subscription.frozen_until
+            )
+            if (
+                not training_in_freeze
+                and subscription.trainings_remaining is not None
+                and subscription.trainings_remaining > 0
+            ):
                 subscription.trainings_remaining -= 1
 
             session.add(attendance)

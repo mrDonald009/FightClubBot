@@ -1,7 +1,7 @@
 """Сервис для работы с абонементами."""
 from typing import List, Optional
 from sqlalchemy.orm import Session
-from database.models import Subscription, Athlete
+from database.models import Subscription
 from database.db_utils import create_subscription as db_create_subscription
 from core.exceptions import SubscriptionNotFoundError, ValidationError
 from services.athlete_service import AthleteService
@@ -96,12 +96,15 @@ class SubscriptionService:
         if not sport_type:
             sport_type = athlete.sport_type
         
-        # Создаем новый абонемент (без деактивации старых - у спортсмена может быть несколько активных)
-        subscription = db_create_subscription(session, athlete_id, subscription_type, sport_type)
-        
-        session.commit()
-        
-        return subscription
+        # По текущей бизнес-логике у спортсмена один абонемент (1:1),
+        # поэтому сервис просто делегирует создание в db_utils.
+        # commit выполняется внутри db_create_subscription по умолчанию.
+        return db_create_subscription(
+            session=session,
+            athlete_id=athlete_id,
+            subscription_type=subscription_type,
+            sport_type=sport_type,
+        )
     
     @staticmethod
     def get_athlete_subscriptions(session: Session, athlete_id: int, sport_type: str = None) -> List[Subscription]:

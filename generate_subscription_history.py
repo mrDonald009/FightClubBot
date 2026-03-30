@@ -10,6 +10,7 @@ sys.path.append(str(project_root))
 
 from database.models import Session, Athlete, Subscription
 from database.db_utils import _calculate_end_date
+from utils.time_utils import now_moscow
 
 
 def generate_subscription_history():
@@ -44,7 +45,7 @@ def generate_subscription_history():
             print(f"👤 {athlete.full_name} (ID: {athlete.id})")
             
             # Начинаем с даты 6 месяцев назад
-            base_date = datetime.utcnow() - timedelta(days=180)
+            base_date = now_moscow() - timedelta(days=180)
             
             for i in range(num_subscriptions):
                 # Случайная дата начала (от base_date до текущей даты)
@@ -71,7 +72,7 @@ def generate_subscription_history():
                 trainings_remaining = max(0, trainings_total - used_trainings)
                 
                 # Абонемент активен только если он последний и не истек
-                is_active = (i == num_subscriptions - 1) and (end_date >= datetime.utcnow())
+                is_active = (i == num_subscriptions - 1) and (end_date >= now_moscow())
                 
                 # Случайное количество восстановлений
                 total_restored = random.randint(0, 3) if subscription_type == 'monthly' else 0

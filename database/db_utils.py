@@ -1,12 +1,118 @@
 from sqlalchemy.orm import Session
-from database.models import Coach, Admin, Assistant, Athlete, Subscription, Training, Attendance, RestorationRequest, SportType
+from database.models import Coach, Admin, Assistant, Athlete, Subscription, Training, Attendance, RestorationRequest, SportType, GlobalFreeze, GlobalFreezeApplication
 from datetime import datetime, timedelta
 import json
 import calendar
 from utils.subscription_checker import SubscriptionChecker
 from utils.training_manager import TrainingManager
+from utils.time_utils import (
+    now_moscow,
+    training_end_time,
+    TRAINING_DURATION,
+    ACTIVATION_GRACE_AFTER_START,
+)
 from typing import Optional, Union
-from sqlalchemy import func, or_, and_
+from sqlalchemy import func, or_, and_, select, exists, not_
+
+
+def _active_global_freeze_covers_training_exists():
+    """Коррелируемый EXISTS: слот Training.training_date попадает в активную массовую заморозку."""
+    return exists(
+        select(1).select_from(GlobalFreeze).where(
+            GlobalFreeze.is_active == True,
+            GlobalFreeze.start_date <= Training.training_date,
+            GlobalFreeze.end_date >= Training.training_date,
+        )
+    )
+
+
+def purge_auto_attendances_during_active_global_freeze(
+    session: Session, subscription: Subscription
+) -> int:
+    """
+    Удалить авто-списания (marked_by IS NULL), ошибочно созданные на слоты в периоде массовой заморозки.
+    Не зависит от обхода «до сегодня» в migrate.
+    """
+    q = (
+        session.query(Attendance)
+        .join(Training, Attendance.training_id == Training.id)
+        .filter(
+            Attendance.subscription_id == subscription.id,
+            or_(Attendance.was_restored == False, Attendance.was_restored == None),
+            Attendance.marked_by.is_(None),
+            _active_global_freeze_covers_training_exists(),
+        )
+    )
+    rows = q.all()
+    for att in rows:
+        session.delete(att)
+    return len(rows)
+
+
+def calculate_actual_trainings_remaining(session: Session, subscription: Subscription) -> Optional[int]:
+    """
+    Source of truth для расчета остатка тренировок.
+    Учитывает только завершенные и невосстановленные тренировки в пределах периода абонемента.
+    Слоты, попадающие в активную массовую заморозку, в «использованные» не входят (как при авто-списании).
+    """
+    if subscription.trainings_total is None:
+        return None
+
+    current_time = now_moscow()
+    completion_cutoff = current_time - TRAINING_DURATION
+
+    filters = [
+        Attendance.subscription_id == subscription.id,
+        # Тренировка считается использованной только после ее завершения
+        Training.training_date <= completion_cutoff,
+        or_(Attendance.was_restored == False, Attendance.was_restored == None),
+    ]
+    if subscription.start_date:
+        filters.append(Training.training_date >= subscription.start_date)
+    if subscription.end_date:
+        filters.append(Training.training_date <= subscription.end_date)
+    if subscription.is_frozen and subscription.frozen_from and subscription.frozen_until:
+        filters.append(
+            or_(
+                Training.training_date < subscription.frozen_from,
+                Training.training_date > subscription.frozen_until
+            )
+        )
+
+    # Слоты в периоде активной массовой заморозки не должны списываться (см. auto_deduct_daily_trainings).
+    filters.append(not_(_active_global_freeze_covers_training_exists()))
+
+    used_count = session.query(Attendance).join(
+        Training, Attendance.training_id == Training.id
+    ).filter(and_(*filters)).count()
+
+    return max(subscription.trainings_total - used_count, 0)
+
+
+def sync_subscription_trainings_remaining(
+    session: Session,
+    subscription: Subscription,
+    reason: str = None,
+) -> bool:
+    """
+    Защитная синхронизация остатка.
+    Возвращает True, если значение trainings_remaining было изменено.
+    """
+    new_remaining = calculate_actual_trainings_remaining(session, subscription)
+    if new_remaining is None:
+        return False
+    prev_remaining = subscription.trainings_remaining
+    if prev_remaining != new_remaining:
+        subscription.trainings_remaining = new_remaining
+        import logging
+        logger = logging.getLogger(__name__)
+        reason_text = f" ({reason})" if reason else ""
+        logger.info(
+            f"Синхронизация trainings_remaining для subscription #{subscription.id}: "
+            f"{prev_remaining} -> {new_remaining}{reason_text}"
+        )
+        return True
+    return False
 
 
 def get_user_role(user: Union[Coach, Admin, Assistant, Athlete]) -> str:
@@ -134,7 +240,7 @@ def create_user(session: Session, telegram_id: int, username: str, first_name: s
 
 def create_athlete(
     session: Session,
-    telegram_id: int,
+    telegram_id: Optional[int],
     full_name: str,
     phone: str,
     medical_info: str,
@@ -143,9 +249,11 @@ def create_athlete(
     created_by: int,
     birth_date: datetime = None,
     height: int = None,
-    weight: int = None
+    weight: int = None,
+    *,
+    commit: bool = True,
 ):
-    """Создать спортсмена"""
+    """Создать спортсмена. При commit=False только add+flush (для одной транзакции с абонементом)."""
     athlete = Athlete(
         telegram_id=telegram_id,
         full_name=full_name,
@@ -156,10 +264,12 @@ def create_athlete(
         medical_info=medical_info,
         sport_type=sport_type,
         age_group=age_group,
-        created_by=created_by  # ID тренера из таблицы coaches
+        created_by=created_by
     )
     session.add(athlete)
-    session.commit()
+    session.flush()
+    if commit:
+        session.commit()
     return athlete
 
 
@@ -209,34 +319,33 @@ def _find_nearest_training_date(coach_selected_date: datetime, sport_type: str, 
         return coach_selected_date
     
     days = schedule['days']
-    time_str = schedule['time']
-    hour, minute = map(int, time_str.split(':'))
     
     # Нормализуем дату тренера до начала дня
     coach_date_only = coach_selected_date.replace(hour=0, minute=0, second=0, microsecond=0)
     
     # Создаем datetime для тренировки в выбранный день
+    hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, coach_date_only.weekday())
     training_datetime = coach_date_only.replace(hour=hour, minute=minute, second=0, microsecond=0)
     
     # Проверяем, соответствует ли выбранная дата дню тренировки
     if coach_date_only.weekday() in days:
-        # Это день тренировки - проверяем, не прошло ли время
-        current_time = datetime.utcnow()
-        if training_datetime >= current_time:
-            # Время тренировки еще не прошло - используем эту дату
+        # Это день тренировки — считаем слот ещё доступным до (начало + запас по .env)
+        current_time = now_moscow()
+        slot_deadline = training_datetime + ACTIVATION_GRACE_AFTER_START
+        if current_time <= slot_deadline:
             return training_datetime
-        else:
-            # Время уже прошло - начинаем поиск со следующего дня
-            coach_date_only += timedelta(days=1)
+        coach_date_only += timedelta(days=1)
     
     # Ищем ближайший день тренировки (максимум 7 дней вперед)
     for i in range(7):
         check_date = coach_date_only + timedelta(days=i)
         if check_date.weekday() in days:
             # Нашли день тренировки - возвращаем с правильным временем
+            hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, check_date.weekday())
             return check_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
     
     # Если не нашли (не должно произойти), возвращаем исходную дату с временем тренировки
+    hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, coach_date_only.weekday())
     return coach_date_only.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
@@ -260,11 +369,9 @@ def _calculate_12th_training_date(start_date: datetime, sport_type: str, age_gro
     if not schedule:
         # Если расписание не найдено, возвращаем дату через месяц + 1,5 часа (fallback)
         fallback_date = _calculate_end_date(start_date, months=1)
-        return fallback_date + timedelta(hours=1.5)
+        return training_end_time(fallback_date)
     
     days = schedule['days']
-    time_str = schedule['time']
-    hour, minute = map(int, time_str.split(':'))
     
     # Начинаем с даты первой тренировки (start_date уже должна быть днем тренировки)
     # Но на всякий случай проверяем и находим ближайший день тренировки, если нужно
@@ -290,8 +397,9 @@ def _calculate_12th_training_date(start_date: datetime, sport_type: str, age_gro
             training_count += 1
             if training_count == 12:
                 # Это 12-я тренировка - возвращаем её дату с правильным временем + 1,5 часа
+                hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, current_date.weekday())
                 training_datetime = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                return training_datetime + timedelta(hours=1.5)
+                return training_end_time(training_datetime)
         
         # Переходим к следующему дню
         current_date += timedelta(days=1)
@@ -306,46 +414,37 @@ def _calculate_12th_training_date(start_date: datetime, sport_type: str, age_gro
         f"Начало: {start_date}, найдено тренировок: {training_count}, дней проверено: {days_searched}"
     )
     fallback_date = _calculate_end_date(start_date, months=1)
-    return fallback_date + timedelta(hours=1.5)
+    return training_end_time(fallback_date)
 
 
-def create_subscription(session: Session, athlete_id: int, subscription_type: str = None, sport_type: str = None):
+def create_subscription(
+    session: Session,
+    athlete_id: int,
+    subscription_type: str = None,
+    sport_type: str = None,
+    *,
+    commit: bool = True,
+):
     """
     Создать абонемент для спортсмена.
-    
-    Если subscription_type не указан, абонемент создается без типа (тип будет определен при активации).
-    Если subscription_type указан, присваивает количество тренировок:
-    - месячный (monthly): 12 тренировок
-    - разовый (single): 1 тренировка
-    
-    Args:
-        session: Сессия базы данных
-        athlete_id: ID спортсмена
-        subscription_type: Тип абонемента (monthly, single) или None (будет определен при активации)
-        sport_type: Вид спорта для абонемента (если None, берется из спортсмена)
+    При commit=False только add+flush (для одной транзакции со спортсменом).
     """
     athlete = session.query(Athlete).filter_by(id=athlete_id).first()
     if not athlete:
         raise ValueError(f"Спортсмен с id={athlete_id} не найден")
     
-    # Если sport_type не указан, берем из спортсмена
     if not sport_type:
         sport_type = athlete.sport_type
     
-    # При создании абонемент неактивен, даты начала и окончания не устанавливаются
-    # Они будут установлены при активации
-    created_at = datetime.utcnow()
+    created_at = now_moscow()
     
-    # Если тип не указан, создаем абонемент без типа
     if subscription_type is None:
         trainings_total = None
         trainings_remaining = None
     elif subscription_type == "monthly":
-        # Месячный абонемент - 12 тренировок
         trainings_total = 12
         trainings_remaining = 12
     elif subscription_type == "single":
-        # Разовый абонемент - 1 тренировка
         trainings_total = 1
         trainings_remaining = 1
     else:
@@ -354,21 +453,18 @@ def create_subscription(session: Session, athlete_id: int, subscription_type: st
     subscription = Subscription(
         athlete_id=athlete_id,
         sport_type=sport_type,
-        subscription_type=subscription_type,  # Может быть None
-        start_date=None,  # Будет установлена при активации
-        end_date=None,     # Будет установлена при активации
-        trainings_total=trainings_total,  # Может быть None
-        trainings_remaining=trainings_remaining,  # Может быть None
-        is_active=False,   # По умолчанию неактивен
+        subscription_type=subscription_type,
+        start_date=None,
+        end_date=None,
+        trainings_total=trainings_total,
+        trainings_remaining=trainings_remaining,
+        is_active=False,
         created_at=created_at
     )
     session.add(subscription)
-    session.flush()  # Получаем ID абонемента
-    
-    # Тренировки не создаются при создании абонемента
-    # Они будут созданы при активации абонемента
-    
-    session.commit()
+    session.flush()
+    if commit:
+        session.commit()
     return subscription
 
 
@@ -380,15 +476,13 @@ def _create_and_deduct_scheduled_trainings(
     end_date: datetime
 ):
     """
-    Создать тренировки по расписанию для абонемента и автоматически списать первую.
+    Создать тренировки по расписанию для абонемента без списания.
     """
     schedule = TrainingManager.TRAINING_SCHEDULE.get(athlete.sport_type, {}).get(athlete.age_group)
     if not schedule:
         return
     
     days = schedule['days']
-    time_str = schedule['time']
-    hour, minute = map(int, time_str.split(':'))
     
     # Получаем тренера спортсмена
     coach_id = athlete.created_by
@@ -401,6 +495,7 @@ def _create_and_deduct_scheduled_trainings(
         # Проверяем, это ли день тренировки по расписанию
         if current_day.weekday() in days:
             # Создаем datetime с правильным временем
+            hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, current_day.weekday())
             training_datetime = current_day.replace(hour=hour, minute=minute, second=0, microsecond=0)
             
             # Пропускаем будущие тренировки (после end_date)
@@ -442,7 +537,7 @@ def auto_deduct_daily_trainings(session: Session):
     """
     from utils.subscription_checker import SubscriptionChecker
     
-    now = datetime.utcnow()
+    now = now_moscow()
     today_date = now.date()
     today_date = now.date()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -472,28 +567,31 @@ def auto_deduct_daily_trainings(session: Session):
             continue
         
         days = schedule['days']
-        time_str = schedule['time']
-        hour, minute = map(int, time_str.split(':'))
         
         # Проверяем, сегодня ли тренировочный день
         if now.weekday() not in days:
             continue
         
         # Создаем datetime для сегодняшней тренировки
+        hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, now.weekday())
         training_datetime = today_start.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # В период массовой заморозки списание не выполняем
+        if is_training_in_global_freeze(session, training_datetime):
+            continue
         
         # Время окончания тренировки = время начала + 1.5 часа
-        training_end_datetime = training_datetime + timedelta(hours=1.5)
+        training_end_datetime = training_end_time(training_datetime)
         
         # Важно: списание происходит только после завершения тренировки (через 1.5 часа после начала)
         # Если тренировка еще не завершилась, пропускаем
         if now < training_end_datetime:
             continue
         
-        # Проверяем, что тренировка в пределах действия абонемента (по датам)
+        # Проверяем, что тренировка в пределах действия абонемента (по datetime)
         if not subscription.start_date or not subscription.end_date:
             continue
-        if training_datetime.date() < subscription.start_date.date() or training_datetime.date() > subscription.end_date.date():
+        # Тренировка должна начинаться не раньше start_date и заканчиваться не позже end_date.
+        if training_datetime < subscription.start_date or training_end_datetime > subscription.end_date:
             continue
         
         # Проверяем, есть ли уже запись о посещении на эту тренировку
@@ -532,7 +630,7 @@ def auto_deduct_daily_trainings(session: Session):
                 subscription_id=subscription.id,
                 attended=False,  # По умолчанию неиспользовано
                 marked_by=None,  # Автоматическое списание
-                created_at=datetime.utcnow()
+                created_at=now_moscow()
             )
             session.add(attendance)
             
@@ -567,9 +665,24 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
     changes = []
     
     # 1. Пересчитываем дату окончания (дата 12-й тренировки + 1,5 часа)
-    # НЕ перезаписываем end_date, если абонемент заморожен или был продлён заморозкой
+    # НЕ перезаписываем end_date, если абонемент заморожен или был продлён личной заморозкой.
+    # Массовая заморозка не ставит is_frozen / frozen_training_days_total, но фиксируется
+    # в global_freeze_applications — нижняя граница end_date не должна быть ниже max(new_end_date).
     if subscription.start_date and not subscription.is_frozen and not (subscription.frozen_training_days_total or 0):
         correct_end_date = _calculate_12th_training_date(subscription.start_date, athlete.sport_type, athlete.age_group)
+        gf_ceiling = (
+            session.query(func.max(GlobalFreezeApplication.new_end_date))
+            .join(GlobalFreeze, GlobalFreezeApplication.global_freeze_id == GlobalFreeze.id)
+            .filter(
+                GlobalFreezeApplication.subscription_id == subscription.id,
+                GlobalFreezeApplication.training_days_added > 0,
+                GlobalFreezeApplication.new_end_date.isnot(None),
+                GlobalFreeze.is_active == True,
+            )
+            .scalar()
+        )
+        if gf_ceiling is not None:
+            correct_end_date = max(correct_end_date, gf_ceiling)
         if subscription.end_date != correct_end_date:
             old_end = subscription.end_date
             subscription.end_date = correct_end_date
@@ -581,23 +694,22 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
         return {"success": False, "message": "Расписание не найдено"}
     
     days = schedule['days']
-    time_str = schedule['time']
-    hour, minute = map(int, time_str.split(':'))
     
     coach_id = athlete.created_by
-    start_date = subscription.start_date if subscription.start_date else datetime.utcnow()
+    start_date = subscription.start_date if subscription.start_date else now_moscow()
     end_date = subscription.end_date
     
     # Считаем списания по календарным датам (не по времени суток)
     current_date = start_date.date()
     end_date_only = end_date.date()
-    today_date = datetime.utcnow().date()
+    today_date = now_moscow().date()
     trainings_created = 0
     trainings_deducted = 0
     
     while current_date <= end_date_only and current_date <= today_date:
         # Проверяем, это ли день тренировки по расписанию
         if current_date.weekday() in days:
+            hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, current_date.weekday())
             training_datetime = datetime(current_date.year, current_date.month, current_date.day, hour, minute, 0)
             
             if training_datetime > end_date:
@@ -626,6 +738,26 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
             else:
                 training = existing_training
             
+            # Пропускаем тренировки в период заморозки — не списываем
+            if subscription.is_frozen and subscription.frozen_from and subscription.frozen_until:
+                if subscription.frozen_from <= training_datetime <= subscription.frozen_until:
+                    current_date += timedelta(days=1)
+                    continue
+
+            # Массовая заморозка: как в auto_deduct_daily_trainings — не списываем и убираем ошибочное авто-списание
+            if is_training_in_global_freeze(session, training_datetime):
+                existing_attendance = session.query(Attendance).filter_by(
+                    athlete_id=athlete.id,
+                    training_id=training.id,
+                    subscription_id=subscription.id,
+                ).first()
+                if existing_attendance and (
+                    existing_attendance.was_restored is None or existing_attendance.was_restored is False
+                ) and existing_attendance.marked_by is None:
+                    session.delete(existing_attendance)
+                current_date += timedelta(days=1)
+                continue
+            
             # Проверяем, списана ли уже тренировка
             existing_attendance = session.query(Attendance).filter_by(
                 athlete_id=athlete.id,
@@ -641,7 +773,7 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
                     subscription_id=subscription.id,
                     attended=False,  # Неиспользовано
                     marked_by=None,  # Автоматическое списание
-                    created_at=datetime.utcnow()
+                    created_at=now_moscow()
                 )
                 session.add(attendance)
                 subscription.trainings_remaining -= 1
@@ -649,25 +781,14 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
         
         current_date += timedelta(days=1)
 
-    # Финальная синхронизация: trainings_remaining должен соответствовать фактически списанным тренировкам.
-    # Считаем "использовано" как количество завершенных и невосстановленных тренировок в пределах периода абонемента.
-    if subscription.trainings_total is not None:
-        prev_remaining = subscription.trainings_remaining
-        current_time = datetime.utcnow()
-        sync_filters = [
-            Attendance.subscription_id == subscription.id,
-            Training.training_date + timedelta(hours=1.5) <= current_time,
-            or_(Attendance.was_restored == False, Attendance.was_restored == None)
-        ]
-        if subscription.start_date:
-            sync_filters.append(Training.training_date >= subscription.start_date)
-        if subscription.end_date:
-            sync_filters.append(Training.training_date <= subscription.end_date)
-        used_count = session.query(Attendance).join(Training).filter(and_(*sync_filters)).count()
-        new_remaining = max(subscription.trainings_total - used_count, 0)
-        if prev_remaining != new_remaining:
-            subscription.trainings_remaining = new_remaining
-            changes.append(f"Синхронизация остатка: {prev_remaining} -> {new_remaining}")
+    removed_gf = purge_auto_attendances_during_active_global_freeze(session, subscription)
+    if removed_gf:
+        changes.append(f"Удалено авто-списаний в периоде массовой заморозки: {removed_gf}")
+
+    # Финальная синхронизация: единый source of truth для остатка.
+    prev_remaining = subscription.trainings_remaining
+    if sync_subscription_trainings_remaining(session, subscription):
+        changes.append(f"Синхронизация остатка: {prev_remaining} -> {subscription.trainings_remaining}")
     
     if changes or trainings_created > 0 or trainings_deducted > 0:
         session.commit()
@@ -830,7 +951,7 @@ def get_athlete_card_info(session: Session, athlete_id: int):
 
     # АВТОМАТИЧЕСКАЯ ПРОВЕРКА СТАТУСА АБОНЕМЕНТА
     if subscription and subscription.is_active and subscription.end_date:
-        current_time = datetime.utcnow()
+        current_time = now_moscow()
         if subscription.end_date < current_time:
             # Автоматически деактивируем истекший абонемент
             subscription.is_active = False
@@ -841,7 +962,7 @@ def get_athlete_card_info(session: Session, athlete_id: int):
     # Используем вид спорта из абонемента, если он есть, иначе из спортсмена
     sport_type_for_stats = subscription.sport_type if subscription and subscription.sport_type else athlete.sport_type
     
-    month_ago = datetime.utcnow() - timedelta(days=30)
+    month_ago = now_moscow() - timedelta(days=30)
 
     total_trainings = 0
     if sport_type_for_stats:
@@ -911,34 +1032,32 @@ def _find_freeze_start_date(selected_date: datetime, sport_type: str, age_group:
         return selected_date
     
     days = schedule['days']
-    time_str = schedule['time']
-    hour, minute = map(int, time_str.split(':'))
     
     # Нормализуем дату до начала дня
     date_only = selected_date.replace(hour=0, minute=0, second=0, microsecond=0)
     
     # Создаем datetime для тренировки в выбранный день
+    hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, date_only.weekday())
     training_datetime = date_only.replace(hour=hour, minute=minute, second=0, microsecond=0)
     
     # Проверяем, соответствует ли выбранная дата дню тренировки
     if date_only.weekday() in days:
-        # Это день тренировки - проверяем, не прошло ли время
-        current_time = datetime.utcnow()
-        if training_datetime >= current_time:
-            # Время тренировки еще не прошло - используем эту дату
+        current_time = now_moscow()
+        slot_deadline = training_datetime + ACTIVATION_GRACE_AFTER_START
+        if current_time <= slot_deadline:
             return training_datetime
-        else:
-            # Время уже прошло - начинаем поиск со следующего дня
-            date_only += timedelta(days=1)
+        date_only += timedelta(days=1)
     
     # Ищем ближайший день тренировки (максимум 7 дней вперед)
     for i in range(7):
         check_date = date_only + timedelta(days=i)
         if check_date.weekday() in days:
             # Нашли день тренировки - возвращаем с правильным временем
+            hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, check_date.weekday())
             return check_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
     
     # Если не нашли (не должно произойти), возвращаем исходную дату с временем тренировки
+    hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, date_only.weekday())
     return date_only.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
@@ -993,33 +1112,33 @@ def _find_freeze_end_date(selected_date: datetime, sport_type: str, age_group: s
     schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
     if not schedule:
         # Если расписание не найдено, возвращаем дату + 1.5 часа (fallback)
-        return selected_date + timedelta(hours=1.5)
+        return training_end_time(selected_date)
     
     days = schedule['days']
-    time_str = schedule['time']
-    hour, minute = map(int, time_str.split(':'))
     
     # Нормализуем дату до начала дня
     date_only = selected_date.replace(hour=0, minute=0, second=0, microsecond=0)
     
     # Создаем datetime для тренировки в выбранный день
+    hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, date_only.weekday())
     training_start = date_only.replace(hour=hour, minute=minute, second=0, microsecond=0)
     
     # Проверяем, соответствует ли выбранная дата дню тренировки
     if date_only.weekday() in days:
         # Это день тренировки - возвращаем начало тренировки + 1.5 часа
-        return training_start + timedelta(hours=1.5)
+        return training_end_time(training_start)
     else:
         # Ищем ближайший день тренировки (максимум 7 дней вперед)
         for i in range(7):
             check_date = date_only + timedelta(days=i)
             if check_date.weekday() in days:
                 # Нашли день тренировки - возвращаем начало тренировки + 1.5 часа
+                hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, check_date.weekday())
                 training_start = check_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
-                return training_start + timedelta(hours=1.5)
+                return training_end_time(training_start)
     
     # Если не нашли (не должно произойти), возвращаем исходную дату + 1.5 часа
-    return selected_date + timedelta(hours=1.5)
+    return training_end_time(selected_date)
 
 
 def freeze_subscription(
@@ -1059,8 +1178,16 @@ def freeze_subscription(
     sport_type = subscription.sport_type or athlete.sport_type
     age_group = athlete.age_group
     
+    current_time = now_moscow()
+    # Не допускаем заморозку "в прошлое" (по текущему времени приложения).
+    if freeze_end_date <= current_time:
+        return {
+            "success": False,
+            "message": "Дата окончания заморозки должна быть позже текущего времени"
+        }
+
     # Находим дату начала заморозки (ближайший тренировочный день + начало тренировки)
-    freeze_start = _find_freeze_start_date(datetime.utcnow(), sport_type, age_group)
+    freeze_start = _find_freeze_start_date(now_moscow(), sport_type, age_group)
     
     # Находим дату окончания заморозки (тренировочный день + конец тренировки)
     freeze_until = _find_freeze_end_date(freeze_end_date, sport_type, age_group)
@@ -1068,8 +1195,29 @@ def freeze_subscription(
     if freeze_until <= freeze_start:
         return {"success": False, "message": "Дата окончания заморозки должна быть позже даты начала"}
     
-    # Подсчитываем количество тренировочных дней между датой начала и окончания заморозки
-    training_days_count = _count_training_days_between(freeze_start, freeze_until, sport_type, age_group)
+    # Важно: заморозка не должна начинаться раньше начала абонемента.
+    # Для разового абонемента end_date = конец одной тренировки, поэтому
+    # считаем период до freeze_until (без ограничения текущим end_date),
+    # чтобы корректно переносить единственную тренировку на следующий доступный слот.
+    effective_freeze_start = max(freeze_start, subscription.start_date or freeze_start)
+    if subscription.subscription_type == "single":
+        effective_freeze_end = freeze_until
+    else:
+        effective_freeze_end = min(freeze_until, subscription.end_date) if subscription.end_date else freeze_until
+
+    if effective_freeze_end <= effective_freeze_start:
+        return {
+            "success": False,
+            "message": "Период заморозки не пересекается со сроком действия абонемента"
+        }
+
+    # Подсчитываем количество тренировочных дней в эффективном периоде заморозки
+    training_days_count = _count_training_days_between(
+        effective_freeze_start,
+        effective_freeze_end,
+        sport_type,
+        age_group
+    )
     
     # Логируем для отладки
     import logging
@@ -1078,24 +1226,25 @@ def freeze_subscription(
         f"Заморозка абонемента #{subscription_id}: "
         f"freeze_start={freeze_start.strftime('%d.%m.%Y %H:%M')}, "
         f"freeze_until={freeze_until.strftime('%d.%m.%Y %H:%M')}, "
+        f"effective_start={effective_freeze_start.strftime('%d.%m.%Y %H:%M')}, "
+        f"effective_end={effective_freeze_end.strftime('%d.%m.%Y %H:%M')}, "
         f"training_days_count={training_days_count}, "
         f"текущая end_date={subscription.end_date.strftime('%d.%m.%Y %H:%M') if subscription.end_date else 'None'}"
     )
     
     # Продлеваем срок действия абонемента при активации заморозки:
-    # Дата окончания = Дата окончания + Кол-во замороженных тренировочных дней
+    # Дата окончания = следующий(е) тренировочный(е) день(дни) после текущего end_date.
     if subscription.end_date:
         schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
         if schedule:
             days = schedule['days']
-            time_str = schedule['time']
-            hour, minute = map(int, time_str.split(':'))
             
-            # Находим дату окончания абонемента (без времени)
+            # Берем день окончания абонемента (без времени)
             end_date_only = subscription.end_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            # Начинаем поиск с даты окончания абонемента (не со следующего дня!)
-            current_date = end_date_only
+
+            # Ключевой момент: добавляем ТОЛЬКО дни после текущего end_date,
+            # чтобы не пересчитать последнюю уже включенную тренировку.
+            current_date = end_date_only + timedelta(days=1)
             added_training_days = 0
             max_days_to_search = 90  # Защита от бесконечного цикла (примерно 3 месяца)
             days_searched = 0
@@ -1107,7 +1256,10 @@ def freeze_subscription(
                     added_training_days += 1
                     if added_training_days == training_days_count:
                         # Это последний тренировочный день - устанавливаем дату окончания с временем окончания тренировки
-                        subscription.end_date = current_date.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(hours=1.5)
+                        hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, current_date.weekday())
+                        subscription.end_date = training_end_time(
+                            current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                        )
                         break
                 # Переходим к следующему дню
                 current_date += timedelta(days=1)
@@ -1135,21 +1287,21 @@ def freeze_subscription(
     
     # Устанавливаем параметры заморозки
     subscription.is_frozen = True
-    subscription.frozen_from = freeze_start
-    subscription.frozen_until = freeze_until
+    subscription.frozen_from = effective_freeze_start
+    subscription.frozen_until = effective_freeze_end
     # frozen_days_total - общее количество календарных дней заморозки (для статистики)
-    freeze_calendar_days = (freeze_until.date() - freeze_start.date()).days
+    freeze_calendar_days = (effective_freeze_end.date() - effective_freeze_start.date()).days
     subscription.frozen_days_total = (subscription.frozen_days_total or 0) + freeze_calendar_days
     # frozen_training_days_total - общее количество замороженных тренировочных дней
     subscription.frozen_training_days_total = (subscription.frozen_training_days_total or 0) + training_days_count
-    
+    sync_subscription_trainings_remaining(session, subscription, reason="after_freeze")
     session.commit()
     
     return {
         "success": True,
-        "message": f"Абонемент заморожен до {freeze_until.strftime('%d.%m.%Y %H:%M')}",
-        "freeze_start": freeze_start,
-        "freeze_until": freeze_until,
+        "message": f"Абонемент заморожен до {effective_freeze_end.strftime('%d.%m.%Y %H:%M')}",
+        "freeze_start": effective_freeze_start,
+        "freeze_until": effective_freeze_end,
         "training_days_count": training_days_count,
         "freeze_calendar_days": freeze_calendar_days
     }
@@ -1177,7 +1329,178 @@ def unfreeze_subscription(session: Session, subscription_id: int) -> dict:
     subscription.is_frozen = False
     subscription.frozen_from = None
     subscription.frozen_until = None
-    
+    sync_subscription_trainings_remaining(session, subscription, reason="after_unfreeze")
     session.commit()
     
     return {"success": True, "message": "Абонемент разморожен"}
+
+
+def is_training_in_global_freeze(session: Session, training_datetime: datetime) -> bool:
+    """Проверить, попадает ли тренировка в период активной массовой заморозки."""
+    gf = session.query(GlobalFreeze).filter(
+        GlobalFreeze.is_active == True,
+        GlobalFreeze.start_date <= training_datetime,
+        GlobalFreeze.end_date >= training_datetime
+    ).first()
+    return bool(gf)
+
+
+def apply_global_freeze(
+    session: Session,
+    start_date: datetime,
+    end_date: datetime,
+    title: str,
+    created_by: int = None,
+) -> dict:
+    """
+    Применить массовую заморозку:
+    - создается запись global_freezes,
+    - все активные абонементы продлеваются на число тренировочных дней в периоде,
+    - фиксируется application для идемпотентности.
+    """
+    if end_date < start_date:
+        return {"success": False, "message": "Дата окончания меньше даты начала"}
+
+    # Нормализуем границы до полного диапазона дней
+    freeze_start = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    freeze_end = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+    # Массовые заморозки не должны пересекаться между собой.
+    overlapping = (
+        session.query(GlobalFreeze)
+        .filter(GlobalFreeze.is_active == True)
+        .filter(GlobalFreeze.start_date <= freeze_end)
+        .filter(GlobalFreeze.end_date >= freeze_start)
+        .order_by(GlobalFreeze.start_date.asc())
+        .all()
+    )
+    if overlapping:
+        ids = ", ".join(str(gf.id) for gf in overlapping[:5])
+        if len(overlapping) > 5:
+            ids += ", ..."
+        return {
+            "success": False,
+            "message": (
+                "Новая массовая заморозка пересекается с уже существующей "
+                f"(ID: {ids}). Пересечения запрещены."
+            ),
+        }
+
+    global_freeze = GlobalFreeze(
+        title=title.strip() or "Массовая заморозка",
+        start_date=freeze_start,
+        end_date=freeze_end,
+        is_active=True,
+        created_by=created_by,
+        created_at=now_moscow(),
+    )
+    session.add(global_freeze)
+    session.flush()
+
+    updated = 0
+    skipped = 0
+    total_training_days_added = 0
+
+    active_subscriptions = session.query(Subscription).filter(Subscription.is_active == True).all()
+    for subscription in active_subscriptions:
+        # Защита от повторного применения к тому же абонементу
+        existing = session.query(GlobalFreezeApplication).filter_by(
+            global_freeze_id=global_freeze.id,
+            subscription_id=subscription.id
+        ).first()
+        if existing:
+            skipped += 1
+            continue
+
+        athlete = subscription.athlete
+        if not athlete:
+            skipped += 1
+            continue
+
+        sport_type = subscription.sport_type or athlete.sport_type
+        age_group = athlete.age_group
+        if not sport_type or not age_group or not subscription.end_date:
+            skipped += 1
+            continue
+
+        # Если период заморозки полностью вне диапазона абонемента, application фиксируем с 0 дней.
+        period_start = max(subscription.start_date or freeze_start, freeze_start)
+        period_end = min(subscription.end_date, freeze_end)
+        if period_end < period_start:
+            app = GlobalFreezeApplication(
+                global_freeze_id=global_freeze.id,
+                subscription_id=subscription.id,
+                training_days_added=0,
+                old_end_date=subscription.end_date,
+                new_end_date=subscription.end_date,
+                created_at=now_moscow(),
+            )
+            session.add(app)
+            skipped += 1
+            continue
+
+        training_days_count = _count_training_days_between(period_start, period_end, sport_type, age_group)
+        # Учитываем персональную заморозку: не добавляем дни, которые уже покрыты ею
+        overlap_training_days = 0
+        if subscription.is_frozen and subscription.frozen_from and subscription.frozen_until:
+            overlap_start = max(period_start, subscription.frozen_from)
+            overlap_end = min(period_end, subscription.frozen_until)
+            if overlap_end >= overlap_start:
+                overlap_training_days = _count_training_days_between(
+                    overlap_start, overlap_end, sport_type, age_group
+                )
+
+        effective_training_days = max(training_days_count - overlap_training_days, 0)
+        old_end_date = subscription.end_date
+        new_end_date = old_end_date
+
+        if effective_training_days > 0:
+            schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+            if schedule:
+                days = schedule['days']
+                current_date = old_end_date.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+                added = 0
+                searched = 0
+                while added < effective_training_days and searched < 180:
+                    if current_date.weekday() in days:
+                        added += 1
+                        if added == effective_training_days:
+                            hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, current_date.weekday())
+                            new_end_date = training_end_time(
+                                current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                            )
+                            break
+                    current_date += timedelta(days=1)
+                    searched += 1
+            else:
+                new_end_date = old_end_date + timedelta(days=effective_training_days)
+
+            subscription.end_date = new_end_date
+            purge_auto_attendances_during_active_global_freeze(session, subscription)
+            sync_subscription_trainings_remaining(session, subscription, reason="after_global_freeze")
+            updated += 1
+            total_training_days_added += effective_training_days
+        else:
+            skipped += 1
+
+        app = GlobalFreezeApplication(
+            global_freeze_id=global_freeze.id,
+            subscription_id=subscription.id,
+            training_days_added=effective_training_days,
+            old_end_date=old_end_date,
+            new_end_date=new_end_date,
+            created_at=now_moscow(),
+        )
+        session.add(app)
+
+    session.commit()
+    return {
+        "success": True,
+        "message": "Массовая заморозка применена",
+        "global_freeze_id": global_freeze.id,
+        "updated_subscriptions": updated,
+        "skipped_subscriptions": skipped,
+        "total_training_days_added": total_training_days_added,
+        "start_date": freeze_start,
+        "end_date": freeze_end,
+    }

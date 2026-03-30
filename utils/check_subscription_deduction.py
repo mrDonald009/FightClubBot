@@ -10,6 +10,7 @@ import sys
 import argparse
 import sqlite3
 from datetime import datetime, timedelta, date
+from utils.time_utils import today_moscow
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -63,7 +64,7 @@ def main() -> int:
     con = sqlite3.connect(args.db)
     try:
         cur = con.cursor()
-        today = datetime.utcnow().date()
+        today = today_moscow()
         q = (
             "SELECT s.id, a.full_name, a.sport_type, a.age_group, s.start_date, s.end_date, "
             "s.trainings_total, s.trainings_remaining "

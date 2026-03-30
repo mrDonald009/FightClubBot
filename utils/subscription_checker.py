@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 from database.models import Session, Subscription, Athlete
+from utils.time_utils import now_moscow
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +27,12 @@ class SubscriptionChecker:
                 reason = ""
                 
                 # Проверяем дату окончания
-                if subscription.end_date and subscription.end_date < datetime.utcnow():
+                if subscription.end_date and subscription.end_date < now_moscow():
                     should_deactivate = True
                     reason = "истек срок действия"
                 
                 # Проверяем количество оставшихся тренировок
-                if subscription.trainings_remaining <= 0:
+                if subscription.trainings_remaining is not None and subscription.trainings_remaining <= 0:
                     should_deactivate = True
                     reason = "закончились тренировки" if not reason else f"{reason} и закончились тренировки"
                 
@@ -66,7 +67,7 @@ class SubscriptionChecker:
 
         # Проверяем дату окончания
         if subscription.end_date:
-            current_time = datetime.utcnow()
+            current_time = now_moscow()
 
             # Если абонемент истек
             if subscription.end_date < current_time:
@@ -115,11 +116,11 @@ class SubscriptionChecker:
                 should_deactivate = False
                 reason = ""
                 
-                if subscription.end_date and subscription.end_date < datetime.utcnow():
+                if subscription.end_date and subscription.end_date < now_moscow():
                     should_deactivate = True
                     reason = "истек срок действия"
                 
-                if subscription.trainings_remaining <= 0:
+                if subscription.trainings_remaining is not None and subscription.trainings_remaining <= 0:
                     should_deactivate = True
                     reason = "закончились тренировки" if not reason else f"{reason} и закончились тренировки"
                 

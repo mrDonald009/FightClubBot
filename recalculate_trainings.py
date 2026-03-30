@@ -17,17 +17,14 @@ if hasattr(sys.stderr, "reconfigure"):
 # Добавляем текущую директорию в путь для импортов
 sys.path.append(str(Path(__file__).parent))
 
-from database.models import Session, Subscription, Attendance, Training
-from datetime import datetime, timedelta
-from sqlalchemy import func, or_, and_
+from database.models import Session, Subscription
+from database.db_utils import calculate_actual_trainings_remaining
 
 def recalculate_trainings_remaining():
-    """Пересчитать trainings_remaining для всех абонементов на основе фактических записей Attendance."""
+    """Пересчитать trainings_remaining для всех абонементов (логика как в calculate_actual_trainings_remaining)."""
     session = Session()
     try:
         print("🔄 Начинаю пересчет оставшихся тренировок...")
-        
-        current_time = datetime.utcnow()
         
         # Получаем все абонементы
         subscriptions = session.query(Subscription).all()
@@ -35,31 +32,10 @@ def recalculate_trainings_remaining():
         updated_count = 0
         
         for subscription in subscriptions:
-            if subscription.trainings_total is None:
+            new_remaining = calculate_actual_trainings_remaining(session, subscription)
+            if new_remaining is None:
                 print(f"⚠️  Абонемент #{subscription.id}: trainings_total = None, пропускаем")
                 continue
-            
-            # Считаем количество завершенных и невосстановленных тренировок
-            # Учитываем только те тренировки, которые:
-            # 1. Уже завершились (training_date + 1.5 часа < текущее время)
-            # 2. Не были восстановлены (was_restored = False или NULL)
-            # 3. В пределах периода абонемента (start_date <= training_date <= end_date)
-            filters = [
-                Attendance.subscription_id == subscription.id,
-                Training.training_date + timedelta(hours=1.5) <= current_time,
-                or_(Attendance.was_restored == False, Attendance.was_restored == None)
-            ]
-            if subscription.start_date:
-                filters.append(Training.training_date >= subscription.start_date)
-            if subscription.end_date:
-                filters.append(Training.training_date <= subscription.end_date)
-            
-            used_count = session.query(func.count(Attendance.id)).join(
-                Training, Attendance.training_id == Training.id
-            ).filter(and_(*filters)).scalar() or 0
-            
-            # Рассчитываем новое значение trainings_remaining
-            new_remaining = max(subscription.trainings_total - used_count, 0)
             
             # Обновляем только если значение изменилось
             if subscription.trainings_remaining != new_remaining:
@@ -71,9 +47,10 @@ def recalculate_trainings_remaining():
                 athlete = subscription.athlete
                 athlete_name = athlete.full_name if athlete else "Неизвестно"
                 
+                used = (subscription.trainings_total or 0) - new_remaining
                 print(f"✅ Абонемент #{subscription.id} ({athlete_name}): "
                       f"{old_remaining} → {new_remaining} "
-                      f"(использовано: {used_count}/{subscription.trainings_total})")
+                      f"(использовано по расчёту: {used}/{subscription.trainings_total})")
         
         if updated_count > 0:
             session.commit()

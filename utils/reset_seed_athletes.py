@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple, List
+from utils.time_utils import now_moscow
 
 
 DB_PATH = Path("database/club.db")
@@ -40,7 +41,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    return now_moscow()
 
 
 def _dt_str(dt: Optional[datetime]) -> Optional[str]:
@@ -120,7 +121,7 @@ def _get_primary_coach(cur: sqlite3.Cursor) -> CoachInfo:
 def _backup_db() -> Path:
     if not DB_PATH.exists():
         raise FileNotFoundError(f"База не найдена: {DB_PATH}")
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    ts = now_moscow().strftime("%Y%m%d-%H%M%S")
     backup_path = DB_PATH.with_suffix(f".db.bak-{ts}")
     shutil.copy2(DB_PATH, backup_path)
     return backup_path

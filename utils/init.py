@@ -1,6 +1,7 @@
 from database.models import Session, Coach, Admin, Athlete, Subscription, Training
 from database.db_utils import create_user, create_athlete, create_subscription
 from datetime import datetime, timedelta
+from utils.time_utils import now_moscow
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -83,10 +84,11 @@ def init_database():
         )
 
         # Создаем тестовые тренировки
+        base_now = now_moscow()
         training_dates = [
-            datetime.now() + timedelta(days=i)
+            base_now + timedelta(days=i)
             for i in range(7)
-            if (datetime.now() + timedelta(days=i)).weekday() in [0, 2, 4]  # Пн, Ср, Пт
+            if (base_now + timedelta(days=i)).weekday() in [0, 2, 4]  # Пн, Ср, Пт
         ]
 
         for date in training_dates[:3]:  # Создаем 3 ближайшие тренировки

@@ -1,9 +1,15 @@
 """Модуль для инициализации и стартовых задач приложения."""
 import logging
+from datetime import time
+
+from telegram.ext import Application
+
 from core.config import Config
 from core.database import get_db_session
 from services.user_service import UserService
 from services.subscription_service import SubscriptionService
+from services.subscription_audit_service import run_subscription_audit, format_audit_report
+from utils.time_utils import APP_TZ
 
 logger = logging.getLogger(__name__)
 
@@ -68,4 +74,42 @@ def initialize_app(config: Config) -> None:
     check_subscriptions_on_startup()
     
     logger.info("✅ Инициализация завершена")
+
+
+async def _daily_subscription_audit_job(context) -> None:
+    """Ежесуточный read-only аудит абонементов с отправкой отчета админу."""
+    config = context.application.bot_data.get("config")
+    admin_id = getattr(config, "ADMIN_TELEGRAM_ID", None) if config else None
+
+    try:
+        with get_db_session() as session:
+            report = run_subscription_audit(session)
+        report_text = format_audit_report(report)
+
+        logger.info(
+            "🩺 Daily audit: checked=%s issues=%s",
+            report.get("total_subscriptions", 0),
+            report.get("issues_total", 0),
+        )
+
+        if admin_id:
+            await context.bot.send_message(chat_id=admin_id, text=report_text, parse_mode="HTML")
+    except Exception as e:  # pragma: no cover
+        logger.error(f"❌ Ошибка daily-аудита абонементов: {e}", exc_info=True)
+
+
+def setup_scheduled_jobs(application: Application, config: Config) -> None:
+    """Настроить плановые задачи приложения."""
+    application.bot_data["config"] = config
+    if not application.job_queue:
+        logger.warning("⚠️ JobQueue недоступен: ежедневный аудит не запланирован")
+        return
+
+    run_time = time(hour=8, minute=0, tzinfo=APP_TZ)
+    application.job_queue.run_daily(
+        _daily_subscription_audit_job,
+        time=run_time,
+        name="daily_subscription_audit",
+    )
+    logger.info("🗓️ Запланирован ежедневный аудит абонементов (08:00 APP_TIMEZONE)")
 

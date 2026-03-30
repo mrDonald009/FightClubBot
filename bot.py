@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 try:
     from core.config import Config
     from core.application import ApplicationFactory, HandlerRegistrar
-    from core.startup import initialize_app
+    from core.startup import initialize_app, setup_scheduled_jobs
     from handlers.router import register_all_handlers
     
     logger.info("✅ Загружена новая архитектура")
@@ -71,6 +71,9 @@ def main() -> None:
         register_all_handlers(registrar)
         ApplicationFactory.setup_application(application, registrar)
         logger.info("✅ Все обработчики зарегистрированы")
+
+        # Плановые read-only проверки/оповещения
+        setup_scheduled_jobs(application, config)
 
         # Запускаем бота
         logger.info("=" * 50)

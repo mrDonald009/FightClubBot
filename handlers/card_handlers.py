@@ -4,61 +4,26 @@ import calendar as py_calendar
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 from database.models import Session, Athlete, Subscription, Training, Attendance, Coach, Admin
-from database.db_utils import get_user_by_telegram_id, get_user_role, get_athlete_card_info
+from database.db_utils import (
+    get_user_by_telegram_id,
+    get_user_role,
+    get_athlete_card_info,
+    calculate_actual_trainings_remaining as db_calculate_actual_trainings_remaining,
+    sync_subscription_trainings_remaining,
+    is_training_in_global_freeze,
+    now_moscow,
+)
 from typing import Union
 import html
 from utils.training_manager import TrainingManager
+from utils.subscription_checker import SubscriptionChecker
 
 logger = logging.getLogger(__name__)
 
 
 def calculate_actual_trainings_remaining(session, subscription):
-    """
-    Пересчитать фактическое количество оставшихся тренировок на основе завершенных тренировок.
-    
-    Учитывает только:
-    - Завершенные тренировки (начало + 1.5 часа < текущее время)
-    - Не восстановленные (was_restored = False или NULL)
-    - В пределах периода абонемента (start_date <= training_date <= end_date)
-    
-    Args:
-        session: Сессия базы данных
-        subscription: Объект Subscription
-        
-    Returns:
-        Фактическое количество оставшихся тренировок
-    """
-    if subscription.trainings_total is None:
-        return None
-    
-    from datetime import datetime, timedelta
-    from sqlalchemy import or_, and_
-    from database.models import Attendance, Training
-    
-    current_time = datetime.utcnow()
-    
-    filters = [
-        Attendance.subscription_id == subscription.id,
-        # Тренировка завершилась (начало + 1.5 часа <= текущее время)
-        Training.training_date + timedelta(hours=1.5) <= current_time,
-        # Не восстановлена
-        or_(Attendance.was_restored == False, Attendance.was_restored == None)
-    ]
-    
-    # Учитываем только тренировки в пределах периода абонемента
-    if subscription.start_date:
-        filters.append(Training.training_date >= subscription.start_date)
-    if subscription.end_date:
-        filters.append(Training.training_date <= subscription.end_date)
-    
-    used_count = session.query(Attendance).join(
-        Training, Attendance.training_id == Training.id
-    ).filter(and_(*filters)).count()
-    
-    # Рассчитываем фактическое количество оставшихся
-    actual_remaining = max(subscription.trainings_total - used_count, 0)
-    
-    return actual_remaining
+    """Совместимый враппер над единым расчетом из database.db_utils."""
+    return db_calculate_actual_trainings_remaining(session, subscription)
 
 
 def get_coach_sport_type(user: Union[Coach, Admin]) -> str:
@@ -78,6 +43,47 @@ def _format_subscription_type_ru(subscription_type: str) -> str:
     if subscription_type == "single":
         return "Разовый"
     return "Тип не определен"
+
+
+def _format_dt(dt: datetime) -> str:
+    """Единый формат даты/времени для UI."""
+    return dt.strftime('%d.%m.%Y %H:%M') if dt else "—"
+
+
+def _freeze_note(subscription: Subscription) -> str:
+    if (subscription.frozen_training_days_total or 0) > 0 and not subscription.is_frozen:
+        return f" (продлена на {subscription.frozen_training_days_total} тр. дней)"
+    return ""
+
+
+def _format_subscription_status_ui(subscription: Subscription) -> str:
+    """
+    Единое отображение статуса абонемента в UI (по МСК):
+    - Истек N дней назад
+    - Действует, осталось N дней
+    - fallback в базовый статус checker
+    """
+    if subscription and subscription.end_date:
+        now = now_moscow()
+        if subscription.end_date < now:
+            days_expired = (now - subscription.end_date).days
+            return f"🔴 Истек {days_expired} дней назад"
+        if subscription.is_active:
+            return "✅ Активен"
+    return SubscriptionChecker.format_subscription_status(subscription)
+
+
+def _status_icon_from_status_text(status_text: str) -> str:
+    """Иконка статуса для кнопок списков."""
+    if not status_text:
+        return "⚪"
+    if status_text.startswith("✅"):
+        return "🟢"
+    if status_text.startswith("🔴"):
+        return "🔴"
+    if status_text.startswith("🟡"):
+        return "🟡"
+    return "⚪"
 
 
 def _get_schedule(sport_type: str, age_group: str):
@@ -103,7 +109,7 @@ def _build_activation_calendar(
     schedule = _get_schedule(sport_type, age_group)
     training_days = set(schedule["days"]) if schedule else set()
 
-    today = datetime.utcnow().date()
+    today = now_moscow().date()
 
     # Создаем календарь (monthcalendar возвращает недели с понедельника как первый день)
     cal = py_calendar.monthcalendar(year, month)
@@ -163,7 +169,7 @@ def _build_activation_calendar(
     ])
 
     # Кнопка "Сегодня"
-    now = datetime.utcnow().date()
+    now = now_moscow().date()
     if month != now.month or year != now.year:
         keyboard.append([
             InlineKeyboardButton("📅 Сегодня", callback_data=f"act_cal_{subscription_id}_{now.year}_{now.month}")
@@ -260,15 +266,14 @@ async def handle_activation_date_pick(update: Update, context: ContextTypes.DEFA
         start_date = _find_nearest_training_date(coach_selected_date, sport_type, age_group)
 
         # Рассчитываем end_date
-        from database.db_utils import _calculate_12th_training_date, _calculate_end_date
-        from datetime import timedelta as _td
+        from database.db_utils import _calculate_12th_training_date, training_end_time
 
         if subscription.subscription_type == "monthly":
             # Дата окончания = дата 12-й тренировки + 1,5 часа (окончание последней тренировки)
             end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
         elif subscription.subscription_type == "single":
             # Дата окончания = дата начала + 1,5 часа (окончание тренировки)
-            end_date = start_date + _td(hours=1.5)
+            end_date = training_end_time(start_date)
         else:
             # Тип еще не выбран — просим вернуться назад
             await query.edit_message_text("❌ Сначала выберите тип абонемента.")
@@ -312,6 +317,8 @@ async def handle_activation_date_pick(update: Update, context: ContextTypes.DEFA
             # Списание должно происходить по факту (авто-списание/отметка посещения),
             # а отображение в календаре делаем по активным абонементам и диапазону дат.
 
+        # Защитная синхронизация остатка после установки дат.
+        sync_subscription_trainings_remaining(session, subscription)
         session.commit()
 
         # Показать карточку абонемента
@@ -573,10 +580,8 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
                 message += f"Выберите существующий абонемент или создайте новый:\n\n"
                 
                 keyboard = []
-                from utils.subscription_checker import SubscriptionChecker
                 for sub in sorted(all_subscriptions, key=lambda s: s.created_at or datetime.min, reverse=True):
-                    status = SubscriptionChecker.get_subscription_status(sub)
-                    status_icon = "🟢" if status == "active" else "🔴" if status == "expired" else "⚪"
+                    status_icon = _status_icon_from_status_text(_format_subscription_status_ui(sub))
                     sport_type_display = sub.sport_type or "—"
                     sub_type = _format_subscription_type_ru(sub.subscription_type)
                     start_date_str = sub.start_date.strftime('%d.%m.%Y') if sub.start_date else "—"
@@ -615,10 +620,8 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             message += f"🎫 <b>АБОНЕМЕНТЫ</b>\n\n"
             
             keyboard = []
-            from utils.subscription_checker import SubscriptionChecker
             for sub in sorted(all_subscriptions, key=lambda s: s.created_at or datetime.min, reverse=True):
-                status = SubscriptionChecker.get_subscription_status(sub)
-                status_icon = "🟢" if status == "active" else "🔴" if status == "expired" else "⚪"
+                status_icon = _status_icon_from_status_text(_format_subscription_status_ui(sub))
                 sport_type_display = sub.sport_type or "—"
                 sub_type = _format_subscription_type_ru(sub.subscription_type)
                 start_date_str = sub.start_date.strftime('%d.%m.%Y') if sub.start_date else "—"
@@ -669,8 +672,7 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
         message += f"• Тип абонемента: {sub_type_display}\n"
 
         # Статус
-        from utils.subscription_checker import SubscriptionChecker
-        status_display = SubscriptionChecker.format_subscription_status(subscription)
+        status_display = _format_subscription_status_ui(subscription)
         message += f"• Статус: {status_display}\n"
         
         # Статус заморозки
@@ -684,14 +686,12 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             message += f"• ❄️ Заморожено тренировочных дней: {subscription.frozen_training_days_total}\n"
 
         # Даты (до активации не показываем "дату начала", даже если она случайно заполнена в БД)
-        start_date_str = subscription.start_date.strftime('%d.%m.%Y') if (subscription.is_active and subscription.start_date) else "—"
+        start_date_str = _format_dt(subscription.start_date) if (subscription.is_active and subscription.start_date) else "—"
         message += f"• Дата начала: {start_date_str}\n"
         
         if subscription.is_active and subscription.end_date:
-            end_date_str = subscription.end_date.strftime('%d.%m.%Y %H:%M')
-            days_left = (subscription.end_date - datetime.utcnow()).days
-            freeze_note = f" (продлена на {subscription.frozen_training_days_total} тр. дней)" if (subscription.frozen_training_days_total or 0) > 0 and not subscription.is_frozen else ""
-            message += f"• Дата окончания: {end_date_str}{freeze_note}\n"
+            end_date_str = _format_dt(subscription.end_date)
+            message += f"• Дата окончания: {end_date_str}{_freeze_note(subscription)}\n"
             
             # Осталось тренировок (пересчитываем на лету для актуальности)
             if subscription.trainings_total is None:
@@ -700,9 +700,7 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
                 actual_remaining = calculate_actual_trainings_remaining(session, subscription)
                 if actual_remaining is not None:
                     message += f"• Осталось тренировок: {actual_remaining}/{subscription.trainings_total}\n"
-                    # Обновляем значение в БД для синхронизации
-                    if subscription.trainings_remaining != actual_remaining:
-                        subscription.trainings_remaining = actual_remaining
+                    if sync_subscription_trainings_remaining(session, subscription):
                         session.commit()
                 else:
                     message += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
@@ -730,12 +728,8 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
                     InlineKeyboardButton("❄️ Заморозить", callback_data=f"freeze_sub_{subscription.id}")
                 ])
 
-        # История абонемента: показываем только если есть хотя бы 2 абонемента
-        has_history = session.query(Subscription).filter_by(athlete_id=athlete_id).count() > 1
-        if has_history:
-            keyboard.append([
-                InlineKeyboardButton("📜 История абонемента", callback_data=f"subscription_history_{athlete_id}")
-            ])
+        # При схеме 1 спортсмен = 1 абонемент кнопка "История абонемента" не нужна
+        # (историю посещений можно открыть через "📅 Посещения" в карточке спортсмена)
 
         keyboard.append([
             InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
@@ -811,8 +805,8 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
                 await message.reply_text(error_msg)
             return
         
-        # Получаем спортсмена по user_id
-        athlete = session.query(Athlete).filter_by(user_id=user.id).first()
+        # Получаем спортсмена: у Athlete user.id = athletes.id (PK)
+        athlete = session.query(Athlete).filter_by(id=user.id).first()
         
         if not athlete:
             error_msg = "❌ Профиль спортсмена не найден. Обратитесь к тренеру."
@@ -880,20 +874,17 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
         sub_type_display = _format_subscription_type_ru(subscription.subscription_type)
         message_text += f"• Тип: {sub_type_display}\n"
         
-        # Используем checker для статуса
-        from utils.subscription_checker import SubscriptionChecker
-        status_display = SubscriptionChecker.format_subscription_status(subscription)
+        # Единый статус
+        status_display = _format_subscription_status_ui(subscription)
         message_text += f"• Статус: {status_display}\n"
         
         # Улучшенное отображение дат действия
-        start_date_str = subscription.start_date.strftime('%d.%m.%Y %H:%M') if subscription.start_date else "—"
+        start_date_str = _format_dt(subscription.start_date)
         message_text += f"• Дата начала: {start_date_str}\n"
         
         if subscription.end_date:
-            end_date_str = subscription.end_date.strftime('%d.%m.%Y %H:%M')
-            days_left = (subscription.end_date - datetime.utcnow()).days
-            freeze_note = f" (продлена на {subscription.frozen_training_days_total} тр. дней)" if (subscription.frozen_training_days_total or 0) > 0 and not subscription.is_frozen else ""
-            message_text += f"• Дата окончания: {end_date_str}{freeze_note}\n"
+            end_date_str = _format_dt(subscription.end_date)
+            message_text += f"• Дата окончания: {end_date_str}{_freeze_note(subscription)}\n"
             
             # Осталось тренировок (пересчитываем на лету для актуальности)
             if subscription.trainings_total is None:
@@ -902,9 +893,7 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
                 actual_remaining = calculate_actual_trainings_remaining(session, subscription)
                 if actual_remaining is not None:
                     message_text += f"• Осталось тренировок: {actual_remaining}/{subscription.trainings_total}\n"
-                    # Обновляем значение в БД для синхронизации
-                    if subscription.trainings_remaining != actual_remaining:
-                        subscription.trainings_remaining = actual_remaining
+                    if sync_subscription_trainings_remaining(session, subscription):
                         session.commit()
                 else:
                     message_text += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
@@ -1002,8 +991,8 @@ async def show_my_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYP
                 await message.reply_text(error_msg)
             return
         
-        # Получаем спортсмена по user_id
-        athlete = session.query(Athlete).filter_by(user_id=user.id).first()
+        # Получаем спортсмена: у Athlete user.id = athletes.id (PK)
+        athlete = session.query(Athlete).filter_by(id=user.id).first()
         
         if not athlete:
             error_msg = "❌ Профиль спортсмена не найден. Обратитесь к тренеру."
@@ -1046,9 +1035,8 @@ async def show_my_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYP
         
         message_text += f"<b>🎫 АБОНЕМЕНТ</b>\n"
         if subscription:
-            # Проверяем статус абонемента
-            from utils.subscription_checker import SubscriptionChecker
-            status_display = SubscriptionChecker.format_subscription_status(subscription)
+            # Единый статус абонемента
+            status_display = _format_subscription_status_ui(subscription)
             
             trainings_remaining = subscription.trainings_remaining or 0
             trainings_total = subscription.trainings_total or 0
@@ -1056,13 +1044,8 @@ async def show_my_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYP
             if subscription.total_restored > 0:
                 trainings += f" (🔄 +{subscription.total_restored})"
             sub_type = "Месячный" if subscription.subscription_type == "monthly" else "Разовый" if subscription.subscription_type == "single" else "Тип не определен"
-            end_date = subscription.end_date.strftime("%d.%m.%Y") if subscription.end_date else "—"
-            freeze_note = f" (продлена на {subscription.frozen_training_days_total} тр. дней)" if (subscription.frozen_training_days_total or 0) > 0 and not subscription.is_frozen else ""
-            
-            # Добавляем информацию о том, когда истек
-            if subscription.end_date and subscription.end_date < datetime.utcnow():
-                days_expired = (datetime.utcnow() - subscription.end_date).days
-                status_display = f"🔴 Истек {days_expired} дней назад"
+            end_date = _format_dt(subscription.end_date)
+            freeze_note = _freeze_note(subscription)
             
             message_text += f"• Статус: {status_display}\n"
             message_text += f"• Тип: {sub_type}\n"
@@ -1137,9 +1120,9 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             await query.edit_message_text("❌ Пользователь не найден")
             return
         
-        # Если спортсмен смотрит свою историю, получаем athlete_id из user_id
+        # Если спортсмен смотрит свою историю, получаем athlete по id (у Athlete user.id = athletes.id)
         if isinstance(user, Athlete) and callback_data.startswith("athlete_"):
-            athlete = session.query(Athlete).filter_by(user_id=user.id).first()
+            athlete = session.query(Athlete).filter_by(id=user.id).first()
             if not athlete:
                 await query.edit_message_text("❌ Профиль спортсмена не найден")
                 return
@@ -1193,16 +1176,8 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
         keyboard = []
         
         for idx, sub in enumerate(subscriptions[:10], 1):  # Показываем первые 10
-            # Определяем статус
-            from utils.subscription_checker import SubscriptionChecker
-            status = SubscriptionChecker.get_subscription_status(sub)
-            
-            if status == "active":
-                status_icon = "🟢"
-            elif status == "expired":
-                status_icon = "🔴"
-            else:
-                status_icon = "⚪"
+            status_text = _format_subscription_status_ui(sub)
+            status_icon = _status_icon_from_status_text(status_text)
             
             # Форматируем даты
             start_date_str = sub.start_date.strftime('%d.%m.%Y') if sub.start_date else "—"
@@ -1227,10 +1202,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             message += f"   Тип: {sub_type}\n"
             message += f"   Период: {start_date_str} — {end_date_str}\n"
             
-            if sub.is_active:
-                message += f"   Статус: Активен\n"
-            else:
-                message += f"   Статус: Неактивен\n"
+            message += f"   Статус: {status_text}\n"
             
             trainings_remaining = sub.trainings_remaining or 0
             trainings_total = sub.trainings_total or 0
@@ -1334,20 +1306,17 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
         sub_type_display = _format_subscription_type_ru(subscription.subscription_type)
         message += f"• Тип: {sub_type_display}\n"
         
-        # Используем checker для статуса
-        from utils.subscription_checker import SubscriptionChecker
-        status_display = SubscriptionChecker.format_subscription_status(subscription)
+        # Единый статус
+        status_display = _format_subscription_status_ui(subscription)
         message += f"• Статус: {status_display}\n"
         
         # Улучшенное отображение дат действия
-        start_date_str = subscription.start_date.strftime('%d.%m.%Y %H:%M') if subscription.start_date else "—"
+        start_date_str = _format_dt(subscription.start_date)
         message += f"• Дата начала: {start_date_str}\n"
         
         if subscription.end_date:
-            end_date_str = subscription.end_date.strftime('%d.%m.%Y %H:%M')
-            days_left = (subscription.end_date - datetime.utcnow()).days
-            freeze_note = f" (продлена на {subscription.frozen_training_days_total} тр. дней)" if (subscription.frozen_training_days_total or 0) > 0 and not subscription.is_frozen else ""
-            message += f"• Дата окончания: {end_date_str}{freeze_note}\n"
+            end_date_str = _format_dt(subscription.end_date)
+            message += f"• Дата окончания: {end_date_str}{_freeze_note(subscription)}\n"
             
             # Осталось тренировок (пересчитываем на лету для актуальности)
             if subscription.trainings_total is None:
@@ -1356,9 +1325,7 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
                 actual_remaining = calculate_actual_trainings_remaining(session, subscription)
                 if actual_remaining is not None:
                     message += f"• Осталось тренировок: {actual_remaining}/{subscription.trainings_total}\n"
-                    # Обновляем значение в БД для синхронизации
-                    if subscription.trainings_remaining != actual_remaining:
-                        subscription.trainings_remaining = actual_remaining
+                    if sync_subscription_trainings_remaining(session, subscription):
                         session.commit()
                 else:
                     message += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
@@ -1531,7 +1498,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 logger.info(f"[activate_sub] type_selected_existing subscription_id={subscription.id} type={subscription.subscription_type}")
 
                 # Показываем календарь выбора даты первой тренировки (дата = дата активации)
-                now = datetime.utcnow()
+                now = now_moscow()
                 sport_type = subscription.sport_type or athlete.sport_type
                 reply_markup = _build_activation_calendar(subscription.id, sport_type, athlete.age_group, now.year, now.month)
 
@@ -1573,29 +1540,50 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 active_subs = [s for s in athlete.subscriptions if s.is_active]
                 for old_sub in active_subs:
                     old_sub.is_active = False
-                
-                # Создаем абонемент (пока НЕ активируем, дату выберем в календаре)
-                from services.subscription_service import SubscriptionService
-                
-                subscription = SubscriptionService.create_subscription(
-                    session=session,
-                    athlete_id=athlete_id,
-                    subscription_type=subscription_type,
-                    sport_type=sport_type_for_sub  # Используем вид спорта из профиля тренера
-                )
+
+                # По бизнес-логике: у спортсмена всегда один абонемент (row).
+                # Поэтому здесь мы НЕ создаем новый Subscription, а обновляем существующий.
+                subscription = session.query(Subscription).filter_by(athlete_id=athlete_id).first()
+                if not subscription:
+                    # Fallback на случай неконсистентных данных: создаем, но в штатной логике так быть не должно.
+                    from services.subscription_service import SubscriptionService
+                    subscription = SubscriptionService.create_subscription(
+                        session=session,
+                        athlete_id=athlete_id,
+                        subscription_type=subscription_type,
+                        sport_type=sport_type_for_sub,
+                    )
+
+                subscription.subscription_type = subscription_type
+                if subscription_type == "monthly":
+                    subscription.trainings_total = 12
+                    subscription.trainings_remaining = 12
+                elif subscription_type == "single":
+                    subscription.trainings_total = 1
+                    subscription.trainings_remaining = 1
+                else:
+                    # На всякий случай (по текущему UI ожидаем только monthly/single)
+                    await query.edit_message_text("❌ Неверный тип абонемента")
+                    return
 
                 # Явно фиксируем "неактивен до выбора даты"
                 subscription.is_active = False
                 subscription.start_date = None
                 subscription.end_date = None
 
+                # Обновляем вид спорта абонемента (для дальнейшей логики календаря/тренировок)
+                if sport_type_for_sub:
+                    subscription.sport_type = sport_type_for_sub
+
                 session.commit()
-                logger.info(f"[activate_sub] type_selected_new subscription_id={subscription.id} type={subscription.subscription_type}")
+                logger.info(
+                    f"[activate_sub] type_selected_new_updated subscription_id={subscription.id} type={subscription.subscription_type}"
+                )
 
                 # Очищаем сохраненный вид спорта из контекста
                 context.user_data.pop('new_subscription_sport_type', None)
 
-                now = datetime.utcnow()
+                now = now_moscow()
                 reply_markup = _build_activation_calendar(subscription.id, subscription.sport_type or athlete.sport_type, athlete.age_group, now.year, now.month)
 
                 subscription_type_ru = "Месячный" if subscription_type == "monthly" else "Разовый"
@@ -1653,22 +1641,21 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             return
         
         # Если тип уже определен, активируем абонемент
-        from database.db_utils import _calculate_end_date, _find_nearest_training_date
+        from database.db_utils import _find_nearest_training_date, _calculate_12th_training_date, training_end_time
         from datetime import timedelta
         
         # Находим ближайшую дату тренировки согласно расписанию, начиная с текущей даты
         sport_type = subscription.sport_type or athlete.sport_type
         age_group = athlete.age_group
-        coach_selected_date = datetime.utcnow()
+        coach_selected_date = now_moscow()
         start_date = _find_nearest_training_date(coach_selected_date, sport_type, age_group)
         
         if subscription.subscription_type == "monthly":
             # Дата окончания = дата 12-й тренировки + 1,5 часа (окончание последней тренировки)
-            from database.db_utils import _calculate_12th_training_date
             end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
         elif subscription.subscription_type == "single":
             # Дата окончания = дата начала + 1,5 часа (окончание тренировки)
-            end_date = start_date + timedelta(hours=1.5)
+            end_date = training_end_time(start_date)
         else:
             end_date = start_date + timedelta(days=30)  # По умолчанию 30 дней
         
@@ -1686,6 +1673,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             from database.db_utils import _create_and_deduct_scheduled_trainings
             _create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
         
+        sync_subscription_trainings_remaining(session, subscription)
         session.commit()
         
         await query.answer("✅ Абонемент активирован", show_alert=True)
@@ -1820,7 +1808,7 @@ async def show_athlete_stats(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
         
         # Получаем статистику за разные периоды
-        now = datetime.utcnow()
+        now = now_moscow()
         week_ago = now - timedelta(days=7)
         month_ago = now - timedelta(days=30)
         three_months_ago = now - timedelta(days=90)
@@ -2044,6 +2032,15 @@ async def execute_restore_training(update: Update, context: ContextTypes.DEFAULT
         if attendance.attended:
             await query.edit_message_text("❌ Можно восстановить только пропущенные тренировки")
             return
+
+        # Массовая заморозка = период без изменения остатка/восстановлений.
+        training_date = attendance.training.training_date if attendance.training else None
+        if training_date and is_training_in_global_freeze(session, training_date):
+            await query.edit_message_text(
+                "⛔️ В период массовой заморозки восстановление тренировок недоступно."
+                "\n\nСписание/восстановление в этот период не применяется."
+            )
+            return
         
         # Восстанавливаем тренировку
         attendance.was_restored = True
@@ -2056,7 +2053,7 @@ async def execute_restore_training(update: Update, context: ContextTypes.DEFAULT
             
             # Обновляем счетчик восстановлений за месяц
             if attendance.created_at:
-                now = datetime.utcnow()
+                now = now_moscow()
                 if attendance.created_at.year == now.year and attendance.created_at.month == now.month:
                     subscription.restored_this_month = (subscription.restored_this_month or 0) + 1
         
@@ -2131,11 +2128,9 @@ async def select_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
         message += f"Выберите абонемент для просмотра:\n\n"
         
         keyboard = []
-        from utils.subscription_checker import SubscriptionChecker
         
         for sub in active_subs:
-            status = SubscriptionChecker.get_subscription_status(sub)
-            status_icon = "🟢" if status == "active" else "🟡" if status == "expiring_soon" else "🔴"
+            status_icon = _status_icon_from_status_text(_format_subscription_status_ui(sub))
             sport_type_display = sub.sport_type or "—"
             trainings = f"{sub.trainings_remaining or 0}/{sub.trainings_total or 0}"
             
@@ -2270,7 +2265,7 @@ def _build_freeze_calendar(
     schedule = _get_schedule(sport_type, age_group)
     training_days = set(schedule["days"]) if schedule else set()
 
-    today = datetime.utcnow().date()
+    today = now_moscow().date()
 
     cal = py_calendar.monthcalendar(year, month)
 
@@ -2328,7 +2323,7 @@ def _build_freeze_calendar(
     ])
 
     # Кнопка "Сегодня"
-    now = datetime.utcnow().date()
+    now = now_moscow().date()
     if month != now.month or year != now.year:
         keyboard.append([
             InlineKeyboardButton("📅 Сегодня", callback_data=f"freeze_cal_{subscription_id}_{now.year}_{now.month}")
@@ -2378,7 +2373,7 @@ async def handle_freeze_subscription_start(update: Update, context: ContextTypes
         sport_type = subscription.sport_type or athlete.sport_type
         age_group = athlete.age_group
 
-        now = datetime.utcnow()
+        now = now_moscow()
         reply_markup = _build_freeze_calendar(subscription_id, sport_type, age_group, now.year, now.month)
 
         await query.edit_message_text(
