@@ -1,5 +1,6 @@
 # Конфиденциальные данные
 .env
+.env.dev
 *.env
 config_secrets.py
 token.txt
