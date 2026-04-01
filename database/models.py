@@ -311,14 +311,18 @@ class GlobalFreezeApplication(Base):
     subscription = relationship("Subscription")
 
 
-# Путь к базе данных
-DB_PATH = "database/club.db"
+# URL базы данных (по умолчанию SQLite в папке проекта)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database/club.db")
 
-# Создаем папку если её нет
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+# Для SQLite гарантируем наличие директории файла БД
+if DATABASE_URL.startswith("sqlite:///"):
+    db_path = DATABASE_URL.replace("sqlite:///", "", 1)
+    db_dir = os.path.dirname(db_path)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
 
 # Создаем движок SQLAlchemy
-engine = create_engine(f'sqlite:///{DB_PATH}')
+engine = create_engine(DATABASE_URL)
 
 # Создаем таблицы если их нет
 Base.metadata.create_all(engine)
