@@ -1,5 +1,4 @@
 import os
-import sys
 from pathlib import Path
 
 
@@ -13,11 +12,17 @@ class Config:
 
     def _load_from_env(self):
         """Загрузить переменные окружения"""
-        # Пробуем загрузить из .env файла
+        # Пробуем загрузить из файла окружения.
+        # По умолчанию используем .env, но можно переопределить:
+        # ENV_FILE=.env.dev python bot.py
+        env_file = os.getenv("ENV_FILE", ".env")
         try:
             from dotenv import load_dotenv
-            load_dotenv()
-            print("✅ .env файл загружен")
+            loaded = load_dotenv(dotenv_path=env_file)
+            if loaded:
+                print(f"✅ Загружен env файл: {env_file}")
+            else:
+                print(f"ℹ️ Env файл не найден: {env_file}, используем системные переменные")
         except ImportError:
             print("⚠️ python-dotenv не установлен, используем системные переменные")
 
