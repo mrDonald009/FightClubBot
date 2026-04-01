@@ -1,0 +1,49 @@
+# Конфиденциальные данные
+.env
+*.env
+config_secrets.py
+token.txt
+
+# Базы данных
+*.db
+*.sqlite
+*.sqlite3
+
+# Логи с чувствительной информацией
+*.log
+
+# Питон кэш
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ОС
+.DS_Store
+Thumbs.db
+
+# Миграции БД (если позже добавим)
+migrations/

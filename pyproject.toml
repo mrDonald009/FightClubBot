@@ -1,0 +1,14 @@
+[project]
+name = "fightclub-bot"
+version = "1.0.0"
+description = "Telegram bot for fight club management"
+requires-python = ">=3.9"
+dependencies = [
+    "python-telegram-bot==20.7",
+    "python-dotenv==1.0.0",
+    "SQLAlchemy==2.0.23",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
