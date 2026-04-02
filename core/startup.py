@@ -14,27 +14,51 @@ from utils.time_utils import APP_TZ
 logger = logging.getLogger(__name__)
 
 
-def ensure_test_coach(config: Config) -> None:
-    """
-    Убедиться, что тестовый тренер существует с правильными параметрами.
-    
-    Args:
-        config: Конфигурация приложения
-    """
-    test_coach_id = getattr(config, 'ADMIN_TELEGRAM_ID', 26655492)
-    
+def ensure_admin_user(config: Config) -> None:
+    """Создать/проверить запись администратора по ADMIN_TELEGRAM_ID."""
+    admin_id = getattr(config, "ADMIN_TELEGRAM_ID", None)
+    if admin_id is None:
+        return
+    try:
+        with get_db_session() as session:
+            admin = UserService.ensure_admin(
+                session=session,
+                telegram_id=admin_id,
+                username="admin",
+                first_name="Администратор",
+            )
+            if admin:
+                logger.info(f"✅ Администратор проверен/создан: {admin_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при проверке администратора: {e}", exc_info=True)
+
+
+def ensure_thai_coach_if_configured(config: Config) -> None:
+    """Автосоздание тренера «Тайский бокс» только если задан THAI_COACH_TELEGRAM_ID (не ADMIN_TELEGRAM_ID)."""
+    thai_id = getattr(config, "THAI_COACH_TELEGRAM_ID", None)
+    admin_id = getattr(config, "ADMIN_TELEGRAM_ID", None)
+    if thai_id is None:
+        logger.info("Тренер по тайскому боксу: THAI_COACH_TELEGRAM_ID не задан — пропуск автосоздания")
+        return
+    if admin_id is not None and thai_id == admin_id:
+        logger.error(
+            "THAI_COACH_TELEGRAM_ID совпадает с ADMIN_TELEGRAM_ID — укажите разные id или уберите THAI_COACH_TELEGRAM_ID"
+        )
+        return
     try:
         with get_db_session() as session:
             UserService.ensure_test_coach(
                 session=session,
-                telegram_id=test_coach_id,
+                telegram_id=thai_id,
                 username="coach_thai",
                 first_name="Тренер Тайский Бокс",
-                sport_type="Тайский Бокс"
+                sport_type="Тайский Бокс",
             )
-            logger.info(f"✅ Тестовый тренер проверен/создан: {test_coach_id} (Тайский Бокс)")
+        logger.info(f"✅ Тренер «Тайский бокс» проверен/создан: {thai_id}")
+    except ValueError as e:
+        logger.warning("Тренер «Тайский бокс» не создан: %s", e)
     except Exception as e:
-        logger.error(f"❌ Ошибка при проверке тренера: {e}", exc_info=True)
+        logger.error(f"❌ Ошибка при проверке тренера по тайскому боксу: {e}", exc_info=True)
 
 
 def check_subscriptions_on_startup() -> int:
@@ -67,8 +91,8 @@ def initialize_app(config: Config) -> None:
     """
     logger.info("🔧 Выполнение инициализационных задач...")
     
-    # Проверяем тестового тренера
-    ensure_test_coach(config)
+    ensure_admin_user(config)
+    ensure_thai_coach_if_configured(config)
     
     # Проверяем абонементы
     check_subscriptions_on_startup()

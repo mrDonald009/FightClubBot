@@ -28,6 +28,8 @@ class Config:
 
         self.BOT_TOKEN = os.getenv("BOT_TOKEN")
         self.ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "26655492"))
+        _thai_raw = os.getenv("THAI_COACH_TELEGRAM_ID", "").strip()
+        self.THAI_COACH_TELEGRAM_ID = int(_thai_raw) if _thai_raw else None
         self.DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database/club.db")
         self.APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
         self.TRAINING_DURATION_MINUTES = int(os.getenv("TRAINING_DURATION_MINUTES", "90"))
@@ -46,7 +48,11 @@ class Config:
 
         print(f"✅ Конфигурация проверена")
         print(f"   Токен: {self.BOT_TOKEN[:10]}...")
-        print(f"   Админ ID: {self.ADMIN_TELEGRAM_ID}")
+        print(f"   Администратор (ADMIN_TELEGRAM_ID): {self.ADMIN_TELEGRAM_ID}")
+        if self.THAI_COACH_TELEGRAM_ID is not None:
+            print(f"   Тренер Тайский бокс (THAI_COACH_TELEGRAM_ID): {self.THAI_COACH_TELEGRAM_ID}")
+        else:
+            print("   Тренер Тайский бокс: не задан (THAI_COACH_TELEGRAM_ID) — автосоздание отключено")
         print(f"   БД: {self.DATABASE_URL}")
         print(f"   Таймзона: {self.APP_TIMEZONE}")
         print(f"   Длительность тренировки: {self.TRAINING_DURATION_MINUTES} мин")
