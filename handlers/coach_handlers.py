@@ -13,7 +13,6 @@ from sqlalchemy.orm import joinedload
 import re
 import calendar
 import html
-import asyncio
 
 
 logger = logging.getLogger(__name__)
@@ -27,20 +26,12 @@ async def _set_reply_keyboard_silently(message, reply_markup):
     поэтому используем невидимый символ и самый крайний fallback удаляем.
     """
     # Telegram не позволяет применить ReplyKeyboard без сообщения.
-    # Отправляем служебный (невидимый) текст и удаляем его с небольшой
-    # задержкой, чтобы клиент успел применить новую клавиатуру.
-    # Важно: не используем U+3164 (ㅤ), т.к. на некоторых клиентах он видим.
+    # Для стабильного применения клавиатуры не удаляем служебное сообщение:
+    # удаление может приводить к тому, что клиент оставляет старую клавиатуру.
+    # Важно: используем только полностью невидимые символы (без U+3164 "ㅤ").
     for text in ("\u200b", "\u200e", "."):  # ZWSP, LRM, fallback
         try:
-            tmp = await message.reply_text(text, reply_markup=reply_markup)
-            try:
-                await asyncio.sleep(0.8)
-            except Exception:
-                pass
-            try:
-                await tmp.delete()
-            except Exception:
-                pass
+            await message.reply_text(text, reply_markup=reply_markup)
             return
         except Exception:
             continue
