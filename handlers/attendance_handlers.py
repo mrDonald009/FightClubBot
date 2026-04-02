@@ -37,39 +37,46 @@ async def select_training_for_attendance(update: Update, context: ContextTypes.D
         training = None
         training_id = None
         if data.startswith("select_mark_training_virtual_"):
-            parts = data.replace("select_mark_training_virtual_", "").split("_")
-            if len(parts) != 3:
+            token = data.replace("select_mark_training_virtual_", "")
+            virtual_slots = context.user_data.get("attendance_virtual_slots", {})
+            slot = virtual_slots.get(token)
+            if not slot:
                 await query.edit_message_text("❌ Некорректные данные тренировки")
                 return
-            age_group, hour_s, minute_s = parts
-            if age_group not in ("children", "adults") or not hour_s.isdigit() or not minute_s.isdigit():
+            sport_type = slot.get("sport_type")
+            age_group = slot.get("age_group")
+            hour = slot.get("hour")
+            minute = slot.get("minute")
+            coach_id = slot.get("coach_id")
+            if (
+                not sport_type
+                or age_group not in ("children", "adults")
+                or not isinstance(hour, int)
+                or not isinstance(minute, int)
+            ):
                 await query.edit_message_text("❌ Некорректные данные тренировки")
-                return
-            hour, minute = int(hour_s), int(minute_s)
-            if get_user_role(user) != "coach":
-                await query.edit_message_text("❌ Автосоздание слота доступно только тренеру")
-                return
-            sport_type = _get_sport_type_name(user)
-            if not sport_type:
-                await query.edit_message_text("❌ У тренера не указан вид спорта")
                 return
             today = now_moscow()
             training_dt = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            training = session.query(Training).filter_by(
+            training_query = session.query(Training).filter_by(
                 sport_type=sport_type,
                 age_group=age_group,
                 training_date=training_dt,
-                coach_id=user.id,
                 is_cancelled=False,
-            ).first()
+            )
+            if coach_id is not None:
+                training_query = training_query.filter_by(coach_id=coach_id)
+            training = training_query.first()
             if not training:
-                training = Training(
+                training_payload = dict(
                     sport_type=sport_type,
                     age_group=age_group,
                     training_date=training_dt,
-                    coach_id=user.id,
                     is_cancelled=False,
                 )
+                if coach_id is not None:
+                    training_payload["coach_id"] = coach_id
+                training = Training(**training_payload)
                 session.add(training)
                 session.flush()
                 created_training = True

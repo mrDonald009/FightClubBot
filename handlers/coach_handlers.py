@@ -1272,6 +1272,8 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now = now_moscow()
         today_start = datetime(now.year, now.month, now.day)
         today_end = today_start + timedelta(days=1)
+        weekday = now.weekday()
+        context.user_data["attendance_virtual_slots"] = {}
 
         if isinstance(user, Admin):
             today_trainings = session.query(Training).filter(
@@ -1279,6 +1281,35 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 Training.training_date < today_end,
                 Training.is_cancelled == False
             ).order_by(Training.training_date.asc()).all()
+            existing_keys = {(t.sport_type, t.age_group, t.training_date.hour, t.training_date.minute) for t in today_trainings}
+            for sport_type_name, schedule_map in TrainingManager.TRAINING_SCHEDULE.items():
+                for age_group in ("children", "adults"):
+                    schedule = schedule_map.get(age_group)
+                    if not schedule or weekday not in schedule.get("days", []):
+                        continue
+                    hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, weekday)
+                    key = (sport_type_name, age_group, hour, minute)
+                    if key in existing_keys:
+                        continue
+                    token = f"v{len(context.user_data['attendance_virtual_slots'])}"
+                    context.user_data["attendance_virtual_slots"][token] = {
+                        "sport_type": sport_type_name,
+                        "age_group": age_group,
+                        "hour": hour,
+                        "minute": minute,
+                        "coach_id": None,
+                    }
+                    virtual_training = Training(
+                        sport_type=sport_type_name,
+                        age_group=age_group,
+                        training_date=today_start.replace(hour=hour, minute=minute, second=0, microsecond=0),
+                        is_cancelled=False,
+                    )
+                    virtual_training.id = None
+                    virtual_training._is_virtual = True
+                    virtual_training._virtual_token = token
+                    today_trainings.append(virtual_training)
+            today_trainings.sort(key=lambda t: t.training_date)
         else:
             trainings_query = session.query(Training).filter(
                 Training.training_date >= today_start,
@@ -1298,17 +1329,28 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Fallback по расписанию: если слот есть по расписанию, но еще не создан в БД,
             # показываем его в списке как доступный для выбора.
+            if not sport_type_name and today_trainings:
+                # В старых профилях тренера вид спорта может отсутствовать в карточке,
+                # но присутствовать в уже созданных слотах тренировок.
+                sport_type_name = today_trainings[0].sport_type
             schedule_map = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {}) if sport_type_name else {}
-            existing_keys = {(t.age_group, t.training_date.hour, t.training_date.minute) for t in today_trainings}
-            weekday = now.weekday()
+            existing_keys = {(t.sport_type, t.age_group, t.training_date.hour, t.training_date.minute) for t in today_trainings}
             for age_group in ("children", "adults"):
                 schedule = schedule_map.get(age_group)
                 if not schedule or weekday not in schedule.get("days", []):
                     continue
                 hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, weekday)
-                key = (age_group, hour, minute)
+                key = (sport_type_name, age_group, hour, minute)
                 if key in existing_keys:
                     continue
+                token = f"v{len(context.user_data['attendance_virtual_slots'])}"
+                context.user_data["attendance_virtual_slots"][token] = {
+                    "sport_type": sport_type_name,
+                    "age_group": age_group,
+                    "hour": hour,
+                    "minute": minute,
+                    "coach_id": user.id,
+                }
                 virtual_training = Training(
                     sport_type=sport_type_name,
                     age_group=age_group,
@@ -1318,6 +1360,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 virtual_training.id = None
                 virtual_training._is_virtual = True
+                virtual_training._virtual_token = token
                 today_trainings.append(virtual_training)
 
             today_trainings.sort(key=lambda t: t.training_date)
@@ -1341,7 +1384,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             is_virtual = bool(getattr(training, "_is_virtual", False))
             callback_data = (
-                f"select_mark_training_virtual_{training.age_group}_{training.training_date.strftime('%H_%M')}"
+                f"select_mark_training_virtual_{getattr(training, '_virtual_token', '')}"
                 if is_virtual else
                 f"select_mark_training_{training.id}"
             )
