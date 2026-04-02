@@ -27,13 +27,15 @@ async def _set_reply_keyboard_silently(message, reply_markup):
     поэтому используем невидимый символ и самый крайний fallback удаляем.
     """
     # Telegram не позволяет применить ReplyKeyboard без сообщения.
-    # Поэтому отправляем служебное сообщение и сразу удаляем его — клавиатура при этом остается.
-    for text in ("\u3164", "\u200e", "."):  # HANGUL FILLER, LRM, крайний fallback
+    # Отправляем только невидимые символы и не используем видимый fallback ("."),
+    # чтобы в чате не появлялись артефакты.
+    invisible_texts = ("\u200b", "\u200e", "\u2060", "\u3164")
+    for text in invisible_texts:
         try:
             tmp = await message.reply_text(text, reply_markup=reply_markup)
             # Даем клиенту шанс применить клавиатуру
             try:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.35)
             except Exception:
                 pass
             try:
@@ -43,6 +45,15 @@ async def _set_reply_keyboard_silently(message, reply_markup):
             return
         except Exception:
             continue
+    # Крайний fallback: если все невидимые символы отклонены клиентом/сервером,
+    # отправляем обычное меню, чтобы клавиатура точно применилась.
+    try:
+        await message.reply_text(
+            "🏋️‍♂️ Меню тренера:\n\nВыберите действие:",
+            reply_markup=reply_markup
+        )
+    except Exception:
+        pass
     return
 
 # Состояния для добавления спортсмена
