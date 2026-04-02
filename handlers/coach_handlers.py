@@ -52,9 +52,15 @@ async def _set_reply_keyboard_silently(message, reply_markup):
     # Шаг 2: поставить нужную клавиатуру
     for text in invisible_texts:
         try:
-            await message.reply_text(text, reply_markup=reply_markup)
+            set_msg = await message.reply_text(text, reply_markup=reply_markup)
             try:
-                await asyncio.sleep(0.35)
+                # Небольшая пауза нужна, чтобы клиент успел применить новую клавиатуру.
+                # После этого удаляем служебное сообщение, чтобы не оставлять "пустой" хвост.
+                await asyncio.sleep(1.0)
+            except Exception:
+                pass
+            try:
+                await set_msg.delete()
             except Exception:
                 pass
             return
