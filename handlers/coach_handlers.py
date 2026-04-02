@@ -782,11 +782,7 @@ async def handle_add_athlete_calendar_date_pick(update: Update, context: Context
         return ConversationHandler.END
 
     coach_selected_date = datetime(year, month, day, 0, 0, 0)
-    from database.db_utils import _find_nearest_training_date
-    nearest = _find_nearest_training_date(coach_selected_date, sport_type, age_group)
-    callback_payload = nearest.strftime('%Y-%m-%d-%H-%M')
-    query.data = f"select_training_date_{callback_payload}"
-    return await handle_training_date_selection(update, context)
+    return await _finalize_add_athlete_from_selected_date(query, context, coach_selected_date)
 
 
 async def handle_add_athlete_calendar_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -796,25 +792,8 @@ async def handle_add_athlete_calendar_ignore(update: Update, context: ContextTyp
     return ATHLETE_TRAINING_DATE
 
 
-async def handle_training_date_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выбор первой даты тренировки → создание спортсмена + абонемент с датами (месячный или разовый)."""
-    query = update.callback_query
-    await query.answer()
-
-    if "subscription_type" not in context.user_data:
-        await query.edit_message_text("Сессия добавления спортсмена завершена. Используйте меню «👥 Добавить спортсмена».")
-        return ConversationHandler.END
-
-    # Парсим дату из callback_data: select_training_date_YYYY-MM-DD-HH-MM
-    date_str = query.data.replace("select_training_date_", "")
-    try:
-        year, month, day, hour, minute = map(int, date_str.split("-"))
-        coach_selected_date = datetime(year, month, day, hour, minute)
-    except Exception as e:
-        print(f"❌ ОШИБКА ПАРСИНГА ДАТЫ: {e}")
-        await query.edit_message_text("❌ Ошибка при обработке выбранной даты")
-        return ConversationHandler.END
-
+async def _finalize_add_athlete_from_selected_date(query, context, coach_selected_date: datetime):
+    """Единая логика завершения добавления спортсмена по выбранной дате."""
     sport_type = context.user_data['sport_type']
     age_group = context.user_data['age_group']
     subscription_type = context.user_data['subscription_type']
@@ -924,6 +903,28 @@ async def handle_training_date_selection(update: Update, context: ContextTypes.D
         session.close()
 
     return ConversationHandler.END
+
+
+async def handle_training_date_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выбор первой даты тренировки → создание спортсмена + абонемент с датами (месячный или разовый)."""
+    query = update.callback_query
+    await query.answer()
+
+    if "subscription_type" not in context.user_data:
+        await query.edit_message_text("Сессия добавления спортсмена завершена. Используйте меню «👥 Добавить спортсмена».")
+        return ConversationHandler.END
+
+    # Парсим дату из callback_data: select_training_date_YYYY-MM-DD-HH-MM
+    date_str = query.data.replace("select_training_date_", "")
+    try:
+        year, month, day, hour, minute = map(int, date_str.split("-"))
+        coach_selected_date = datetime(year, month, day, hour, minute)
+    except Exception as e:
+        print(f"❌ ОШИБКА ПАРСИНГА ДАТЫ: {e}")
+        await query.edit_message_text("❌ Ошибка при обработке выбранной даты")
+        return ConversationHandler.END
+
+    return await _finalize_add_athlete_from_selected_date(query, context, coach_selected_date)
 
 
 async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
