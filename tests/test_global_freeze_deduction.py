@@ -11,7 +11,6 @@ from database.db_utils import (
     calculate_actual_trainings_remaining,
     deactivate_global_freeze_and_migrate,
     migrate_existing_subscription,
-    update_global_freeze_title,
 )
 from database.models import (
     Athlete,
@@ -19,6 +18,7 @@ from database.models import (
     Base,
     Coach,
     GlobalFreeze,
+    GlobalFreezeApplication,
     SportType,
     Subscription,
     Training,
@@ -247,22 +247,110 @@ def test_deactivate_global_freeze_sets_inactive_and_idempotent():
     s.close()
 
 
-def test_update_global_freeze_title_active_only():
-    s, _, _ = _base_session()
-    gf = s.query(GlobalFreeze).one()
-    r = update_global_freeze_title(s, gf.id, "Новое имя")
-    assert r["success"] is True
-    assert r["title"] == "Новое имя"
-    s.refresh(gf)
-    assert gf.title == "Новое имя"
-    s.close()
-
-
-def test_update_global_freeze_title_rejects_inactive():
-    s, _, _ = _base_session()
-    gf = s.query(GlobalFreeze).one()
-    gf.is_active = False
+def _session_with_monthly_sub_no_global_freeze():
+    """Чистая БД: спортсмен + активный monthly, без записей global_freezes."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    S = sessionmaker(bind=engine)
+    s = S()
+    st = SportType(name="Тайский Бокс", display_name="Тайский Бокс")
+    s.add(st)
+    s.flush()
+    c = Coach(telegram_id=900002, username="t2", first_name="T2", sport_type_id=st.id)
+    s.add(c)
+    s.flush()
+    a = Athlete(
+        full_name="GF Cycle Tester",
+        sport_type="Тайский Бокс",
+        age_group="children",
+        created_by=c.id,
+    )
+    s.add(a)
+    s.flush()
+    sub = Subscription(
+        athlete_id=a.id,
+        sport_type="Тайский Бокс",
+        subscription_type="monthly",
+        start_date=datetime(2026, 3, 21, 12, 30),
+        end_date=datetime(2026, 4, 30, 19, 30),
+        trainings_total=12,
+        trainings_remaining=10,
+        is_active=True,
+    )
+    s.add(sub)
     s.commit()
-    r = update_global_freeze_title(s, gf.id, "X")
-    assert r["success"] is False
+    return s, sub
+
+
+def test_deactivate_then_reapply_same_global_freeze_recalculates_monthly():
+    """
+    Цикл: применить GF → деактивировать (миграция monthly) → снова применить с теми же датами.
+    Проверяем успех операций и отсутствие пересечения активных GF; end_date после повторного
+    применения снова учитывает продление.
+    """
+    s, sub = _session_with_monthly_sub_no_global_freeze()
+    freeze_start = datetime(2026, 3, 24)
+    freeze_end = datetime(2026, 3, 30)
+    title = "cycle_test_gf"
+
+    r_apply1 = apply_global_freeze(
+        session=s,
+        start_date=freeze_start,
+        end_date=freeze_end,
+        title=title,
+        created_by=1,
+    )
+    assert r_apply1["success"] is True
+    assert r_apply1["updated_subscriptions"] >= 1
+    gf_id_1 = r_apply1["global_freeze_id"]
+    s.refresh(sub)
+    end_after_apply1 = sub.end_date
+
+    app_rows = (
+        s.query(GlobalFreezeApplication)
+        .filter(GlobalFreezeApplication.global_freeze_id == gf_id_1)
+        .all()
+    )
+    assert len(app_rows) >= 1
+    assert any(a.training_days_added > 0 for a in app_rows)
+
+    fake_now = datetime(2026, 3, 25, 10, 0, 0)
+    with patch("database.db_utils.now_moscow", return_value=fake_now):
+        r_deact = deactivate_global_freeze_and_migrate(s, gf_id_1)
+
+    assert r_deact["success"] is True
+    assert r_deact.get("already_inactive") is False
+    assert r_deact["migrated"] >= 1
+
+    gf1 = s.query(GlobalFreeze).filter_by(id=gf_id_1).one()
+    assert gf1.is_active is False
+
+    s.refresh(sub)
+    end_after_deactivate = sub.end_date
+    # После снятия активной GF потолок по applications не действует — дата окончания
+    # пересчитывается и обычно не длиннее, чем при активной GF.
+    assert end_after_deactivate <= end_after_apply1
+
+    r_apply2 = apply_global_freeze(
+        session=s,
+        start_date=freeze_start,
+        end_date=freeze_end,
+        title=title + "_again",
+        created_by=1,
+    )
+    assert r_apply2["success"] is True
+    assert r_apply2["global_freeze_id"] != gf_id_1
+    gf_id_2 = r_apply2["global_freeze_id"]
+
+    s.refresh(sub)
+    end_after_apply2 = sub.end_date
+    assert end_after_apply2 >= end_after_deactivate
+
+    active_count = s.query(GlobalFreeze).filter(GlobalFreeze.is_active == True).count()
+    assert active_count == 1
+
+    report = run_subscription_audit(s)
+    codes = {issue["code"] for issue in report["issues"]}
+    assert "overlapping_global_freezes" not in codes
+
     s.close()

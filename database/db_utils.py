@@ -1542,27 +1542,6 @@ def apply_global_freeze(
     }
 
 
-def update_global_freeze_title(session: Session, gf_id: int, title: str) -> dict:
-    """Обновить название активной массовой заморозки (без пересчёта абонементов)."""
-    title = (title or "").strip()
-    if not title:
-        return {"success": False, "message": "Название не может быть пустым"}
-
-    gf = session.query(GlobalFreeze).filter_by(id=gf_id).first()
-    if not gf:
-        return {"success": False, "message": f"Массовая заморозка с ID={gf_id} не найдена"}
-
-    if not gf.is_active:
-        return {
-            "success": False,
-            "message": f"Массовая заморозка #{gf_id} не активна — редактирование названия недоступно",
-        }
-
-    gf.title = title[:200]
-    session.commit()
-    return {"success": True, "title": gf.title, "global_freeze_id": gf_id}
-
-
 def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
     """
     Деактивировать массовую заморозку (is_active=False) и мигрировать затронутые monthly-абонементы.

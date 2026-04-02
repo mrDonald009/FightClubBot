@@ -1484,7 +1484,7 @@ async def cancel_global_freeze(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Очищаем только то, что относится к диалогу массовой заморозки.
     # Остальные пользовательские данные (если были) сохраняем.
-    for k in ("gf_start_date", "gf_end_date", "gf_title", "gf_edit_id"):
+    for k in ("gf_start_date", "gf_end_date", "gf_title"):
         context.user_data.pop(k, None)
 
     await update.message.reply_text(

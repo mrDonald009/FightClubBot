@@ -18,11 +18,7 @@ from services.user_service import UserService
 from database.db_utils import get_user_role
 from services.subscription_service import SubscriptionService
 from services.subscription_audit_service import run_subscription_audit, format_audit_report
-from database.db_utils import (
-    apply_global_freeze,
-    deactivate_global_freeze_and_migrate,
-    update_global_freeze_title,
-)
+from database.db_utils import apply_global_freeze, deactivate_global_freeze_and_migrate
 from utils.time_utils import now_moscow
 from handlers.start import start
 from handlers.coach_handlers import (
@@ -100,7 +96,7 @@ from handlers.attendance_handlers import (
 logger = logging.getLogger(__name__)
 
 # Состояния диалога массовой заморозки
-GF_ACTION_MENU, GF_START_DATE, GF_END_DATE, GF_TITLE, GF_CONFIRM, GF_EDIT_TITLE = range(6)
+GF_ACTION_MENU, GF_START_DATE, GF_END_DATE, GF_TITLE, GF_CONFIRM = range(5)
 
 
 # Заглушки для обработчиков, которые еще не реализованы
@@ -336,7 +332,6 @@ async def start_global_freeze_flow(update, context):
     context.user_data.pop("gf_start_date", None)
     context.user_data.pop("gf_end_date", None)
     context.user_data.pop("gf_title", None)
-    context.user_data.pop("gf_edit_id", None)
 
     await update.message.reply_text(
         "🌍 <b>МАССОВАЯ ЗАМОРОЗКА</b>\n\n"
@@ -346,7 +341,6 @@ async def start_global_freeze_flow(update, context):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Создать новую", callback_data="gf_action_create")],
             [InlineKeyboardButton("❌ Отмена массовой заморозки", callback_data="gf_action_cancel")],
-            [InlineKeyboardButton("✏️ Редактирование массовой", callback_data="gf_action_edit")],
         ]),
     )
     return GF_ACTION_MENU
@@ -373,7 +367,6 @@ async def handle_global_freeze_action_create(update, context):
     context.user_data.pop("gf_start_date", None)
     context.user_data.pop("gf_end_date", None)
     context.user_data.pop("gf_title", None)
-    context.user_data.pop("gf_edit_id", None)
 
     await query.edit_message_text(
         f"{status_block}\n\n"
@@ -523,119 +516,6 @@ async def handle_gf_deact_abort(update, context):
     query = update.callback_query
     await query.answer("Отменено")
     await query.edit_message_text("↩️ Деактивация отменена.")
-    return ConversationHandler.END
-
-
-async def handle_global_freeze_action_edit(update, context):
-    """Редактирование названия активной массовой заморозки."""
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    try:
-        with get_db_session() as session:
-            user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
-                await query.edit_message_text("❌ У вас нет прав для этой функции")
-                return ConversationHandler.END
-            rows = _list_active_global_freezes(session)
-    except Exception as e:
-        logger.error(f"Ошибка (gf_action_edit): {e}", exc_info=True)
-        await query.edit_message_text("❌ Ошибка при загрузке списка")
-        return ConversationHandler.END
-
-    if not rows:
-        await query.edit_message_text(
-            "📭 Нет <b>активных</b> массовых заморозок для редактирования названия.",
-            parse_mode="HTML",
-        )
-        return ConversationHandler.END
-
-    kb = [
-        [InlineKeyboardButton(_gf_keyboard_button_label(g), callback_data=f"gf_edit_pick_{g.id}")]
-        for g in rows
-    ]
-    await query.edit_message_text(
-        "✏️ <b>Изменить название</b> массовой заморозки\n\n"
-        "Выберите запись (даты и абонементы не меняются):",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(kb),
-    )
-    return GF_ACTION_MENU
-
-
-async def handle_gf_edit_pick(update, context):
-    query = update.callback_query
-    await query.answer()
-    m = re.fullmatch(r"gf_edit_pick_(\d+)", query.data or "")
-    if not m:
-        return GF_ACTION_MENU
-    gf_id = int(m.group(1))
-    user_id = query.from_user.id
-    try:
-        with get_db_session() as session:
-            user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
-                await query.edit_message_text("❌ У вас нет прав для этой функции")
-                return ConversationHandler.END
-            from database.models import GlobalFreeze
-
-            gf = session.query(GlobalFreeze).filter_by(id=gf_id).first()
-    except Exception as e:
-        logger.error(f"Ошибка (gf_edit_pick): {e}", exc_info=True)
-        await query.edit_message_text("❌ Ошибка")
-        return ConversationHandler.END
-
-    if not gf or not gf.is_active:
-        await query.edit_message_text("❌ Запись не найдена или уже не активна.")
-        return ConversationHandler.END
-
-    context.user_data["gf_edit_id"] = gf_id
-    cur = html.escape((gf.title or "").strip() or "без названия")
-    await query.edit_message_text(
-        f"✏️ Новое название для массовой заморозки ID <code>{gf_id}</code>.\n"
-        f"Сейчас: <b>{cur}</b>\n\n"
-        "Введите новый текст или /cancel",
-        parse_mode="HTML",
-    )
-    return GF_EDIT_TITLE
-
-
-async def handle_global_freeze_edit_title_input(update, context):
-    gf_id = context.user_data.get("gf_edit_id")
-    if not gf_id:
-        await update.message.reply_text("❌ Сессия сброшена. Начните снова: 🌍 Массовая заморозка")
-        return ConversationHandler.END
-
-    title = (update.message.text or "").strip()
-    if not title:
-        await update.message.reply_text(
-            "Название не может быть пустым. Введите текст или /cancel."
-        )
-        return GF_EDIT_TITLE
-
-    user_id = update.effective_user.id
-    try:
-        with get_db_session() as session:
-            user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
-                await update.message.reply_text("❌ У вас нет прав для этой функции")
-                context.user_data.pop("gf_edit_id", None)
-                return ConversationHandler.END
-            result = update_global_freeze_title(session, gf_id, title)
-    except Exception as e:
-        logger.error(f"Ошибка (gf_edit_title): {e}", exc_info=True)
-        context.user_data.pop("gf_edit_id", None)
-        await update.message.reply_text("❌ Ошибка при сохранении названия")
-        return ConversationHandler.END
-
-    context.user_data.pop("gf_edit_id", None)
-    if not result.get("success"):
-        await update.message.reply_text(f"❌ {result.get('message', 'Ошибка')}")
-        return ConversationHandler.END
-
-    await update.message.reply_text(
-        f"✅ Название обновлено (ID {result['global_freeze_id']}): {result['title']}"
-    )
     return ConversationHandler.END
 
 
@@ -888,17 +768,12 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 CallbackQueryHandler(handle_gf_deact_confirm, pattern=r"^gf_deact_confirm_\d+$"),
                 CallbackQueryHandler(handle_gf_deact_pick, pattern=r"^gf_deact_pick_\d+$"),
                 CallbackQueryHandler(handle_gf_deact_abort, pattern=r"^gf_deact_abort$"),
-                CallbackQueryHandler(handle_gf_edit_pick, pattern=r"^gf_edit_pick_\d+$"),
                 CallbackQueryHandler(handle_global_freeze_action_create, pattern="^gf_action_create$"),
                 CallbackQueryHandler(handle_global_freeze_action_cancel, pattern="^gf_action_cancel$"),
-                CallbackQueryHandler(handle_global_freeze_action_edit, pattern="^gf_action_edit$"),
             ],
             GF_START_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_global_freeze_start_date)],
             GF_END_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_global_freeze_end_date)],
             GF_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_global_freeze_title)],
-            GF_EDIT_TITLE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_global_freeze_edit_title_input)
-            ],
             GF_CONFIRM: [
                 CallbackQueryHandler(handle_global_freeze_confirm_apply, pattern="^gf_apply_confirm$"),
                 CallbackQueryHandler(handle_global_freeze_confirm_cancel, pattern="^gf_cancel_confirm$"),
