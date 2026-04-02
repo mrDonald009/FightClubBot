@@ -1251,69 +1251,41 @@ async def cancel_global_freeze(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начать тренировку - показать список спортсменов для отметки посещения"""
+    """Шаг 1: показать тренировки на сегодня для дальнейшей отметки посещений."""
     user_id = update.effective_user.id
-    print(f"🔔🔔🔔 ОБРАБОТЧИК ВЫЗВАН: start_training для пользователя {user_id}")
-    print(f"🏋️ ПОЛЬЗОВАТЕЛЬ {user_id} ЗАПРОСИЛ НАЧАТЬ ТРЕНИРОВКУ")
-    print(f"🔍 DEBUG: start_training вызван для пользователя {user_id}")
+    query = update.callback_query
+    if query:
+        await query.answer()
+
+    logger.info("🏋️ Запрос на начало тренировки от пользователя %s", user_id)
     session = Session()
     try:
         user = get_user_by_telegram_id(session, user_id)
-        print(f"🔍 DEBUG: Пользователь найден: {user}, тип: {type(user)}")
 
         if not user or get_user_role(user) not in ['coach', 'admin']:
-            await update.message.reply_text("❌ У вас нет доступа к этому меню")
-            return
-
-        # Получаем спортсменов с явной загрузкой subscription
-        if isinstance(user, Admin):
-            athletes = session.query(Athlete).options(joinedload(Athlete.subscriptions)).all()
-        elif isinstance(user, Coach):
-            # Фильтруем по тренеру и виду спорта
-            if isinstance(user, Coach):
-                query = session.query(Athlete).options(joinedload(Athlete.subscriptions)).filter_by(created_by=user.id)
-                # Получаем вид спорта из связи или из строки (для обратной совместимости)
-                sport_type_name = None
-                if user.sport_type_rel:
-                    sport_type_name = user.sport_type_rel.name
-                elif user.sport_type:
-                    sport_type_name = user.sport_type
-                if sport_type_name:
-                    query = query.filter_by(sport_type=sport_type_name)
-                athletes = query.all()
+            if query:
+                await query.edit_message_text("❌ У вас нет доступа к этому меню")
             else:
-                athletes = []
-        else:
-            athletes = []
-
-        if not athletes:
-            await update.message.reply_text(
-                "📭 У вас пока нет спортсменов.\n\n"
-                "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
-            )
+                await update.message.reply_text("❌ У вас нет доступа к этому меню")
             return
 
-        # Получаем текущую дату и время
         now = now_moscow()
         today_start = datetime(now.year, now.month, now.day)
         today_end = today_start + timedelta(days=1)
 
-        # Получаем тренировки на сегодня
         if isinstance(user, Admin):
             today_trainings = session.query(Training).filter(
                 Training.training_date >= today_start,
                 Training.training_date < today_end,
                 Training.is_cancelled == False
-            ).all()
+            ).order_by(Training.training_date.asc()).all()
         else:
-            # Фильтруем по тренеру и виду спорта
-            query = session.query(Training).filter(
+            trainings_query = session.query(Training).filter(
                 Training.training_date >= today_start,
                 Training.training_date < today_end,
                 Training.is_cancelled == False,
                 Training.coach_id == user.id
             )
-            # Получаем вид спорта из связи или из строки (для обратной совместимости)
             sport_type_name = None
             if isinstance(user, Coach):
                 if user.sport_type_rel:
@@ -1321,50 +1293,57 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif user.sport_type:
                     sport_type_name = user.sport_type
             if sport_type_name:
-                query = query.filter(Training.sport_type == sport_type_name)
-            today_trainings = query.all()
+                trainings_query = trainings_query.filter(Training.sport_type == sport_type_name)
+            today_trainings = trainings_query.order_by(Training.training_date.asc()).all()
 
         message = "🏋️ <b>НАЧАТЬ ТРЕНИРОВКУ</b>\n\n"
-        
         if today_trainings:
-            message += f"📅 Тренировок сегодня: {len(today_trainings)}\n\n"
+            message += (
+                f"📅 Сегодня запланировано тренировок: <b>{len(today_trainings)}</b>\n\n"
+                "<b>Шаг 1/2: выберите тренировку</b>\n"
+            )
         else:
-            message += "📅 На сегодня тренировок не запланировано\n\n"
-        
-        message += "<b>ВЫБЕРИТЕ СПОРТСМЕНА ДЛЯ ОТМЕТКИ:</b>"
+            message += "📅 На сегодня тренировок не запланировано.\n\n"
 
-        # Создаем клавиатуру со спортсменами
         keyboard = []
-        for i in range(0, min(len(athletes), 20), 2):
-            row = []
-            for j in range(2):
-                if i + j < len(athletes):
-                    a = athletes[i + j]
-                    name = a.full_name.strip() if a.full_name else ""
-                    if len(name) > 15:
-                        name = name[:13] + "..."
-                    row.append(InlineKeyboardButton(name, callback_data=f"mark_attendance_{a.id}"))
-            if row:
-                keyboard.append(row)
 
-        if len(athletes) > 20:
-            keyboard.append([InlineKeyboardButton(f"📝 Показано 20 из {len(athletes)}", callback_data="show_more_info")])
+        for training in today_trainings:
+            age_group_ru = "Дети" if training.age_group == "children" else "Взрослые"
+            button_text = (
+                f"🕒 {training.training_date.strftime('%H:%M')} | "
+                f"{training.sport_type} ({age_group_ru})"
+            )
+            keyboard.append([
+                InlineKeyboardButton(
+                    button_text,
+                    callback_data=f"select_mark_training_{training.id}"
+                )
+            ])
+
+        if not today_trainings:
+            keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data="attendance_training_list")])
 
         keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(
-            message,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        if query:
+            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
+        else:
+            await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='HTML')
 
     except Exception as e:
-        print(f"❌ ОШИБКА ПРИ НАЧАЛЕ ТРЕНИРОВКИ: {e}")
-        await update.message.reply_text("❌ Ошибка при загрузке списка спортсменов")
+        logger.error("❌ Ошибка в start_training: %s", e, exc_info=True)
+        if query:
+            await query.edit_message_text("❌ Ошибка при загрузке тренировок")
+        else:
+            await update.message.reply_text("❌ Ошибка при загрузке тренировок")
     finally:
         session.close()
+
+
+async def handle_attendance_training_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновить экран выбора тренировки для отметки посещений."""
+    await start_training(update, context)
 
 
 async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE, month: int = None, year: int = None):

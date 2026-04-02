@@ -37,6 +37,7 @@ from handlers.coach_handlers import (
     handle_back_to_menu_main,
     handle_show_more_info,
     start_training,
+    handle_attendance_training_list,
     show_coach_calendar,
     handle_calendar_navigation,
     handle_calendar_date_click,
@@ -77,6 +78,7 @@ from handlers.card_handlers import (
     handle_unfreeze_subscription,
 )
 from handlers.attendance_handlers import (
+    select_training_for_attendance,
     mark_attendance_start,
     handle_training_selection,
     execute_mark_attendance,
@@ -663,6 +665,12 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     # Обработчики для отметки посещения
     registrar.register(
         CallbackQueryHandler(mark_attendance_start, pattern="^mark_attendance_")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_attendance_training_list, pattern="^attendance_training_list$")
+    )
+    registrar.register(
+        CallbackQueryHandler(select_training_for_attendance, pattern="^select_mark_training_")
     )
     # Сначала более специфичный паттерн: дата первой тренировки при добавлении спортсмена
     registrar.register(
