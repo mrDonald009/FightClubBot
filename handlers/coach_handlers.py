@@ -1,7 +1,7 @@
 import logging
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
-from database.models import Session, Coach, Admin, Athlete, Subscription, Training, Attendance
+from database.models import Session, Coach, Admin, Athlete, Subscription, Training, Attendance, GlobalFreeze
 from database.db_utils import get_user_by_telegram_id, get_user_role, create_athlete
 from typing import Union
 from utils.training_manager import TrainingManager
@@ -766,7 +766,20 @@ async def handle_add_athlete_calendar_ignore(update: Update, context: ContextTyp
     return ATHLETE_TRAINING_DATE
 
 
-async def _finalize_add_athlete_from_selected_date(query, context, coach_selected_date: datetime):
+def _find_next_non_frozen_training_date(session, base_date: datetime, sport_type: str, age_group: str) -> datetime:
+    """Найти ближайшую дату тренировки вне активной массовой заморозки."""
+    from database.db_utils import _find_nearest_training_date, is_training_in_global_freeze
+
+    candidate = _find_nearest_training_date(base_date, sport_type, age_group)
+    for _ in range(120):  # защитный лимит
+        if not is_training_in_global_freeze(session, candidate):
+            return candidate
+        next_day = (candidate + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        candidate = _find_nearest_training_date(next_day, sport_type, age_group)
+    return candidate
+
+
+async def _finalize_add_athlete_from_selected_date(query, context, coach_selected_date: datetime, *, skip_freeze_confirm: bool = False):
     """Единая логика завершения добавления спортсмена по выбранной дате."""
     sport_type = context.user_data['sport_type']
     age_group = context.user_data['age_group']
@@ -779,6 +792,7 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
         create_subscription as db_create_subscription,
         training_end_time,
         sync_subscription_trainings_remaining,
+        is_training_in_global_freeze,
     )
 
     # Первая дата тренировки по расписанию
@@ -787,13 +801,50 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
         sport_type,
         age_group,
     )
-    if subscription_type == "monthly":
-        end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
-    else:
-        end_date = training_end_time(start_date)
-
     session = Session()
     try:
+        # Если первая тренировка попала в активную массовую заморозку,
+        # просим подтверждение с автоматическим сдвигом.
+        if is_training_in_global_freeze(session, start_date) and not skip_freeze_confirm:
+            freeze = session.query(GlobalFreeze).filter(
+                GlobalFreeze.is_active == True,
+                GlobalFreeze.start_date <= start_date,
+                GlobalFreeze.end_date >= start_date
+            ).order_by(GlobalFreeze.end_date.desc()).first()
+
+            shifted_start = _find_next_non_frozen_training_date(
+                session,
+                (freeze.end_date + timedelta(seconds=1)) if freeze else (start_date + timedelta(days=1)),
+                sport_type,
+                age_group,
+            )
+            context.user_data["pending_shifted_start_date"] = shifted_start.isoformat()
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Подтвердить сдвиг", callback_data="addath_shift_confirm"),
+                    InlineKeyboardButton("❌ Выбрать другую дату", callback_data="addath_shift_cancel"),
+                ]
+            ])
+            freeze_label = (
+                f"{freeze.start_date.strftime('%d.%m.%Y')} — {freeze.end_date.strftime('%d.%m.%Y')}"
+                if freeze else "активной массовой заморозки"
+            )
+            await query.edit_message_text(
+                "⚠️ Выбранная первая тренировка попадает в период массовой заморозки.\n\n"
+                f"Период заморозки: <b>{freeze_label}</b>\n"
+                f"Предлагаемая новая дата старта: <b>{shifted_start.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+                "Подтвердить сдвиг и продолжить создание?",
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            return ATHLETE_TRAINING_DATE
+
+        if subscription_type == "monthly":
+            end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
+        else:
+            end_date = training_end_time(start_date)
+
         athlete = create_athlete(
             session=session,
             telegram_id=None,
@@ -883,9 +934,50 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
         logger.error(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка при добавлении спортсмена")
     finally:
+        context.user_data.pop("pending_shifted_start_date", None)
         session.close()
 
     return ConversationHandler.END
+
+
+async def handle_add_athlete_shift_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение автосдвига первой тренировки за пределы массовой заморозки."""
+    query = update.callback_query
+    await query.answer()
+
+    pending = context.user_data.get("pending_shifted_start_date")
+    if not pending:
+        await query.edit_message_text("❌ Данные сессии утеряны. Выберите дату снова в календаре.")
+        return ATHLETE_TRAINING_DATE
+
+    shifted_start = datetime.fromisoformat(pending)
+    return await _finalize_add_athlete_from_selected_date(
+        query,
+        context,
+        shifted_start,
+        skip_freeze_confirm=True,
+    )
+
+
+async def handle_add_athlete_shift_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена автосдвига: вернуть тренера к выбору даты в календаре."""
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data.pop("pending_shifted_start_date", None)
+    sport_type = context.user_data.get("sport_type")
+    age_group = context.user_data.get("age_group")
+    calendar_kb = create_add_athlete_training_calendar(sport_type, age_group)
+    if not calendar_kb:
+        await query.edit_message_text("❌ Календарь недоступен. Попробуйте снова.")
+        return ConversationHandler.END
+
+    await query.edit_message_text(
+        "📅 Выберите <b>первую дату тренировки</b> по абонементу:",
+        parse_mode="HTML",
+        reply_markup=calendar_kb,
+    )
+    return ATHLETE_TRAINING_DATE
 
 
 async def handle_training_date_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -31,6 +31,8 @@ from handlers.coach_handlers import (
     handle_add_athlete_calendar_nav,
     handle_add_athlete_calendar_date_pick,
     handle_add_athlete_calendar_ignore,
+    handle_add_athlete_shift_confirm,
+    handle_add_athlete_shift_cancel,
     handle_training_date_selection,
     athletes_list,
     athletes_list_filtered,
@@ -567,6 +569,8 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 CallbackQueryHandler(handle_add_athlete_calendar_nav, pattern="^addath_cal_"),
                 CallbackQueryHandler(handle_add_athlete_calendar_date_pick, pattern="^addath_date_"),
                 CallbackQueryHandler(handle_add_athlete_calendar_ignore, pattern="^addath_ignore$"),
+                CallbackQueryHandler(handle_add_athlete_shift_confirm, pattern="^addath_shift_confirm$"),
+                CallbackQueryHandler(handle_add_athlete_shift_cancel, pattern="^addath_shift_cancel$"),
             ],
         },
         fallbacks=[
