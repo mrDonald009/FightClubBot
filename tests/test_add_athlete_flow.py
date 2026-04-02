@@ -155,8 +155,7 @@ def test_finalize_detects_global_freeze_and_requests_confirm(monkeypatch):
     monkeypatch.setattr("database.db_utils._find_nearest_training_date", lambda *_a, **_k: datetime(2026, 4, 3, 20, 0))
     monkeypatch.setattr("database.db_utils.is_training_in_global_freeze", lambda *_a, **_k: True)
     monkeypatch.setattr(
-        ch,
-        "_find_next_non_frozen_training_date",
+        "database.db_utils.find_next_non_frozen_training_date",
         lambda *_a, **_k: datetime(2026, 4, 12, 20, 0),
     )
 

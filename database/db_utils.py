@@ -1354,7 +1354,7 @@ def training_datetime_compact(dt: datetime) -> str:
 
 
 def parse_training_datetime_compact(s: str) -> Optional[datetime]:
-    """Разобрать суффикст из 12 цифр в datetime (naive, локальное время слота)."""
+    """Разобрать суффикс из 12 цифр в datetime (naive, локальное время слота)."""
     if not s or len(s) != 12 or not s.isdigit():
         return None
     try:
