@@ -1296,6 +1296,32 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 trainings_query = trainings_query.filter(Training.sport_type == sport_type_name)
             today_trainings = trainings_query.order_by(Training.training_date.asc()).all()
 
+            # Fallback по расписанию: если слот есть по расписанию, но еще не создан в БД,
+            # показываем его в списке как доступный для выбора.
+            schedule_map = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {}) if sport_type_name else {}
+            existing_keys = {(t.age_group, t.training_date.hour, t.training_date.minute) for t in today_trainings}
+            weekday = now.weekday()
+            for age_group in ("children", "adults"):
+                schedule = schedule_map.get(age_group)
+                if not schedule or weekday not in schedule.get("days", []):
+                    continue
+                hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, weekday)
+                key = (age_group, hour, minute)
+                if key in existing_keys:
+                    continue
+                virtual_training = Training(
+                    sport_type=sport_type_name,
+                    age_group=age_group,
+                    training_date=today_start.replace(hour=hour, minute=minute, second=0, microsecond=0),
+                    is_cancelled=False,
+                    coach_id=user.id,
+                )
+                virtual_training.id = None
+                virtual_training._is_virtual = True
+                today_trainings.append(virtual_training)
+
+            today_trainings.sort(key=lambda t: t.training_date)
+
         message = "🏋️ <b>НАЧАТЬ ТРЕНИРОВКУ</b>\n\n"
         if today_trainings:
             message += (
@@ -1313,10 +1339,16 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🕒 {training.training_date.strftime('%H:%M')} | "
                 f"{training.sport_type} ({age_group_ru})"
             )
+            is_virtual = bool(getattr(training, "_is_virtual", False))
+            callback_data = (
+                f"select_mark_training_virtual_{training.age_group}_{training.training_date.strftime('%H_%M')}"
+                if is_virtual else
+                f"select_mark_training_{training.id}"
+            )
             keyboard.append([
                 InlineKeyboardButton(
                     button_text,
-                    callback_data=f"select_mark_training_{training.id}"
+                    callback_data=callback_data
                 )
             ])
 

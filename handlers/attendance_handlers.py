@@ -25,20 +25,62 @@ async def select_training_for_attendance(update: Update, context: ContextTypes.D
     query = update.callback_query
     await query.answer()
 
-    training_id = int(query.data.replace("select_mark_training_", ""))
-    context.user_data["attendance_selected_training_id"] = training_id
-
     session = Session()
     try:
+        created_training = False
         user = get_user_by_telegram_id(session, query.from_user.id)
         if not user or get_user_role(user) not in ["coach", "admin"]:
             await query.edit_message_text("❌ У вас нет доступа к этому меню")
             return
 
-        training = session.query(Training).filter_by(id=training_id, is_cancelled=False).first()
-        if not training:
-            await query.edit_message_text("❌ Тренировка не найдена или отменена")
-            return
+        data = query.data or ""
+        training = None
+        training_id = None
+        if data.startswith("select_mark_training_virtual_"):
+            parts = data.replace("select_mark_training_virtual_", "").split("_")
+            if len(parts) != 3:
+                await query.edit_message_text("❌ Некорректные данные тренировки")
+                return
+            age_group, hour_s, minute_s = parts
+            if age_group not in ("children", "adults") or not hour_s.isdigit() or not minute_s.isdigit():
+                await query.edit_message_text("❌ Некорректные данные тренировки")
+                return
+            hour, minute = int(hour_s), int(minute_s)
+            if get_user_role(user) != "coach":
+                await query.edit_message_text("❌ Автосоздание слота доступно только тренеру")
+                return
+            sport_type = _get_sport_type_name(user)
+            if not sport_type:
+                await query.edit_message_text("❌ У тренера не указан вид спорта")
+                return
+            today = now_moscow()
+            training_dt = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            training = session.query(Training).filter_by(
+                sport_type=sport_type,
+                age_group=age_group,
+                training_date=training_dt,
+                coach_id=user.id,
+                is_cancelled=False,
+            ).first()
+            if not training:
+                training = Training(
+                    sport_type=sport_type,
+                    age_group=age_group,
+                    training_date=training_dt,
+                    coach_id=user.id,
+                    is_cancelled=False,
+                )
+                session.add(training)
+                session.flush()
+                created_training = True
+        else:
+            training_id = int(data.replace("select_mark_training_", ""))
+            training = session.query(Training).filter_by(id=training_id, is_cancelled=False).first()
+            if not training:
+                await query.edit_message_text("❌ Тренировка не найдена или отменена")
+                return
+
+        context.user_data["attendance_selected_training_id"] = training.id
 
         if get_user_role(user) == "coach":
             if training.coach_id != user.id:
@@ -109,6 +151,8 @@ async def select_training_for_attendance(update: Update, context: ContextTypes.D
             InlineKeyboardButton("🔙 К тренировкам", callback_data="attendance_training_list"),
             InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main"),
         ])
+        if created_training:
+            session.commit()
         await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     except Exception as e:
         logger.error("❌ ОШИБКА ВЫБОРА ТРЕНИРОВКИ ДЛЯ ОТМЕТКИ: %s", e, exc_info=True)
