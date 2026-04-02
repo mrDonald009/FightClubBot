@@ -905,7 +905,7 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
             athlete.birth_date.strftime('%d.%m.%Y')
             if getattr(athlete, "birth_date", None) else "Не указана"
         )
-        await query.edit_message_text(
+        success_text = (
             f"✅ Спортсмен успешно добавлен!\n\n"
             f"📝 ФИО: {athlete.full_name}\n"
             f"📞 Телефон: {athlete.phone}\n"
@@ -917,7 +917,16 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
             f"🏥 Мед. информация: {athlete.medical_info}\n"
             f"💪 Осталось тренировок: {subscription.trainings_remaining}"
         )
-        await _set_reply_keyboard_silently(query.message, get_coach_main_menu())
+        # Отправляем единое итоговое сообщение сразу с главным меню:
+        # так не нужны служебные "тихие" сообщения и не появляется лишний вывод.
+        await query.message.reply_text(
+            success_text,
+            reply_markup=get_coach_main_menu()
+        )
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
     except Exception as e:
         print(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}")
         logger.error(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}", exc_info=True)
