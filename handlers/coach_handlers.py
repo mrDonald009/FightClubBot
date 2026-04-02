@@ -1,5 +1,5 @@
 import logging
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 from database.models import Session, Coach, Admin, Athlete, Subscription, Training, Attendance
 from database.db_utils import get_user_by_telegram_id, get_user_role, create_athlete
@@ -27,33 +27,43 @@ async def _set_reply_keyboard_silently(message, reply_markup):
     поэтому используем невидимый символ и самый крайний fallback удаляем.
     """
     # Telegram не позволяет применить ReplyKeyboard без сообщения.
-    # Отправляем только невидимые символы и не используем видимый fallback ("."),
-    # чтобы в чате не появлялись артефакты.
+    # На части клиентов простая "тихая" установка не сбрасывает прошлую клавиатуру
+    # (например, Детская/Взрослая). Поэтому делаем 2 шага:
+    # 1) принудительно убрать ReplyKeyboard
+    # 2) установить целевую клавиатуру
     invisible_texts = ("\u200b", "\u200e", "\u2060", "\u3164")
+
+    # Шаг 1: убрать текущую клавиатуру
     for text in invisible_texts:
         try:
-            tmp = await message.reply_text(text, reply_markup=reply_markup)
-            # Даем клиенту шанс применить клавиатуру
+            rm_msg = await message.reply_text(text, reply_markup=ReplyKeyboardRemove())
+            try:
+                await asyncio.sleep(0.25)
+            except Exception:
+                pass
+            try:
+                await rm_msg.delete()
+            except Exception:
+                pass
+            break
+        except Exception:
+            continue
+
+    # Шаг 2: поставить нужную клавиатуру
+    for text in invisible_texts:
+        try:
+            set_msg = await message.reply_text(text, reply_markup=reply_markup)
             try:
                 await asyncio.sleep(0.35)
             except Exception:
                 pass
             try:
-                await tmp.delete()
+                await set_msg.delete()
             except Exception:
                 pass
             return
         except Exception:
             continue
-    # Крайний fallback: если все невидимые символы отклонены клиентом/сервером,
-    # отправляем обычное меню, чтобы клавиатура точно применилась.
-    try:
-        await message.reply_text(
-            "🏋️‍♂️ Меню тренера:\n\nВыберите действие:",
-            reply_markup=reply_markup
-        )
-    except Exception:
-        pass
     return
 
 # Состояния для добавления спортсмена
