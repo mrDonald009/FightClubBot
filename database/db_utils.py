@@ -1381,6 +1381,27 @@ def find_next_non_frozen_training_date(
     return candidate
 
 
+def list_active_global_freezes_overlapping_range(
+    session: Session,
+    start_date: datetime,
+    end_date: datetime,
+):
+    """
+    Активные массовые заморозки, пересекающиеся с интервалом [start_date .. end_date]
+    (нормализация границ дня совпадает с apply_global_freeze).
+    """
+    freeze_start = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    freeze_end = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return (
+        session.query(GlobalFreeze)
+        .filter(GlobalFreeze.is_active == True)
+        .filter(GlobalFreeze.start_date <= freeze_end)
+        .filter(GlobalFreeze.end_date >= freeze_start)
+        .order_by(GlobalFreeze.start_date.asc())
+        .all()
+    )
+
+
 def apply_global_freeze(
     session: Session,
     start_date: datetime,
@@ -1401,15 +1422,7 @@ def apply_global_freeze(
     freeze_start = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
     freeze_end = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-    # Массовые заморозки не должны пересекаться между собой.
-    overlapping = (
-        session.query(GlobalFreeze)
-        .filter(GlobalFreeze.is_active == True)
-        .filter(GlobalFreeze.start_date <= freeze_end)
-        .filter(GlobalFreeze.end_date >= freeze_start)
-        .order_by(GlobalFreeze.start_date.asc())
-        .all()
-    )
+    overlapping = list_active_global_freezes_overlapping_range(session, start_date, end_date)
     if overlapping:
         ids = ", ".join(str(gf.id) for gf in overlapping[:5])
         if len(overlapping) > 5:

@@ -10,6 +10,7 @@ from database.db_utils import (
     apply_global_freeze,
     calculate_actual_trainings_remaining,
     deactivate_global_freeze_and_migrate,
+    list_active_global_freezes_overlapping_range,
     migrate_existing_subscription,
 )
 from database.models import (
@@ -183,6 +184,15 @@ def test_migrate_deletes_spurious_auto_attendance_in_freeze_window(session_migra
         migrate_existing_subscription(s, sub.id)
 
     assert s.query(Attendance).filter_by(subscription_id=sub.id).count() == 0
+
+
+def test_list_active_global_freezes_overlapping_range_matches_apply_logic():
+    s, _, _ = _base_session()
+    gf = s.query(GlobalFreeze).one()
+    ov = list_active_global_freezes_overlapping_range(s, datetime(2026, 3, 25), datetime(2026, 4, 1))
+    assert len(ov) == 1
+    assert ov[0].id == gf.id
+    s.close()
 
 
 def test_apply_global_freeze_rejects_overlapping_ranges():
