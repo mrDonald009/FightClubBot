@@ -235,6 +235,39 @@ def test_shift_confirm_uses_callback_payload_without_user_data(monkeypatch):
     assert calls["skip"] is True
 
 
+def test_shift_confirm_rejects_callback_pending_mismatch(monkeypatch):
+    """Если в сессии ожидалась другая дата — подделанный callback не проходит."""
+    finalize = AsyncMock(return_value=ch.ConversationHandler.END)
+    monkeypatch.setattr(ch, "_finalize_add_athlete_from_selected_date", finalize)
+
+    update = _update_with_query("addath_shift_confirm_202604121400")
+    context = _ctx({"pending_shifted_start_date": "2026-04-12T20:00:00"})
+
+    state = _run(ch.handle_add_athlete_shift_confirm(update, context))
+
+    assert state == ch.ATHLETE_TRAINING_DATE
+    finalize.assert_not_called()
+    assert "не соответствует" in update.callback_query.edits[-1]["text"].lower()
+
+
+def test_shift_confirm_callback_matches_pending_calls_finalize(monkeypatch):
+    calls = {}
+
+    async def _fake_finalize(query, context, coach_selected_date, *, skip_freeze_confirm=False):
+        calls["date"] = coach_selected_date
+        return ch.ConversationHandler.END
+
+    monkeypatch.setattr(ch, "_finalize_add_athlete_from_selected_date", _fake_finalize)
+
+    update = _update_with_query("addath_shift_confirm_202604122000")
+    context = _ctx({"pending_shifted_start_date": "2026-04-12T20:00:00"})
+
+    state = _run(ch.handle_add_athlete_shift_confirm(update, context))
+
+    assert state == ch.ConversationHandler.END
+    assert calls["date"] == datetime(2026, 4, 12, 20, 0)
+
+
 def test_shift_cancel_returns_to_calendar(monkeypatch):
     sentinel_kb = object()
     monkeypatch.setattr(ch, "create_add_athlete_training_calendar", lambda *_a, **_k: sentinel_kb)
@@ -828,6 +861,35 @@ def test_add_athlete_start_coach_with_sport(monkeypatch):
     assert context.user_data["sport_type"] == "Тайский Бокс"
     assert context.user_data["coach_id"] == 99
     assert "ФИО" in update.message.calls[-1]["text"]
+
+
+def test_add_athlete_start_coach_without_sport_in_profile(monkeypatch):
+    coach = SimpleNamespace(id=5, sport_type_rel=None, sport_type=None)
+
+    class _S:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(ch, "Session", lambda: _S())
+    monkeypatch.setattr(ch, "get_user_by_telegram_id", lambda *_a, **_k: coach)
+    monkeypatch.setattr(ch, "get_user_role", lambda *_a, **_k: "coach")
+
+    real_isinstance = builtins.isinstance
+
+    def _isinstance(obj, cls):
+        if obj is coach and cls is ch.Coach:
+            return True
+        return real_isinstance(obj, cls)
+
+    monkeypatch.setattr(builtins, "isinstance", _isinstance)
+
+    update = _update_with_message("")
+    context = _ctx({})
+
+    state = _run(ch.add_athlete_start(update, context))
+
+    assert state == ch.ConversationHandler.END
+    assert "профиле" in update.message.calls[-1]["text"].lower() or "специализац" in update.message.calls[-1]["text"].lower()
 
 
 def test_finalize_on_create_athlete_error_shows_message(monkeypatch):

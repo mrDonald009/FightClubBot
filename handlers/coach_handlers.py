@@ -3,6 +3,7 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboard
 from telegram.ext import ContextTypes, ConversationHandler
 from database.models import Session, Coach, Admin, Athlete, Subscription, Training, Attendance, GlobalFreeze
 from database.db_utils import get_user_by_telegram_id, get_user_role, create_athlete
+import database.db_utils as db_utils_pkg
 from typing import Union
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow, ACTIVATION_GRACE_AFTER_START
@@ -169,9 +170,7 @@ async def coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало процесса добавления спортсмена"""
     user_id = update.effective_user.id
-    print(f"🔔🔔🔔 ОБРАБОТЧИК ВЫЗВАН: add_athlete_start для пользователя {user_id}")
-    print(f"👤 ПОЛЬЗОВАТЕЛЬ {user_id} НАЧАЛ ДОБАВЛЕНИЕ СПОРТСМЕНА")
-    print(f"🔍 DEBUG: add_athlete_start вызван для пользователя {user_id}")
+    logger.debug("add_athlete_start user_id=%s", user_id)
 
     # Очищаем данные предыдущего процесса
     context.user_data.clear()
@@ -179,18 +178,18 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = Session()
     try:
         user = get_user_by_telegram_id(session, user_id)
-        print(f"🔍 DEBUG add_athlete_start: user={user}, type={type(user) if user else None}")
+        logger.debug("add_athlete_start user_id=%s found=%s type=%s", user_id, bool(user), type(user).__name__ if user else None)
 
         if not user:
-            print(f"❌ DEBUG: Пользователь {user_id} не найден в базе данных")
+            logger.info("add_athlete_start denied: user not in DB user_id=%s", user_id)
             await update.message.reply_text("❌ Пользователь не найден в базе данных. Используйте /start для регистрации.")
             return ConversationHandler.END
 
         user_role = get_user_role(user)
-        print(f"🔍 DEBUG add_athlete_start: user_role={user_role}")
+        logger.debug("add_athlete_start user_id=%s role=%s", user_id, user_role)
 
         if user_role not in ['coach', 'admin']:
-            print(f"❌ У ПОЛЬЗОВАТЕЛЯ {user_id} НЕТ ПРАВ ДОБАВЛЯТЬ СПОРТСМЕНОВ (роль: {user_role})")
+            logger.info("add_athlete_start denied: wrong role user_id=%s role=%s", user_id, user_role)
             await update.message.reply_text("❌ У вас нет прав для добавления спортсменов")
             return ConversationHandler.END
 
@@ -204,7 +203,7 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if sport_type_name:
                 context.user_data['sport_type'] = sport_type_name
                 context.user_data['coach_id'] = user.id
-                print(f"🥊 ТРЕНЕР {user_id} РАБОТАЕТ С ВИДОМ СПОРТА: {sport_type_name}")
+                logger.info("add_athlete_start ok user_id=%s sport=%s", user_id, sport_type_name)
 
                 await update.message.reply_text(
                     f"👤 <b>Добавление нового спортсмена</b>\n\n"
@@ -212,17 +211,19 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Введите ФИО спортсмена:",
                     parse_mode='HTML'
                 )
-                print(f"✅ УСТАНОВЛЕНО СОСТОЯНИЕ ATHLETE_FULL_NAME ДЛЯ {user_id}")
                 return ATHLETE_FULL_NAME
-        else:
-            # Если у тренера не указан вид спорта или это админ - показываем выбор
             await update.message.reply_text(
-                "❌ У вас не указана спортивная специализация. Обратитесь к администратору."
+                "❌ У вас не указана спортивная специализация в профиле. Обратитесь к администратору."
             )
             return ConversationHandler.END
+        # Админ и прочие роли с правами coach/admin, но не запись Coach (нет привязки к виду спорта)
+        await update.message.reply_text(
+            "❌ У вас не указана спортивная специализация. Обратитесь к администратору."
+        )
+        return ConversationHandler.END
 
     except Exception as e:
-        print(f"❌ ОШИБКА ПРИ НАЧАЛЕ ДОБАВЛЕНИЯ: {e}")
+        logger.exception("add_athlete_start error user_id=%s", user_id)
         await update.message.reply_text("❌ Произошла ошибка")
         return ConversationHandler.END
     finally:
@@ -233,11 +234,11 @@ async def add_athlete_full_name(update: Update, context: ContextTypes.DEFAULT_TY
     """Обработка ФИО спортсмена с валидацией"""
     user_id = update.effective_user.id
     user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_full_name ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
+    logger.debug("add_athlete_full_name user_id=%s", user_id)
 
     # Проверяем, не является ли ввод кнопкой меню
     if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВВОД ФИО, ВЫБРАВ: {user_text}")
+        logger.info("add_athlete interrupted at full_name user_id=%s (menu)", user_id)
         await cancel_athlete_creation(update, context)
         return ConversationHandler.END
 
@@ -245,7 +246,7 @@ async def add_athlete_full_name(update: Update, context: ContextTypes.DEFAULT_TY
 
     # ВАЛИДАЦИЯ ФИО - проверяем, что это не номер телефона
     if is_phone_number(full_name):
-        print(f"❌ ОБНАРУЖЕН НОМЕР ТЕЛЕФОНА ВМЕСТО ФИО: {full_name}")
+        logger.debug("add_athlete_full_name user_id=%s rejected as phone-like", user_id)
         await update.message.reply_text(
             "❌ <b>Обнаружен номер телефона!</b>\n\n"
             "Вы ввели номер телефона вместо ФИО.\n"
@@ -273,7 +274,7 @@ async def add_athlete_full_name(update: Update, context: ContextTypes.DEFAULT_TY
     # ВАЖНО: одинаковые ФИО допускаются. Уникальность проверяем по номеру телефона на следующем шаге.
 
     context.user_data['full_name'] = normalized
-    print(f"✅ ВВЕДЕНО ФИО: {normalized}, ПЕРЕХОДИМ В ATHLETE_PHONE")
+    logger.debug("add_athlete_full_name user_id=%s ok -> phone step", user_id)
 
     await update.message.reply_text(
         "📞 Теперь введите номер телефона спортсмена в формате:\n"
@@ -288,17 +289,17 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка телефона спортсмена"""
     user_id = update.effective_user.id
     user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_phone ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
+    logger.debug("add_athlete_phone user_id=%s", user_id)
 
     # Проверяем, не является ли ввод кнопкой меню
     if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВВОД ТЕЛЕФОНА, ВЫБРАВ: {user_text}")
+        logger.info("add_athlete interrupted at phone user_id=%s (menu)", user_id)
         await cancel_athlete_creation(update, context)
         return ConversationHandler.END
 
     # Проверяем, что пользователь не ввел ФИО вместо телефона
     if not has_digits(user_text) or is_valid_name_format(user_text):
-        print(f"❌ ПОЛЬЗОВАТЕЛЬ {user_id} ВВЕЛ ФИО ВМЕСТО ТЕЛЕФОНА: '{user_text}'")
+        logger.debug("add_athlete_phone user_id=%s rejected as name-like", user_id)
         await update.message.reply_text(
             "❌ <b>Это похоже на ФИО, а не на телефон!</b>\n\n"
             "Пожалуйста, введите <b>номер телефона</b> в формате:\n"
@@ -315,7 +316,7 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone_pattern = r'^\d{3}-\d{3}-\d{2}-\d{2}$'
 
     if not re.match(phone_pattern, cleaned_input):
-        print(f"❌ НЕВЕРНЫЙ ФОРМАТ ТЕЛЕФОНА ОТ ПОЛЬЗОВАТЕЛЯ {user_id}: '{user_text}'")
+        logger.debug("add_athlete_phone user_id=%s invalid format", user_id)
         error_message = """❌ <b>Неверный формат телефона!</b>
 
 📞 Правильный формат: <b>XXX-XXX-XX-XX</b>
@@ -362,7 +363,7 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.close()
     
     context.user_data['phone'] = full_phone
-    print(f"✅ ВВЕДЕН ТЕЛЕФОН: {full_phone}, ПЕРЕХОДИМ В ATHLETE_BIRTH_DATE")
+    logger.debug("add_athlete_phone user_id=%s ok -> birth_date step", user_id)
 
     await update.message.reply_text(
         "🎂 Введите дату рождения спортсмена в формате <b>ДД.ММ.ГГГГ</b>\n\n"
@@ -376,11 +377,11 @@ async def add_athlete_birth_date(update: Update, context: ContextTypes.DEFAULT_T
     """Обработка даты рождения спортсмена"""
     user_id = update.effective_user.id
     user_text = (update.message.text or "").strip()
-    print(f"🎯 ВХОД В add_athlete_birth_date ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
+    logger.debug("add_athlete_birth_date user_id=%s", user_id)
 
     # Проверяем, не является ли ввод кнопкой меню
     if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВВОД ДАТЫ РОЖДЕНИЯ, ВЫБРАВ: {user_text}")
+        logger.info("add_athlete interrupted at birth_date user_id=%s (menu)", user_id)
         await cancel_athlete_creation(update, context)
         return ConversationHandler.END
 
@@ -434,7 +435,7 @@ async def add_athlete_birth_date(update: Update, context: ContextTypes.DEFAULT_T
         return ATHLETE_BIRTH_DATE
 
     context.user_data["birth_date"] = bd
-    print(f"✅ СОХРАНЕНА ДАТА РОЖДЕНИЯ: {bd.strftime('%d.%m.%Y')}")
+    logger.debug("add_athlete_birth_date user_id=%s ok -> medical", user_id)
 
     await update.message.reply_text(
         "🏥 Введите медицинские противопоказания (или напишите <b>нет</b>, если отсутствуют):",
@@ -447,24 +448,22 @@ async def add_athlete_medical(update: Update, context: ContextTypes.DEFAULT_TYPE
     """Обработка медицинской информации"""
     user_id = update.effective_user.id
     user_text = update.message.text.strip()
-    print(f"🎯 ВХОД В add_athlete_medical ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
+    logger.debug("add_athlete_medical user_id=%s", user_id)
 
     # Проверяем, не является ли ввод кнопкой меню
     if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВВОД МЕД.ДАННЫХ, ВЫБРАВ: {user_text}")
+        logger.info("add_athlete interrupted at medical user_id=%s (menu)", user_id)
         await cancel_athlete_creation(update, context)
         return ConversationHandler.END
 
     # Обрабатываем кнопку "нет"
     if user_text.lower() == "нет":
-        print(f"✅ ПОЛЬЗОВАТЕЛЬ {user_id} УКАЗАЛ ОТСУТСТВИЕ ПРОТИВОПОКАЗАНИЙ")
         medical_info = "Нет противопоказаний"
     else:
         medical_info = user_text
-        print(f"✅ ВВЕДЕНЫ МЕД.ДАННЫЕ: '{medical_info}'")
 
     context.user_data['medical_info'] = medical_info
-    print(f"✅ МЕД.ДАННЫЕ СОХРАНЕНЫ В user_data: '{medical_info}', ПЕРЕХОДИМ К ВЫБОРУ ВОЗРАСТНОЙ ГРУППЫ")
+    logger.debug("add_athlete_medical user_id=%s ok -> age_group", user_id)
 
     keyboard = [[KeyboardButton("Детская"), KeyboardButton("Взрослая")]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -479,11 +478,11 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
     """Обработка возрастной группы"""
     user_id = update.effective_user.id
     user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_age_group ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
+    logger.debug("add_athlete_age_group user_id=%s", user_id)
 
     # Проверяем, не является ли ввод кнопкой меню
     if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВЫБОР ВОЗРАСТНОЙ ГРУППЫ, ВЫБРАВ: {user_text}")
+        logger.info("add_athlete interrupted at age_group user_id=%s (menu)", user_id)
         await cancel_athlete_creation(update, context)
         return ConversationHandler.END
 
@@ -498,7 +497,7 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
     age_group_ru = user_text
     age_group = "children" if age_group_ru == "Детская" else "adults"
     context.user_data['age_group'] = age_group
-    print(f"✅ ВЫБРАНА ВОЗРАСТНАЯ ГРУППА: {age_group_ru} ({age_group}), ПЕРЕХОДИМ К ВЫБОРУ ТИПА АБОНЕМЕНТА")
+    logger.debug("add_athlete_age_group user_id=%s group=%s -> subscription", user_id, age_group)
 
     keyboard = [[KeyboardButton("Месячный"), KeyboardButton("Разовый")]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -666,10 +665,10 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
     """Обработка типа абонемента → переход к выбору первой даты тренировки."""
     user_id = update.effective_user.id
     user_text = update.message.text
-    print(f"🎯 ВХОД В add_athlete_subscription ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
+    logger.debug("add_athlete_subscription user_id=%s", user_id)
 
     if user_text in MENU_BUTTONS:
-        print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ПРЕРВАЛ ВЫБОР АБОНЕМЕНТА, ВЫБРАВ: {user_text}")
+        logger.info("add_athlete interrupted at subscription user_id=%s (menu)", user_id)
         await cancel_athlete_creation(update, context)
         return ConversationHandler.END
 
@@ -684,7 +683,7 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
     subscription_type = "monthly" if subscription_type_ru == "Месячный" else "single"
     context.user_data['subscription_type'] = subscription_type
     context.user_data['subscription_type_ru'] = subscription_type_ru
-    print(f"✅ ВЫБРАН ТИП АБОНЕМЕНТА: {subscription_type_ru} ({subscription_type}), ПОКАЗЫВАЕМ КАЛЕНДАРЬ ДАТ")
+    logger.info("add_athlete_subscription user_id=%s type=%s -> calendar", user_id, subscription_type)
 
     sport_type = context.user_data['sport_type']
     age_group = context.user_data['age_group']
@@ -736,6 +735,7 @@ async def handle_add_athlete_calendar_date_pick(update: Update, context: Context
     query = update.callback_query
 
     if "subscription_type" not in context.user_data:
+        await query.answer()
         await query.edit_message_text("Сессия добавления спортсмена завершена. Используйте меню «👥 Добавить спортсмена».")
         return ConversationHandler.END
 
@@ -752,10 +752,12 @@ async def handle_add_athlete_calendar_date_pick(update: Update, context: Context
 
     schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
     if not schedule:
+        await query.answer()
         await query.edit_message_text("❌ Расписание для этой группы не найдено. Обратитесь к администратору.")
         return ConversationHandler.END
 
     coach_selected_date = datetime(year, month, day, 0, 0, 0)
+    await query.answer()
     return await _finalize_add_athlete_from_selected_date(query, context, coach_selected_date)
 
 
@@ -800,14 +802,12 @@ def _parse_shift_confirm_callback_data(data: str):
 
 def _find_next_non_frozen_training_date(session, base_date: datetime, sport_type: str, age_group: str) -> datetime:
     """Найти ближайшую дату тренировки вне активной массовой заморозки."""
-    from database.db_utils import _find_nearest_training_date, is_training_in_global_freeze
-
-    candidate = _find_nearest_training_date(base_date, sport_type, age_group)
+    candidate = db_utils_pkg._find_nearest_training_date(base_date, sport_type, age_group)
     for _ in range(120):  # защитный лимит
-        if not is_training_in_global_freeze(session, candidate):
+        if not db_utils_pkg.is_training_in_global_freeze(session, candidate):
             return candidate
         next_day = (candidate + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        candidate = _find_nearest_training_date(next_day, sport_type, age_group)
+        candidate = db_utils_pkg._find_nearest_training_date(next_day, sport_type, age_group)
     return candidate
 
 
@@ -817,18 +817,8 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
     age_group = context.user_data['age_group']
     subscription_type = context.user_data['subscription_type']
 
-    from database.db_utils import (
-        _find_nearest_training_date,
-        _calculate_12th_training_date,
-        _create_and_deduct_scheduled_trainings,
-        create_subscription as db_create_subscription,
-        training_end_time,
-        sync_subscription_trainings_remaining,
-        is_training_in_global_freeze,
-    )
-
     # Первая дата тренировки по расписанию
-    start_date = _find_nearest_training_date(
+    start_date = db_utils_pkg._find_nearest_training_date(
         coach_selected_date.replace(hour=0, minute=0, second=0, microsecond=0),
         sport_type,
         age_group,
@@ -837,7 +827,7 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
     try:
         # Если первая тренировка попала в активную массовую заморозку,
         # просим подтверждение с автоматическим сдвигом.
-        if is_training_in_global_freeze(session, start_date) and not skip_freeze_confirm:
+        if db_utils_pkg.is_training_in_global_freeze(session, start_date) and not skip_freeze_confirm:
             freeze = session.query(GlobalFreeze).filter(
                 GlobalFreeze.is_active == True,
                 GlobalFreeze.start_date <= start_date,
@@ -874,9 +864,9 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
             return ATHLETE_TRAINING_DATE
 
         if subscription_type == "monthly":
-            end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
+            end_date = db_utils_pkg._calculate_12th_training_date(start_date, sport_type, age_group)
         else:
-            end_date = training_end_time(start_date)
+            end_date = db_utils_pkg.training_end_time(start_date)
 
         athlete = create_athlete(
             session=session,
@@ -890,7 +880,7 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
             created_by=context.user_data['coach_id'],
             commit=False,
         )
-        subscription = db_create_subscription(
+        subscription = db_utils_pkg.create_subscription(
             session=session,
             athlete_id=athlete.id,
             subscription_type=subscription_type,
@@ -902,7 +892,7 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
         subscription.is_active = True
 
         if subscription_type == "monthly":
-            _create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
+            db_utils_pkg._create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
         else:
             coach_id = athlete.created_by or context.user_data.get('coach_id')
             training = session.query(Training).filter_by(
@@ -926,7 +916,7 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
                 session.flush()
 
         # Защитная синхронизация после установки дат/типа.
-        sync_subscription_trainings_remaining(session, subscription)
+        db_utils_pkg.sync_subscription_trainings_remaining(session, subscription)
 
         session.commit()
 
@@ -934,7 +924,13 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
         subscription_type_ru = context.user_data['subscription_type_ru']
         context.user_data.clear()
 
-        print(f"✅ УСПЕШНО ДОБАВЛЕН СПОРТСМЕН: {athlete.full_name}, абонемент {subscription_type_ru}, первая дата {start_date}")
+        logger.info(
+            "add_athlete done athlete_id=%s name=%s subscription=%s first_training=%s",
+            athlete.id,
+            athlete.full_name,
+            subscription_type_ru,
+            start_date,
+        )
 
         birth_date_display = (
             athlete.birth_date.strftime('%d.%m.%Y')
@@ -963,8 +959,11 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
         except Exception:
             pass
     except Exception as e:
-        print(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}")
-        logger.error(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}", exc_info=True)
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        logger.error("add_athlete finalize failed: %s", e, exc_info=True)
         await query.edit_message_text("❌ Ошибка при добавлении спортсмена")
     finally:
         session.close()
@@ -980,14 +979,36 @@ async def handle_add_athlete_shift_confirm(update: Update, context: ContextTypes
     # Дата в callback_data — чтобы подтверждение работало при потере user_data (несколько воркеров,
     # перезапуск процесса и т.д.). user_data оставляем как запасной путь для старых сообщений.
     data = (query.data or "").strip()
-    shifted_start = _parse_shift_confirm_callback_data(data)
-    if shifted_start is None:
-        pending = context.user_data.get("pending_shifted_start_date")
-        if pending:
-            try:
-                shifted_start = datetime.fromisoformat(pending)
-            except ValueError:
-                shifted_start = None
+    shifted_from_cb = _parse_shift_confirm_callback_data(data)
+    pending_raw = context.user_data.get("pending_shifted_start_date")
+
+    if shifted_from_cb is not None and pending_raw:
+        try:
+            pending_dt = datetime.fromisoformat(pending_raw)
+        except ValueError:
+            pending_dt = None
+        if pending_dt is not None:
+            p = pending_dt.replace(tzinfo=None) if pending_dt.tzinfo else pending_dt
+            p = p.replace(second=0, microsecond=0)
+            c = shifted_from_cb.replace(second=0, microsecond=0)
+            if p != c:
+                logger.warning(
+                    "add_athlete shift_confirm mismatch user_id=%s cb=%s pending=%s",
+                    update.effective_user.id,
+                    c,
+                    p,
+                )
+                await query.edit_message_text(
+                    "❌ Кнопка не соответствует текущему сценарию. Выберите дату в календаре снова."
+                )
+                return ATHLETE_TRAINING_DATE
+
+    shifted_start = shifted_from_cb
+    if shifted_start is None and pending_raw:
+        try:
+            shifted_start = datetime.fromisoformat(pending_raw)
+        except ValueError:
+            shifted_start = None
     if shifted_start is None:
         await query.edit_message_text("❌ Данные сессии утеряны. Выберите дату снова в календаре.")
         return ATHLETE_TRAINING_DATE
@@ -1037,7 +1058,7 @@ async def handle_training_date_selection(update: Update, context: ContextTypes.D
         year, month, day, hour, minute = map(int, date_str.split("-"))
         coach_selected_date = datetime(year, month, day, hour, minute)
     except Exception as e:
-        print(f"❌ ОШИБКА ПАРСИНГА ДАТЫ: {e}")
+        logger.warning("handle_training_date_selection parse error: %s", e)
         await query.edit_message_text("❌ Ошибка при обработке выбранной даты")
         return ConversationHandler.END
 
@@ -1474,7 +1495,7 @@ async def handle_back_to_menu_main(update: Update, context: ContextTypes.DEFAULT
 async def cancel_athlete_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отмена процесса добавления спортсмена"""
     user_id = update.effective_user.id
-    print(f"🚫 ПОЛЬЗОВАТЕЛЬ {user_id} ОТМЕНИЛ ДОБАВЛЕНИЕ СПОРТСМЕНА")
+    logger.info("add_athlete cancelled user_id=%s", user_id)
 
     # Очищаем данные процесса
     context.user_data.clear()
