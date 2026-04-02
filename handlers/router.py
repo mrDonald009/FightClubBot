@@ -28,6 +28,9 @@ from handlers.coach_handlers import (
     add_athlete_medical,
     add_athlete_age_group,
     add_athlete_subscription,
+    handle_add_athlete_calendar_nav,
+    handle_add_athlete_calendar_date_pick,
+    handle_add_athlete_calendar_ignore,
     handle_training_date_selection,
     athletes_list,
     athletes_list_filtered,
@@ -560,7 +563,10 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_subscription)
             ],
             ATHLETE_TRAINING_DATE: [
-                CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_")
+                CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_nav, pattern="^addath_cal_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_date_pick, pattern="^addath_date_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_ignore, pattern="^addath_ignore$"),
             ],
         },
         fallbacks=[

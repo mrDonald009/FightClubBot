@@ -528,7 +528,7 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
     print(f"✅ ВЫБРАНА ВОЗРАСТНАЯ ГРУППА: {age_group_ru} ({age_group}), ПОКАЗЫВАЕМ КАЛЕНДАРЬ ДАТ")
 
     sport_type = context.user_data['sport_type']
-    date_kb = create_date_keyboard(sport_type, age_group)
+    date_kb = create_add_athlete_training_calendar(sport_type, age_group)
     if not date_kb:
         await update.message.reply_text(
             "❌ Нет доступных дат тренировок по расписанию для этой группы. Обратитесь к администратору.",
@@ -625,6 +625,78 @@ def create_date_keyboard(sport_type, age_group, max_dates=20):
     return InlineKeyboardMarkup(keyboard) if keyboard else None
 
 
+def create_add_athlete_training_calendar(sport_type, age_group, month=None, year=None):
+    """Календарь выбора первой тренировки при добавлении спортсмена."""
+    now = now_moscow()
+    today = now.date()
+    current_month = month or now.month
+    current_year = year or now.year
+
+    schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+    if not schedule:
+        return None
+    training_days = set(schedule.get("days", []))
+
+    cal = calendar.monthcalendar(current_year, current_month)
+    keyboard = []
+
+    day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    keyboard.append([InlineKeyboardButton(f"{d}.", callback_data="addath_ignore") for d in day_names])
+
+    weeks_to_show = cal[:5]
+    while len(weeks_to_show) < 5:
+        weeks_to_show.append([0, 0, 0, 0, 0, 0, 0])
+
+    for week in weeks_to_show:
+        row = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(" ", callback_data="addath_ignore"))
+                continue
+
+            date_obj = datetime(current_year, current_month, day).date()
+            weekday = date_obj.weekday()
+            has_scheduled_training = weekday in training_days
+            enabled = has_scheduled_training and date_obj >= today
+
+            if date_obj == today:
+                btn_text = f"[{day:2d}]"
+            elif has_scheduled_training:
+                btn_text = f"({day:2d})"
+            else:
+                btn_text = f"{day:2d}"
+
+            callback_data = f"addath_date_{current_year}_{current_month}_{day}" if enabled else "addath_ignore"
+            row.append(InlineKeyboardButton(btn_text, callback_data=callback_data))
+        keyboard.append(row)
+
+    prev_month = current_month - 1
+    prev_year = current_year
+    if prev_month < 1:
+        prev_month = 12
+        prev_year -= 1
+
+    next_month = current_month + 1
+    next_year = current_year
+    if next_month > 12:
+        next_month = 1
+        next_year += 1
+
+    keyboard.append([
+        InlineKeyboardButton("◀️ Предыдущий", callback_data=f"addath_cal_{prev_year}_{prev_month}"),
+        InlineKeyboardButton("Следующий ▶️", callback_data=f"addath_cal_{next_year}_{next_month}")
+    ])
+
+    if current_month != now.month or current_year != now.year:
+        keyboard.append([
+            InlineKeyboardButton("📅 Сегодня", callback_data=f"addath_cal_{now.year}_{now.month}")
+        ])
+
+    keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
 async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка типа абонемента → переход к выбору возрастной группы."""
     user_id = update.effective_user.id
@@ -656,6 +728,72 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
         reply_markup=reply_markup
     )
     return ATHLETE_AGE_GROUP
+
+
+async def handle_add_athlete_calendar_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Навигация календаря выбора первой тренировки при добавлении спортсмена."""
+    query = update.callback_query
+    await query.answer()
+
+    if "subscription_type" not in context.user_data:
+        await query.edit_message_text("Сессия добавления спортсмена завершена. Используйте меню «👥 Добавить спортсмена».")
+        return ConversationHandler.END
+
+    parts = (query.data or "").split("_")
+    if len(parts) != 4:
+        await query.answer("❌ Ошибка календаря")
+        return ATHLETE_TRAINING_DATE
+
+    year = int(parts[2])
+    month = int(parts[3])
+    sport_type = context.user_data.get("sport_type")
+    age_group = context.user_data.get("age_group")
+    reply_markup = create_add_athlete_training_calendar(sport_type, age_group, month=month, year=year)
+    if not reply_markup:
+        await query.edit_message_text("❌ Не удалось построить календарь. Обратитесь к администратору.")
+        return ConversationHandler.END
+
+    await query.edit_message_reply_markup(reply_markup=reply_markup)
+    return ATHLETE_TRAINING_DATE
+
+
+async def handle_add_athlete_calendar_date_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора дня в календаре добавления спортсмена."""
+    query = update.callback_query
+
+    if "subscription_type" not in context.user_data:
+        await query.edit_message_text("Сессия добавления спортсмена завершена. Используйте меню «👥 Добавить спортсмена».")
+        return ConversationHandler.END
+
+    parts = (query.data or "").split("_")
+    if len(parts) != 5:
+        await query.answer("❌ Ошибка даты")
+        return ATHLETE_TRAINING_DATE
+
+    year = int(parts[2])
+    month = int(parts[3])
+    day = int(parts[4])
+    sport_type = context.user_data.get("sport_type")
+    age_group = context.user_data.get("age_group")
+
+    schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+    if not schedule:
+        await query.edit_message_text("❌ Расписание для этой группы не найдено. Обратитесь к администратору.")
+        return ConversationHandler.END
+
+    coach_selected_date = datetime(year, month, day, 0, 0, 0)
+    from database.db_utils import _find_nearest_training_date
+    nearest = _find_nearest_training_date(coach_selected_date, sport_type, age_group)
+    callback_payload = nearest.strftime('%Y-%m-%d-%H-%M')
+    query.data = f"select_training_date_{callback_payload}"
+    return await handle_training_date_selection(update, context)
+
+
+async def handle_add_athlete_calendar_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Игнорировать клики по неактивным ячейкам календаря."""
+    query = update.callback_query
+    await query.answer()
+    return ATHLETE_TRAINING_DATE
 
 
 async def handle_training_date_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
