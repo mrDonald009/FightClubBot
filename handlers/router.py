@@ -1,4 +1,5 @@
 """Роутер для регистрации всех обработчиков."""
+import html
 import logging
 from datetime import datetime, timedelta
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
@@ -68,6 +69,8 @@ from handlers.card_handlers import (
     handle_activation_calendar_nav,
     handle_activation_date_pick,
     handle_activation_ignore,
+    handle_activation_shift_confirm,
+    handle_activation_shift_cancel,
     show_my_athlete_card,
     show_athlete_visits,
     show_athlete_stats,
@@ -201,9 +204,16 @@ async def create_global_freeze(update, context):
 
     args = context.args or []
     if len(args) < 2:
+        try:
+            with get_db_session() as session:
+                status_block = _format_current_global_freezes_html(session)
+        except Exception:
+            status_block = ""
         await update.message.reply_text(
+            f"{status_block}\n\n"
             "Формат: /global_freeze YYYY-MM-DD YYYY-MM-DD Название\n"
-            "Пример: /global_freeze 2026-05-01 2026-05-09 Майские праздники"
+            "Пример: /global_freeze 2026-05-01 2026-05-09 Майские праздники",
+            parse_mode="HTML",
         )
         return
 
@@ -251,6 +261,39 @@ def _parse_ui_date(text: str):
         return None
 
 
+def _format_current_global_freezes_html(session) -> str:
+    """
+    Текст для UI: массовые заморозки, действующие «сейчас» (по времени и is_active).
+    """
+    from database.models import GlobalFreeze
+
+    now = now_moscow()
+    rows = (
+        session.query(GlobalFreeze)
+        .filter(GlobalFreeze.is_active == True)
+        .filter(GlobalFreeze.start_date <= now)
+        .filter(GlobalFreeze.end_date >= now)
+        .order_by(GlobalFreeze.id.asc())
+        .all()
+    )
+    if not rows:
+        return "📭 <b>Сейчас действующих массовых заморозок нет.</b>"
+
+    header = (
+        "📌 <b>Сейчас действует массовая заморозка:</b>"
+        if len(rows) == 1
+        else "📌 <b>Сейчас действуют массовые заморозки:</b>"
+    )
+    lines = [header]
+    for g in rows:
+        title = html.escape((g.title or "").strip() or "без названия")
+        ds = g.start_date.strftime("%d.%m.%Y")
+        de = g.end_date.strftime("%d.%m.%Y")
+        lines.append(f"• ID <code>{g.id}</code> — <b>{title}</b>")
+        lines.append(f"  <i>{ds} — {de}</i>")
+    return "\n".join(lines)
+
+
 async def start_global_freeze_flow(update, context):
     """Показать меню массовой заморозки."""
     user_id = update.effective_user.id
@@ -260,6 +303,7 @@ async def start_global_freeze_flow(update, context):
             if not user or get_user_role(user) not in ['coach', 'admin']:
                 await update.message.reply_text("❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
+            status_block = _format_current_global_freezes_html(session)
     except Exception as e:
         logger.error(f"Ошибка проверки прав для массовой заморозки: {e}", exc_info=True)
         await update.message.reply_text("❌ Ошибка проверки прав")
@@ -271,6 +315,7 @@ async def start_global_freeze_flow(update, context):
 
     await update.message.reply_text(
         "🌍 <b>МАССОВАЯ ЗАМОРОЗКА</b>\n\n"
+        f"{status_block}\n\n"
         "Выберите действие:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
@@ -294,6 +339,7 @@ async def handle_global_freeze_action_create(update, context):
             if not user or get_user_role(user) not in ['coach', 'admin']:
                 await query.edit_message_text("❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
+            status_block = _format_current_global_freezes_html(session)
     except Exception as e:
         logger.error(f"Ошибка проверки прав (gf_action_create): {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка проверки прав")
@@ -304,6 +350,7 @@ async def handle_global_freeze_action_create(update, context):
     context.user_data.pop("gf_title", None)
 
     await query.edit_message_text(
+        f"{status_block}\n\n"
         "Введите <b>дату начала</b> в формате <b>ДД.ММ.ГГГГ</b>.\n"
         "Для отмены: /cancel",
         parse_mode="HTML",
@@ -772,7 +819,13 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(CallbackQueryHandler(handle_activation_calendar_nav, pattern="^act_cal_"))
     registrar.register(CallbackQueryHandler(handle_activation_date_pick, pattern="^act_date_"))
     registrar.register(CallbackQueryHandler(handle_activation_ignore, pattern="^act_ignore$"))
-    
+    registrar.register(
+        CallbackQueryHandler(handle_activation_shift_confirm, pattern=r"^act_shift_confirm_\d+_\d{12}$")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_activation_shift_cancel, pattern=r"^act_shift_cancel_\d+$")
+    )
+
     # Обработчики для заморозки абонемента
     registrar.register(
         CallbackQueryHandler(handle_freeze_subscription_start, pattern="^freeze_sub_")

@@ -768,47 +768,15 @@ async def handle_add_athlete_calendar_ignore(update: Update, context: ContextTyp
     return ATHLETE_TRAINING_DATE
 
 
-def _compact_dt_for_shift_callback(dt: datetime) -> str:
-    """12 цифр YYYYMMDDHHMM для callback_data (лимит Telegram 64 байта)."""
-    return (
-        f"{dt.year:04d}{dt.month:02d}{dt.day:02d}"
-        f"{dt.hour:02d}{dt.minute:02d}"
-    )
-
-
 def _parse_shift_confirm_callback_data(data: str):
-    """
-    Извлечь дату из addath_shift_confirm_YYYYMMDDHHMM.
-    Возвращает datetime или None.
-    """
+    """Извлечь дату из addath_shift_confirm_YYYYMMDDHHMM."""
     if not data:
         return None
     prefix = "addath_shift_confirm_"
     if not data.startswith(prefix):
         return None
     suffix = data[len(prefix) :]
-    if len(suffix) != 12 or not suffix.isdigit():
-        return None
-    try:
-        y = int(suffix[0:4])
-        mo = int(suffix[4:6])
-        d = int(suffix[6:8])
-        h = int(suffix[8:10])
-        mi = int(suffix[10:12])
-        return datetime(y, mo, d, h, mi)
-    except ValueError:
-        return None
-
-
-def _find_next_non_frozen_training_date(session, base_date: datetime, sport_type: str, age_group: str) -> datetime:
-    """Найти ближайшую дату тренировки вне активной массовой заморозки."""
-    candidate = db_utils_pkg._find_nearest_training_date(base_date, sport_type, age_group)
-    for _ in range(120):  # защитный лимит
-        if not db_utils_pkg.is_training_in_global_freeze(session, candidate):
-            return candidate
-        next_day = (candidate + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        candidate = db_utils_pkg._find_nearest_training_date(next_day, sport_type, age_group)
-    return candidate
+    return db_utils_pkg.parse_training_datetime_compact(suffix)
 
 
 async def _finalize_add_athlete_from_selected_date(query, context, coach_selected_date: datetime, *, skip_freeze_confirm: bool = False):
@@ -834,7 +802,7 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
                 GlobalFreeze.end_date >= start_date
             ).order_by(GlobalFreeze.end_date.desc()).first()
 
-            shifted_start = _find_next_non_frozen_training_date(
+            shifted_start = db_utils_pkg.find_next_non_frozen_training_date(
                 session,
                 (freeze.end_date + timedelta(seconds=1)) if freeze else (start_date + timedelta(days=1)),
                 sport_type,
@@ -842,7 +810,7 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
             )
             context.user_data["pending_shifted_start_date"] = shifted_start.isoformat()
 
-            confirm_cb = f"addath_shift_confirm_{_compact_dt_for_shift_callback(shifted_start)}"
+            confirm_cb = f"addath_shift_confirm_{db_utils_pkg.training_datetime_compact(shifted_start)}"
             keyboard = InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("✅ Подтвердить сдвиг", callback_data=confirm_cb),

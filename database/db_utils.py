@@ -1345,6 +1345,42 @@ def is_training_in_global_freeze(session: Session, training_datetime: datetime) 
     return bool(gf)
 
 
+def training_datetime_compact(dt: datetime) -> str:
+    """12 цифр YYYYMMDDHHMM для callback_data (лимит Telegram 64 байта)."""
+    return (
+        f"{dt.year:04d}{dt.month:02d}{dt.day:02d}"
+        f"{dt.hour:02d}{dt.minute:02d}"
+    )
+
+
+def parse_training_datetime_compact(s: str) -> Optional[datetime]:
+    """Разобрать суффикст из 12 цифр в datetime (naive, локальное время слота)."""
+    if not s or len(s) != 12 or not s.isdigit():
+        return None
+    try:
+        y = int(s[0:4])
+        mo = int(s[4:6])
+        d = int(s[6:8])
+        h = int(s[8:10])
+        mi = int(s[10:12])
+        return datetime(y, mo, d, h, mi)
+    except ValueError:
+        return None
+
+
+def find_next_non_frozen_training_date(
+    session: Session, base_date: datetime, sport_type: str, age_group: str
+) -> datetime:
+    """Ближайшая дата тренировки по расписанию вне активной массовой заморозки."""
+    candidate = _find_nearest_training_date(base_date, sport_type, age_group)
+    for _ in range(120):
+        if not is_training_in_global_freeze(session, candidate):
+            return candidate
+        next_day = (candidate + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        candidate = _find_nearest_training_date(next_day, sport_type, age_group)
+    return candidate
+
+
 def apply_global_freeze(
     session: Session,
     start_date: datetime,
