@@ -934,7 +934,6 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
         logger.error(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка при добавлении спортсмена")
     finally:
-        context.user_data.pop("pending_shifted_start_date", None)
         session.close()
 
     return ConversationHandler.END
@@ -950,6 +949,7 @@ async def handle_add_athlete_shift_confirm(update: Update, context: ContextTypes
         await query.edit_message_text("❌ Данные сессии утеряны. Выберите дату снова в календаре.")
         return ATHLETE_TRAINING_DATE
 
+    context.user_data.pop("pending_shifted_start_date", None)
     shifted_start = datetime.fromisoformat(pending)
     return await _finalize_add_athlete_from_selected_date(
         query,
