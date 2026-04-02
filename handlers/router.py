@@ -100,21 +100,12 @@ from handlers.attendance_handlers import (
 logger = logging.getLogger(__name__)
 
 _GF_NOTICE_MAIN_HTML = (
-    "ℹ️ <b>Важно</b>\n"
-    "• Действие затрагивает <b>все активные абонементы</b>: к периоду абонемента "
-    "добавляются тренировочные дни по расписанию внутри выбранного календарного интервала "
-    "(учитываются личные заморозки).\n"
-    "• Периоды <b>активных</b> массовых заморозок <b>не должны пересекаться</b>.\n"
-    "• <b>Снятие</b> действия заморозки (отмена в меню) запускает <b>пересчёт месячных</b> абонементов.\n"
-    "• Даты вводятся как <b>ДД.ММ.ГГГГ</b>; день начала и день окончания <b>входят</b> в период.\n"
-    "• Сверьте интервал с реальным графиком клуба <b>до финального подтверждения</b>."
+    "ℹ️ Вводите данные <b>внимательно</b> и убедитесь в <b>правильности решения</b> "
+    "— действие затрагивает активные абонементы. Формат дат: <b>ДД.ММ.ГГГГ</b>."
 )
 
 _GF_NOTICE_CREATE_HTML = (
-    "📝 <b>Создание новой заморозки</b>\n"
-    "Вводите даты аккуратно: конец не раньше начала. Если период пересечётся с уже "
-    "<b>активной</b> массовой заморозкой, бот <b>откажет</b> в применении — сначала снимите "
-    "действие старой записи или измените даты. Прервать шаг: <code>/cancel</code>."
+    "Вводите даты аккуратно. Прервать: <code>/cancel</code>."
 )
 
 # Состояния диалога массовой заморозки
@@ -394,9 +385,7 @@ async def handle_global_freeze_action_create(update, context):
     await query.edit_message_text(
         f"{status_block}\n\n"
         f"{_GF_NOTICE_CREATE_HTML}\n\n"
-        "Введите <b>дату начала</b> периода в формате <b>ДД.ММ.ГГГГ</b> "
-        "(этот день входит в заморозку).\n"
-        "Прервать: <code>/cancel</code>",
+        "<b>Дата начала</b> (ДД.ММ.ГГГГ):",
         parse_mode="HTML",
     )
     return GF_START_DATE
@@ -434,9 +423,8 @@ async def handle_global_freeze_action_cancel(update, context):
         for g in rows
     ]
     await query.edit_message_text(
-        "❌ <b>Снять действие</b> массовой заморозки\n\n"
-        "Выберите запись. Для затронутых <b>месячных</b> абонементов будет выполнен пересчёт "
-        "(даты, списания, остаток).",
+        "❌ <b>Снять действие</b> заморозки\n\n"
+        "Выберите запись (будет пересчёт <b>месячных</b> абонементов).",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(kb),
     )
@@ -551,9 +539,8 @@ async def handle_global_freeze_start_date(update, context):
         return GF_START_DATE
     context.user_data["gf_start_date"] = dt
     await update.message.reply_text(
-        f"✅ Начало периода: <b>{dt.strftime('%d.%m.%Y')}</b>\n\n"
-        "Введите <b>дату окончания</b> (<b>ДД.ММ.ГГГГ</b>) — тоже <b>включительно</b>, "
-        "не раньше даты начала.",
+        f"Начало: <b>{dt.strftime('%d.%m.%Y')}</b>\n"
+        "<b>Дата окончания</b> (ДД.ММ.ГГГГ), не раньше начала:",
         parse_mode="HTML",
     )
     return GF_END_DATE
@@ -578,19 +565,11 @@ async def handle_global_freeze_end_date(update, context):
     span_days = (ed0 - sd0).days + 1
     span_hint = ""
     if span_days > 21:
-        span_hint = (
-            f"\n\n⚠️ <b>Длительный период</b>: {span_days} календарных дней. "
-            "Проверьте, что это соответствует решению клуба, а не опечатка."
-        )
-    elif span_days > 14:
-        span_hint = (
-            f"\n\nℹ️ Период: <b>{span_days}</b> календарных дней — сверьте с фактическими каникулами."
-        )
+        span_hint = f"\n⚠️ Долго ({span_days} дн.) — проверьте даты."
 
     await update.message.reply_text(
-        f"✅ Конец периода: <b>{dt.strftime('%d.%m.%Y')}</b>{span_hint}\n\n"
-        "Введите <b>название</b> заморозки (например: <i>Майские праздники</i>) — "
-        "оно отобразится в списках и отчётах.",
+        f"Конец: <b>{dt.strftime('%d.%m.%Y')}</b>{span_hint}\n"
+        "<b>Название</b> заморозки:",
         parse_mode="HTML",
     )
     return GF_TITLE
@@ -620,29 +599,24 @@ async def handle_global_freeze_title(update, context):
                 if len(overlapping) > 5:
                     oids += ", …"
                 overlap_note = (
-                    "\n\n⚠️ <b>Пересечение с активной заморозкой</b> (ID: "
-                    f"<code>{html.escape(oids)}</code>). Применение <b>будет отклонено</b>, "
-                    "пока не снимете действие той записи или не измените даты "
-                    "(<code>/cancel</code> и заново)."
+                    f"\n\n⚠️ Пересечение с активной GF (ID: <code>{html.escape(oids)}</code>) — "
+                    "применить нельзя. <code>/cancel</code> и заново."
                 )
     except Exception as e:
         logger.error(f"Ошибка проверки пересечения GF перед подтверждением: {e}", exc_info=True)
-        overlap_note = "\n\n⚠️ Не удалось проверить пересечения с активными заморозками — при сомнении отложите применение."
+        overlap_note = "\n\n⚠️ Проверка пересечений не удалась — лучше отложить применение."
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Применить", callback_data="gf_apply_confirm")],
         [InlineKeyboardButton("❌ Отмена", callback_data="gf_cancel_confirm")],
     ])
     await update.message.reply_text(
-        "🌍 <b>Подтверждение перед применением</b>\n\n"
-        f"• Название: <b>{esc_title}</b>\n"
-        f"• Период: <b>{start_date.strftime('%d.%m.%Y')} — {end_date.strftime('%d.%m.%Y')}</b> "
-        "(границы включительно)\n\n"
-        "<b>Проверьте:</b> интервал совпадает с решением клуба; лишних дней нет.\n"
-        "После применения откат действия — через «Отмена массовой заморозки» "
-        "(с пересчётом затронутых <b>месячных</b> абонементов)."
+        "🌍 <b>Подтвердите</b>\n\n"
+        f"{esc_title}\n"
+        f"<b>{start_date.strftime('%d.%m.%Y')} — {end_date.strftime('%d.%m.%Y')}</b>\n\n"
+        "Убедитесь, что всё верно. Откат — «Отмена массовой заморозки» (пересчёт monthly)."
         f"{overlap_note}\n\n"
-        "Применить массовую заморозку?",
+        "Применить?",
         parse_mode="HTML",
         reply_markup=keyboard,
     )
@@ -872,7 +846,20 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         allow_reentry=True,
     )
     registrar.register(gf_conv)
-    logger.info("✅ Зарегистрирован ConversationHandler для массовой заморозки")
+    # Если диалог GF не в памяти (перезапуск, клик по старому сообщению), ConversationHandler
+    # не забирает callback — без этих обработчиков кнопки «отмена» / деактивация «молчат».
+    # Регистрируются после CH: срабатывают только когда check_update у CH вернул None.
+    for _cb, _pat in (
+        (handle_gf_deact_confirm, r"^gf_deact_confirm_\d+$"),
+        (handle_gf_deact_pick, r"^gf_deact_pick_\d+$"),
+        (handle_gf_deact_abort, r"^gf_deact_abort$"),
+        (handle_global_freeze_confirm_apply, r"^gf_apply_confirm$"),
+        (handle_global_freeze_confirm_cancel, r"^gf_cancel_confirm$"),
+        (handle_global_freeze_action_create, r"^gf_action_create$"),
+        (handle_global_freeze_action_cancel, r"^gf_action_cancel$"),
+    ):
+        registrar.register(CallbackQueryHandler(_cb, pattern=_pat))
+    logger.info("✅ Зарегистрирован ConversationHandler для массовой заморозки (+ резервные callback)")
 
     # Обработчики для списка спортсменов
     registrar.register(
