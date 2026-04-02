@@ -894,12 +894,7 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
             f"🏥 Мед. информация: {athlete.medical_info}\n"
             f"💪 Осталось тренировок: {subscription.trainings_remaining}"
         )
-        # Явно возвращаем пользователя в главное меню тренера.
-        # Отдельное сообщение с ReplyKeyboard надежнее, чем "тихая" установка после inline-экрана.
-        await query.message.reply_text(
-            "🏋️‍♂️ Меню тренера:\n\nВыберите действие:",
-            reply_markup=get_coach_main_menu()
-        )
+        await _set_reply_keyboard_silently(query.message, get_coach_main_menu())
     except Exception as e:
         print(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}")
         logger.error(f"❌ ОШИБКА ПРИ ДОБАВЛЕНИИ СПОРТСМЕНА: {e}", exc_info=True)
