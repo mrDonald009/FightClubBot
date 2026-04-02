@@ -514,15 +514,15 @@ async def add_athlete_medical(update: Update, context: ContextTypes.DEFAULT_TYPE
         print(f"✅ ВВЕДЕНЫ МЕД.ДАННЫЕ: '{medical_info}'")
 
     context.user_data['medical_info'] = medical_info
-    print(f"✅ МЕД.ДАННЫЕ СОХРАНЕНЫ В user_data: '{medical_info}', ПЕРЕХОДИМ К ВЫБОРУ ТИПА АБОНЕМЕНТА")
+    print(f"✅ МЕД.ДАННЫЕ СОХРАНЕНЫ В user_data: '{medical_info}', ПЕРЕХОДИМ К ВЫБОРУ ВОЗРАСТНОЙ ГРУППЫ")
 
-    keyboard = [[KeyboardButton("Месячный"), KeyboardButton("Разовый")]]
+    keyboard = [[KeyboardButton("Детская"), KeyboardButton("Взрослая")]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
-        "🎫 Выберите тип абонемента:",
+        "👦👨 Выберите возрастную группу:",
         reply_markup=reply_markup
     )
-    return ATHLETE_SUBSCRIPTION
+    return ATHLETE_AGE_GROUP
 
 
 async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -548,23 +548,15 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
     age_group_ru = user_text
     age_group = "children" if age_group_ru == "Детская" else "adults"
     context.user_data['age_group'] = age_group
-    print(f"✅ ВЫБРАНА ВОЗРАСТНАЯ ГРУППА: {age_group_ru} ({age_group}), ПОКАЗЫВАЕМ КАЛЕНДАРЬ ДАТ")
+    print(f"✅ ВЫБРАНА ВОЗРАСТНАЯ ГРУППА: {age_group_ru} ({age_group}), ПЕРЕХОДИМ К ВЫБОРУ ТИПА АБОНЕМЕНТА")
 
-    sport_type = context.user_data['sport_type']
-    date_kb = create_add_athlete_training_calendar(sport_type, age_group)
-    if not date_kb:
-        await update.message.reply_text(
-            "❌ Нет доступных дат тренировок по расписанию для этой группы. Обратитесь к администратору.",
-            reply_markup=get_coach_main_menu()
-        )
-        return ConversationHandler.END
-
+    keyboard = [[KeyboardButton("Месячный"), KeyboardButton("Разовый")]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
-        "📅 Выберите <b>первую дату тренировки</b> по абонементу:",
-        parse_mode="HTML",
-        reply_markup=date_kb
+        "🎫 Выберите тип абонемента:",
+        reply_markup=reply_markup
     )
-    return ATHLETE_TRAINING_DATE
+    return ATHLETE_SUBSCRIPTION
 
 
 def get_available_training_dates(sport_type, age_group, month=None, year=None, max_months=2):
@@ -721,7 +713,7 @@ def create_add_athlete_training_calendar(sport_type, age_group, month=None, year
 
 
 async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка типа абонемента → переход к выбору возрастной группы."""
+    """Обработка типа абонемента → переход к выбору первой даты тренировки."""
     user_id = update.effective_user.id
     user_text = update.message.text
     print(f"🎯 ВХОД В add_athlete_subscription ДЛЯ ПОЛЬЗОВАТЕЛЯ {user_id}, ТЕКСТ: '{user_text}'")
@@ -742,15 +734,24 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
     subscription_type = "monthly" if subscription_type_ru == "Месячный" else "single"
     context.user_data['subscription_type'] = subscription_type
     context.user_data['subscription_type_ru'] = subscription_type_ru
-    print(f"✅ ВЫБРАН ТИП АБОНЕМЕНТА: {subscription_type_ru} ({subscription_type}), ПЕРЕХОД К ВЫБОРУ ВОЗРАСТНОЙ ГРУППЫ")
+    print(f"✅ ВЫБРАН ТИП АБОНЕМЕНТА: {subscription_type_ru} ({subscription_type}), ПОКАЗЫВАЕМ КАЛЕНДАРЬ ДАТ")
 
-    keyboard = [[KeyboardButton("Детская"), KeyboardButton("Взрослая")]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    sport_type = context.user_data['sport_type']
+    age_group = context.user_data['age_group']
+    date_kb = create_add_athlete_training_calendar(sport_type, age_group)
+    if not date_kb:
+        await update.message.reply_text(
+            "❌ Нет доступных дат тренировок по расписанию для этой группы. Обратитесь к администратору.",
+            reply_markup=get_coach_main_menu()
+        )
+        return ConversationHandler.END
+
     await update.message.reply_text(
-        "👦👨 Выберите возрастную группу:",
-        reply_markup=reply_markup
+        "📅 Выберите <b>первую дату тренировки</b> по абонементу:",
+        parse_mode="HTML",
+        reply_markup=date_kb
     )
-    return ATHLETE_AGE_GROUP
+    return ATHLETE_TRAINING_DATE
 
 
 async def handle_add_athlete_calendar_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
