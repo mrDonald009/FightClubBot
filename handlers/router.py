@@ -569,7 +569,10 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 CallbackQueryHandler(handle_add_athlete_calendar_nav, pattern="^addath_cal_"),
                 CallbackQueryHandler(handle_add_athlete_calendar_date_pick, pattern="^addath_date_"),
                 CallbackQueryHandler(handle_add_athlete_calendar_ignore, pattern="^addath_ignore$"),
-                CallbackQueryHandler(handle_add_athlete_shift_confirm, pattern="^addath_shift_confirm$"),
+                CallbackQueryHandler(
+                    handle_add_athlete_shift_confirm,
+                    pattern=r"^addath_shift_confirm(?:_\d{12})?$",
+                ),
                 CallbackQueryHandler(handle_add_athlete_shift_cancel, pattern="^addath_shift_cancel$"),
             ],
         },

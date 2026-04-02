@@ -766,6 +766,38 @@ async def handle_add_athlete_calendar_ignore(update: Update, context: ContextTyp
     return ATHLETE_TRAINING_DATE
 
 
+def _compact_dt_for_shift_callback(dt: datetime) -> str:
+    """12 цифр YYYYMMDDHHMM для callback_data (лимит Telegram 64 байта)."""
+    return (
+        f"{dt.year:04d}{dt.month:02d}{dt.day:02d}"
+        f"{dt.hour:02d}{dt.minute:02d}"
+    )
+
+
+def _parse_shift_confirm_callback_data(data: str):
+    """
+    Извлечь дату из addath_shift_confirm_YYYYMMDDHHMM.
+    Возвращает datetime или None.
+    """
+    if not data:
+        return None
+    prefix = "addath_shift_confirm_"
+    if not data.startswith(prefix):
+        return None
+    suffix = data[len(prefix) :]
+    if len(suffix) != 12 or not suffix.isdigit():
+        return None
+    try:
+        y = int(suffix[0:4])
+        mo = int(suffix[4:6])
+        d = int(suffix[6:8])
+        h = int(suffix[8:10])
+        mi = int(suffix[10:12])
+        return datetime(y, mo, d, h, mi)
+    except ValueError:
+        return None
+
+
 def _find_next_non_frozen_training_date(session, base_date: datetime, sport_type: str, age_group: str) -> datetime:
     """Найти ближайшую дату тренировки вне активной массовой заморозки."""
     from database.db_utils import _find_nearest_training_date, is_training_in_global_freeze
@@ -820,9 +852,10 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
             )
             context.user_data["pending_shifted_start_date"] = shifted_start.isoformat()
 
+            confirm_cb = f"addath_shift_confirm_{_compact_dt_for_shift_callback(shifted_start)}"
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Подтвердить сдвиг", callback_data="addath_shift_confirm"),
+                    InlineKeyboardButton("✅ Подтвердить сдвиг", callback_data=confirm_cb),
                     InlineKeyboardButton("❌ Выбрать другую дату", callback_data="addath_shift_cancel"),
                 ]
             ])
@@ -944,13 +977,22 @@ async def handle_add_athlete_shift_confirm(update: Update, context: ContextTypes
     query = update.callback_query
     await query.answer()
 
-    pending = context.user_data.get("pending_shifted_start_date")
-    if not pending:
+    # Дата в callback_data — чтобы подтверждение работало при потере user_data (несколько воркеров,
+    # перезапуск процесса и т.д.). user_data оставляем как запасной путь для старых сообщений.
+    data = (query.data or "").strip()
+    shifted_start = _parse_shift_confirm_callback_data(data)
+    if shifted_start is None:
+        pending = context.user_data.get("pending_shifted_start_date")
+        if pending:
+            try:
+                shifted_start = datetime.fromisoformat(pending)
+            except ValueError:
+                shifted_start = None
+    if shifted_start is None:
         await query.edit_message_text("❌ Данные сессии утеряны. Выберите дату снова в календаре.")
         return ATHLETE_TRAINING_DATE
 
     context.user_data.pop("pending_shifted_start_date", None)
-    shifted_start = datetime.fromisoformat(pending)
     return await _finalize_add_athlete_from_selected_date(
         query,
         context,
