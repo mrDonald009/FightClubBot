@@ -6,7 +6,13 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from database.db_utils import calculate_actual_trainings_remaining, migrate_existing_subscription, apply_global_freeze
+from database.db_utils import (
+    apply_global_freeze,
+    calculate_actual_trainings_remaining,
+    deactivate_global_freeze_and_migrate,
+    migrate_existing_subscription,
+    update_global_freeze_title,
+)
 from database.models import (
     Athlete,
     Attendance,
@@ -222,4 +228,41 @@ def test_audit_reports_overlapping_global_freezes():
     report = run_subscription_audit(s)
     codes = {issue["code"] for issue in report["issues"]}
     assert "overlapping_global_freezes" in codes
+    s.close()
+
+
+def test_deactivate_global_freeze_sets_inactive_and_idempotent():
+    s, _, _ = _base_session()
+    gf = s.query(GlobalFreeze).one()
+    r1 = deactivate_global_freeze_and_migrate(s, gf.id)
+    assert r1["success"] is True
+    assert r1.get("already_inactive") is False
+    assert r1["migrated"] == 0
+    s.refresh(gf)
+    assert gf.is_active is False
+
+    r2 = deactivate_global_freeze_and_migrate(s, gf.id)
+    assert r2["success"] is True
+    assert r2.get("already_inactive") is True
+    s.close()
+
+
+def test_update_global_freeze_title_active_only():
+    s, _, _ = _base_session()
+    gf = s.query(GlobalFreeze).one()
+    r = update_global_freeze_title(s, gf.id, "Новое имя")
+    assert r["success"] is True
+    assert r["title"] == "Новое имя"
+    s.refresh(gf)
+    assert gf.title == "Новое имя"
+    s.close()
+
+
+def test_update_global_freeze_title_rejects_inactive():
+    s, _, _ = _base_session()
+    gf = s.query(GlobalFreeze).one()
+    gf.is_active = False
+    s.commit()
+    r = update_global_freeze_title(s, gf.id, "X")
+    assert r["success"] is False
     s.close()
