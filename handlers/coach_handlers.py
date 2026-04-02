@@ -27,12 +27,20 @@ async def _set_reply_keyboard_silently(message, reply_markup):
     поэтому используем невидимый символ и самый крайний fallback удаляем.
     """
     # Telegram не позволяет применить ReplyKeyboard без сообщения.
-    # Раньше мы удаляли служебное сообщение сразу, но на некоторых клиентах
-    # клавиатура не успевала примениться и оставалась старая (например, "Детская/Взрослая").
-    # Поэтому отправляем почти невидимый текст и НЕ удаляем сообщение.
-    for text in ("\u3164", "\u200e", "\u200b", "."):  # HANGUL FILLER, LRM, ZWSP, fallback
+    # Отправляем служебный (невидимый) текст и удаляем его с небольшой
+    # задержкой, чтобы клиент успел применить новую клавиатуру.
+    # Важно: не используем U+3164 (ㅤ), т.к. на некоторых клиентах он видим.
+    for text in ("\u200b", "\u200e", "."):  # ZWSP, LRM, fallback
         try:
-            await message.reply_text(text, reply_markup=reply_markup)
+            tmp = await message.reply_text(text, reply_markup=reply_markup)
+            try:
+                await asyncio.sleep(0.8)
+            except Exception:
+                pass
+            try:
+                await tmp.delete()
+            except Exception:
+                pass
             return
         except Exception:
             continue
