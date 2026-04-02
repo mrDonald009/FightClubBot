@@ -111,9 +111,6 @@ async def select_training_for_attendance(update: Update, context: ContextTypes.D
             )
             .order_by(Athlete.full_name.asc())
         )
-        if get_user_role(user) == "coach":
-            athletes_query = athletes_query.filter(Athlete.created_by == user.id)
-
         athletes = athletes_query.all()
         athlete_ids = [a.id for a in athletes]
         attendance_map = {}
@@ -123,12 +120,19 @@ async def select_training_for_attendance(update: Update, context: ContextTypes.D
                 Attendance.athlete_id.in_(athlete_ids),
             ).all()
             attendance_map = {a.athlete_id: a for a in existing}
+        total_count = len(athletes)
+        marked_count = len(attendance_map)
+        attended_count = sum(1 for a in attendance_map.values() if a.attended)
+        absent_count = marked_count - attended_count
+        pending_count = total_count - marked_count
 
         age_group_ru = "Детская" if training.age_group == "children" else "Взрослая"
         message = (
             "📝 <b>ОТМЕТКА ПОСЕЩЕНИЯ</b>\n\n"
             f"📅 Тренировка: <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b>\n"
-            f"🥊 {training.sport_type} | {age_group_ru}\n\n"
+            f"🥊 {training.sport_type} | {age_group_ru}\n"
+            f"👥 Всего: <b>{total_count}</b> | Отмечено: <b>{marked_count}</b> | Осталось: <b>{pending_count}</b>\n"
+            f"✅ Присутствовали: <b>{attended_count}</b> | ❌ Отсутствовали: <b>{absent_count}</b>\n\n"
             "<b>Шаг 2/2: выберите спортсмена</b>"
         )
         if not athletes:
@@ -195,9 +199,6 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
 
         user = get_user_by_telegram_id(session, query.from_user.id)
         if user and get_user_role(user) == "coach":
-            if athlete.created_by != user.id:
-                await query.edit_message_text("❌ Вы можете отмечать посещение только своих спортсменов")
-                return
             coach_sport = _get_sport_type_name(user)
             if coach_sport and athlete.sport_type != coach_sport:
                 await query.edit_message_text("❌ Спортсмен не относится к вашему виду спорта")
@@ -343,6 +344,17 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
         return
 
     attended = (action == "mark_present")
+    action_signature = f"{athlete_id}:{training_id}:{action}"
+    action_guard = context.user_data.get("attendance_click_guard")
+    now_ts = now_moscow().timestamp()
+    if (
+        isinstance(action_guard, dict)
+        and action_guard.get("signature") == action_signature
+        and isinstance(action_guard.get("ts"), (int, float))
+        and (now_ts - action_guard.get("ts")) < 3
+    ):
+        return
+    context.user_data["attendance_click_guard"] = {"signature": action_signature, "ts": now_ts}
 
     session = Session()
     try:
@@ -364,8 +376,9 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
 
         user = get_user_by_telegram_id(session, query.from_user.id)
         if user and get_user_role(user) == 'coach':
-            if athlete.created_by != user.id:
-                await query.edit_message_text("❌ Вы можете отмечать посещение только своих спортсменов")
+            coach_sport = _get_sport_type_name(user)
+            if coach_sport and training.sport_type != coach_sport:
+                await query.edit_message_text("❌ Тренировка не относится к вашему виду спорта")
                 return
             if training.coach_id != user.id:
                 await query.edit_message_text("❌ Вы можете отмечать посещения только для своих тренировок")
@@ -409,8 +422,30 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
             # Обновляем существующую запись
             # Тренировка уже списана автоматически, поэтому просто обновляем статус
             old_status = existing_attendance.attended
+            if old_status == attended:
+                logger.info(
+                    "attendance_noop trainer_tg=%s athlete_id=%s training_id=%s status=%s",
+                    query.from_user.id,
+                    athlete_id,
+                    training_id,
+                    "present" if attended else "absent",
+                )
+                await query.edit_message_text(
+                    "ℹ️ Этот статус уже установлен.\n\n"
+                    f"📅 Тренировка: {training.training_date.strftime('%d.%m.%Y %H:%M')}\n"
+                    f"👤 Спортсмен: {athlete.full_name}"
+                )
+                return
             existing_attendance.attended = attended
             existing_attendance.marked_by = query.from_user.id
+            logger.info(
+                "attendance_updated trainer_tg=%s athlete_id=%s training_id=%s old=%s new=%s",
+                query.from_user.id,
+                athlete_id,
+                training_id,
+                "present" if old_status else "absent",
+                "present" if attended else "absent",
+            )
 
             message = f"✅ Статус обновлен: {'Присутствовал (использовано)' if attended else 'Отсутствовал (неиспользовано)'}"
         else:
@@ -440,6 +475,13 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
                 subscription.trainings_remaining -= 1
 
             session.add(attendance)
+            logger.info(
+                "attendance_created trainer_tg=%s athlete_id=%s training_id=%s status=%s",
+                query.from_user.id,
+                athlete_id,
+                training_id,
+                "present" if attended else "absent",
+            )
             message = f"✅ Посещение отмечено: {'Присутствовал' if attended else 'Отсутствовал'}"
 
         session.commit()
@@ -476,4 +518,5 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
         session.rollback()
         await query.edit_message_text(f"❌ Ошибка при отметке посещения: {str(e)}")
     finally:
+        context.user_data.pop("attendance_click_guard", None)
         session.close()
