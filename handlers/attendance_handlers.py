@@ -1,23 +1,53 @@
 import logging
 from datetime import datetime, timedelta
+from typing import List, Tuple
+
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
-from database.models import Session, Athlete, Subscription, Training, Attendance
+from database.models import Session, Athlete, Training, Attendance
 from database.db_utils import get_user_by_telegram_id, get_user_role, is_training_in_global_freeze
 from utils.time_utils import now_moscow, training_end_time
-from sqlalchemy import func
+from services.attendance_training_flow import (
+    build_step2_message_and_keyboard_rows,
+    coach_training_access_error,
+    fetch_athletes_for_training_slot,
+    get_coach_sport_type_name,
+    parse_attendance_page_callback,
+    resolve_training_from_attendance_callback,
+)
 import html
 
 logger = logging.getLogger(__name__)
 
 
-def _get_sport_type_name(user) -> str:
-    """Нормализовать вид спорта пользователя (связь или строковое поле)."""
-    if not user:
-        return None
-    if getattr(user, "sport_type_rel", None):
-        return user.sport_type_rel.name
-    return getattr(user, "sport_type", None)
+def _keyboard_from_rows(rows: List[List[Tuple[str, str]]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(text, callback_data=cd) for text, cd in row] for row in rows]
+    )
+
+
+async def _render_attendance_step2(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+    session,
+    user,
+    training: Training,
+    page: int,
+    flash_html: str = None,
+) -> None:
+    err = coach_training_access_error(user, training)
+    if err:
+        await query.edit_message_text(err)
+        return
+    athletes, attendance_map = fetch_athletes_for_training_slot(session, training)
+    message, rows = build_step2_message_and_keyboard_rows(
+        training, athletes, attendance_map, page, flash_html=flash_html
+    )
+    context.user_data["attendance_slot_page"] = page
+    context.user_data["attendance_selected_training_id"] = training.id
+    await query.edit_message_text(
+        message, reply_markup=_keyboard_from_rows(rows), parse_mode="HTML"
+    )
 
 
 async def select_training_for_attendance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -27,149 +57,71 @@ async def select_training_for_attendance(update: Update, context: ContextTypes.D
 
     session = Session()
     try:
-        created_training = False
         user = get_user_by_telegram_id(session, query.from_user.id)
         if not user or get_user_role(user) not in ["coach", "admin"]:
             await query.edit_message_text("❌ У вас нет доступа к этому меню")
             return
 
         data = query.data or ""
-        training = None
-        training_id = None
-        if data.startswith("select_mark_training_virtual_"):
-            token = data.replace("select_mark_training_virtual_", "")
-            virtual_slots = context.user_data.get("attendance_virtual_slots", {})
-            slot = virtual_slots.get(token)
-            if not slot:
-                await query.edit_message_text("❌ Некорректные данные тренировки")
-                return
-            sport_type = slot.get("sport_type")
-            age_group = slot.get("age_group")
-            hour = slot.get("hour")
-            minute = slot.get("minute")
-            coach_id = slot.get("coach_id")
-            if (
-                not sport_type
-                or age_group not in ("children", "adults")
-                or not isinstance(hour, int)
-                or not isinstance(minute, int)
-            ):
-                await query.edit_message_text("❌ Некорректные данные тренировки")
-                return
-            today = now_moscow()
-            training_dt = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            training_query = session.query(Training).filter_by(
-                sport_type=sport_type,
-                age_group=age_group,
-                training_date=training_dt,
-                is_cancelled=False,
-            )
-            if coach_id is not None:
-                training_query = training_query.filter_by(coach_id=coach_id)
-            training = training_query.first()
-            if not training:
-                training_payload = dict(
-                    sport_type=sport_type,
-                    age_group=age_group,
-                    training_date=training_dt,
-                    is_cancelled=False,
-                )
-                if coach_id is not None:
-                    training_payload["coach_id"] = coach_id
-                training = Training(**training_payload)
-                session.add(training)
-                session.flush()
-                created_training = True
-        else:
-            training_id = int(data.replace("select_mark_training_", ""))
-            training = session.query(Training).filter_by(id=training_id, is_cancelled=False).first()
-            if not training:
-                await query.edit_message_text("❌ Тренировка не найдена или отменена")
-                return
-
-        context.user_data["attendance_selected_training_id"] = training.id
-
-        if get_user_role(user) == "coach":
-            if training.coach_id != user.id:
-                await query.edit_message_text("❌ Можно выбирать только свои тренировки")
-                return
-            coach_sport = _get_sport_type_name(user)
-            if coach_sport and training.sport_type != coach_sport:
-                await query.edit_message_text("❌ Эта тренировка не относится к вашему виду спорта")
-                return
-
-        training_day = training.training_date.date()
-        athletes_query = (
-            session.query(Athlete)
-            .join(Subscription, Subscription.athlete_id == Athlete.id)
-            .filter(
-                Subscription.is_active == True,
-                Subscription.sport_type == training.sport_type,
-                Athlete.age_group == training.age_group,
-                func.date(Subscription.start_date) <= training_day,
-                func.date(Subscription.end_date) >= training_day,
-            )
-            .order_by(Athlete.full_name.asc())
+        virtual_slots = context.user_data.get("attendance_virtual_slots", {})
+        training, created_new, err = resolve_training_from_attendance_callback(
+            session, data, virtual_slots
         )
-        athletes = athletes_query.all()
-        athlete_ids = [a.id for a in athletes]
-        attendance_map = {}
-        if athlete_ids:
-            existing = session.query(Attendance).filter(
-                Attendance.training_id == training.id,
-                Attendance.athlete_id.in_(athlete_ids),
-            ).all()
-            attendance_map = {a.athlete_id: a for a in existing}
-        total_count = len(athletes)
-        marked_count = len(attendance_map)
-        attended_count = sum(1 for a in attendance_map.values() if a.attended)
-        absent_count = marked_count - attended_count
-        pending_count = total_count - marked_count
+        if err:
+            await query.edit_message_text(err)
+            return
 
-        age_group_ru = "Детская" if training.age_group == "children" else "Взрослая"
-        message = (
-            "📝 <b>ОТМЕТКА ПОСЕЩЕНИЯ</b>\n\n"
-            f"📅 Тренировка: <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b>\n"
-            f"🥊 {training.sport_type} | {age_group_ru}\n"
-            f"👥 Всего: <b>{total_count}</b> | Отмечено: <b>{marked_count}</b> | Осталось: <b>{pending_count}</b>\n"
-            f"✅ Присутствовали: <b>{attended_count}</b> | ❌ Отсутствовали: <b>{absent_count}</b>\n\n"
-            "<b>Шаг 2/2: выберите спортсмена</b>"
-        )
-        if not athletes:
-            message += "\n\n📭 На эту тренировку нет активных спортсменов."
+        err_coach = coach_training_access_error(user, training)
+        if err_coach:
+            await query.edit_message_text(err_coach)
+            return
 
-        keyboard = []
-        for athlete in athletes[:20]:
-            att = attendance_map.get(athlete.id)
-            if att is None:
-                icon = "⏳"
-            else:
-                icon = "✅" if att.attended else "❌"
-            full_name = (athlete.full_name or "").strip()
-            if len(full_name) > 24:
-                full_name = full_name[:22] + ".."
-            keyboard.append([
-                InlineKeyboardButton(
-                    f"{icon} {full_name}",
-                    callback_data=f"mark_attendance_{athlete.id}_{training.id}",
-                )
-            ])
-
-        if len(athletes) > 20:
-            keyboard.append([InlineKeyboardButton(f"📝 Показано 20 из {len(athletes)}", callback_data="show_more_info")])
-
-        keyboard.append([
-            InlineKeyboardButton("🔙 К тренировкам", callback_data="attendance_training_list"),
-            InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main"),
-        ])
-        if created_training:
+        if created_new:
             session.commit()
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+        context.user_data["attendance_slot_page"] = 0
+        await _render_attendance_step2(query, context, session, user, training, 0)
     except Exception as e:
         logger.error("❌ ОШИБКА ВЫБОРА ТРЕНИРОВКИ ДЛЯ ОТМЕТКИ: %s", e, exc_info=True)
         await query.edit_message_text("❌ Ошибка при загрузке спортсменов")
     finally:
         session.close()
+
+
+async def handle_attendance_athletes_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пагинация списка спортсменов на шаге 2 (attpg_{training_id}_{page})."""
+    query = update.callback_query
+    await query.answer()
+    parsed = parse_attendance_page_callback(query.data or "")
+    if not parsed:
+        return
+    training_id, page = parsed
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        if not user or get_user_role(user) not in ["coach", "admin"]:
+            await query.edit_message_text("❌ У вас нет доступа к этому меню")
+            return
+        training = session.query(Training).filter_by(id=training_id, is_cancelled=False).first()
+        if not training:
+            await query.edit_message_text("❌ Тренировка не найдена")
+            return
+        err_coach = coach_training_access_error(user, training)
+        if err_coach:
+            await query.edit_message_text(err_coach)
+            return
+        await _render_attendance_step2(query, context, session, user, training, page)
+    except Exception as e:
+        logger.error("❌ ОШИБКА ПАГИНАЦИИ ОТМЕТКИ: %s", e, exc_info=True)
+        await query.edit_message_text("❌ Ошибка при смене страницы")
+    finally:
+        session.close()
+
+
+async def handle_attendance_page_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подсказка по кнопке номера страницы."""
+    query = update.callback_query
+    await query.answer("Листайте список кнопками ◀️ и ▶️", show_alert=False)
 
 
 async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -199,7 +151,7 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
 
         user = get_user_by_telegram_id(session, query.from_user.id)
         if user and get_user_role(user) == "coach":
-            coach_sport = _get_sport_type_name(user)
+            coach_sport = get_coach_sport_type_name(user)
             if coach_sport and athlete.sport_type != coach_sport:
                 await query.edit_message_text("❌ Спортсмен не относится к вашему виду спорта")
                 return
@@ -209,8 +161,9 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
             if not training:
                 await query.edit_message_text("❌ Выбранная тренировка не найдена")
                 return
-            if get_user_role(user) == "coach" and training.coach_id != user.id:
-                await query.edit_message_text("❌ Можно отмечать только свои тренировки")
+            err_coach = coach_training_access_error(user, training)
+            if err_coach:
+                await query.edit_message_text(err_coach)
                 return
 
             context.user_data['selected_training_id'] = training.id
@@ -375,13 +328,10 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
             return
 
         user = get_user_by_telegram_id(session, query.from_user.id)
-        if user and get_user_role(user) == 'coach':
-            coach_sport = _get_sport_type_name(user)
-            if coach_sport and training.sport_type != coach_sport:
-                await query.edit_message_text("❌ Тренировка не относится к вашему виду спорта")
-                return
-            if training.coach_id != user.id:
-                await query.edit_message_text("❌ Вы можете отмечать посещения только для своих тренировок")
+        if user and get_user_role(user) == "coach":
+            err_coach = coach_training_access_error(user, training)
+            if err_coach:
+                await query.edit_message_text(err_coach)
                 return
 
         if not athlete.current_subscription:
@@ -430,11 +380,14 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
                     training_id,
                     "present" if attended else "absent",
                 )
-                await query.edit_message_text(
-                    "ℹ️ Этот статус уже установлен.\n\n"
-                    f"📅 Тренировка: {training.training_date.strftime('%d.%m.%Y %H:%M')}\n"
-                    f"👤 Спортсмен: {athlete.full_name}"
+                page = context.user_data.get("attendance_slot_page", 0)
+                name_esc = html.escape((athlete.full_name or "").strip())
+                flash = f"ℹ️ Для <b>{name_esc}</b> этот статус уже установлен"
+                await _render_attendance_step2(
+                    query, context, session, user, training, page, flash_html=flash
                 )
+                context.user_data.pop("mark_attendance_athlete_id", None)
+                context.user_data.pop("selected_training_id", None)
                 return
             existing_attendance.attended = attended
             existing_attendance.marked_by = query.from_user.id
@@ -446,8 +399,6 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
                 "present" if old_status else "absent",
                 "present" if attended else "absent",
             )
-
-            message = f"✅ Статус обновлен: {'Присутствовал (использовано)' if attended else 'Отсутствовал (неиспользовано)'}"
         else:
             # Создаем новую запись (для старых абонементов без автоматического списания)
             attendance = Attendance(
@@ -482,36 +433,22 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
                 training_id,
                 "present" if attended else "absent",
             )
-            message = f"✅ Посещение отмечено: {'Присутствовал' if attended else 'Отсутствовал'}"
 
         session.commit()
 
-        # Формируем итоговое сообщение
-        result_message = f"{message}\n"
-        result_message += f"📅 Тренировка: {training.training_date.strftime('%d.%m.%Y %H:%M')}\n"
-        result_message += f"👤 Спортсмен: {athlete.full_name}\n"
-        result_message += f"🎫 Осталось тренировок: {subscription.trainings_remaining}\n"
+        page = context.user_data.get("attendance_slot_page", 0)
+        name_esc = html.escape((athlete.full_name or "").strip())
+        status_ru = "присутствовал" if attended else "не был"
+        flash = f"✅ <b>{name_esc}</b>: {status_ru}"
+        if subscription.trainings_remaining is not None:
+            flash += f"\n🎫 Осталось тренировок: <b>{subscription.trainings_remaining}</b>"
 
-        keyboard = [
-            [
-                InlineKeyboardButton("📅 К тренировке", callback_data=f"select_mark_training_{training_id}"),
-                InlineKeyboardButton("🎫 К абонементу", callback_data=f"subscription_athlete_{athlete_id}")
-            ],
-            [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")]
-        ]
+        context.user_data.pop("mark_attendance_athlete_id", None)
+        context.user_data.pop("selected_training_id", None)
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await query.edit_message_text(
-            result_message,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
+        await _render_attendance_step2(
+            query, context, session, user, training, page, flash_html=flash
         )
-
-        # Очищаем временные данные
-        context.user_data.pop('mark_attendance_athlete_id', None)
-        context.user_data.pop('selected_training_id', None)
-        context.user_data.pop('attendance_selected_training_id', None)
 
     except Exception as e:
         logger.error(f"❌ ОШИБКА ОТМЕТКИ ПОСЕЩЕНИЯ: {e}")
