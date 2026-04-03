@@ -18,6 +18,75 @@ import html
 
 logger = logging.getLogger(__name__)
 
+# Лимит длины текста сообщения Telegram (с запасом под суффикс обрезки)
+TELEGRAM_MESSAGE_SAFE_LEN = 3900
+
+_MONTH_NAMES_RU = (
+    "",
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
+)
+
+
+def resolve_coach_sport_type_name(user) -> Optional[str]:
+    """Имя вида спорта для тренера: связь sport_types приоритетнее legacy-строки. У админа — None."""
+    if isinstance(user, Coach):
+        if user.sport_type_rel:
+            return user.sport_type_rel.name
+        if user.sport_type:
+            return user.sport_type
+        return None
+    return None
+
+
+def truncate_for_telegram_message(text: str, limit: int = TELEGRAM_MESSAGE_SAFE_LEN) -> str:
+    """Укорачивает текст, стараясь не рвать посередине строки."""
+    if len(text) <= limit:
+        return text
+    suffix = "\n\n<i>… сообщение обрезано (лимит Telegram).</i>"
+    cut = max(0, limit - len(suffix))
+    chunk = text[:cut]
+    last_nl = chunk.rfind("\n")
+    if last_nl > cut // 2:
+        chunk = chunk[:last_nl]
+    return chunk + suffix
+
+
+def _coach_calendar_message_header(
+    *,
+    current_year: int,
+    current_month: int,
+    is_admin: bool,
+    sport_type_name: Optional[str],
+) -> str:
+    title = _MONTH_NAMES_RU[current_month]
+    lines = [
+        f"📅 <b>{html.escape(title)} {current_year}</b>",
+        "",
+        "<i>Обозначения: [день] — сегодня; +день — в базе есть тренировка; "
+        "(день) — день с тренировкой по расписанию.</i>",
+    ]
+    if is_admin and not sport_type_name:
+        lines.append(
+            "<i>Режим администратора: подсветка по общему расписанию недоступна; "
+            "символ + показывает дни, где в базе уже есть тренировки.</i>"
+        )
+    elif sport_type_name:
+        lines.append(f"Вид спорта: {html.escape(sport_type_name)}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 # Пагинация списка спортсменов (лимит Telegram на callback_data — 64 байта, префикс alpg_)
 ATHLETE_LIST_PAGE_SIZE = 20
 _ATHLETE_LIST_FILTER_CODES = {
@@ -1629,9 +1698,7 @@ async def handle_attendance_training_list(update: Update, context: ContextTypes.
 async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE, month: int = None, year: int = None):
     """Показать календарь тренировок тренера с промаркированными днями и навигацией"""
     user_id = update.effective_user.id
-    print(f"🔔🔔🔔 ОБРАБОТЧИК ВЫЗВАН: show_coach_calendar для пользователя {user_id}")
-    print(f"📅 ПОЛЬЗОВАТЕЛЬ {user_id} ЗАПРОСИЛ КАЛЕНДАРЬ ТРЕНИРОВОК")
-    print(f"🔍 DEBUG: show_coach_calendar вызван для пользователя {user_id}")
+    logger.debug("show_coach_calendar: user_id=%s", user_id)
 
     session = Session()
     try:
@@ -1644,23 +1711,36 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_text("❌ У вас нет доступа к этому меню")
             return
 
+        if isinstance(user, Coach):
+            user = (
+                session.query(Coach)
+                .options(joinedload(Coach.sport_type_rel))
+                .filter_by(id=user.id)
+                .first()
+            )
+            if not user:
+                if update.callback_query:
+                    await update.callback_query.answer("❌ Пользователь не найден")
+                else:
+                    await update.message.reply_text("❌ Пользователь не найден")
+                return
+
         # Получаем текущую дату или используем переданные параметры
         now = now_moscow()
         today = now.date()
-        
+
         if month is None:
             current_month = now.month
         else:
             current_month = month
-            
+
         if year is None:
             current_year = now.year
         else:
             current_year = year
-        
-        # Получаем расписание для вида спорта тренера
-        sport_type = user.sport_type if user.sport_type else None
-        if not sport_type and user.role != 'admin':
+
+        sport_type_name = resolve_coach_sport_type_name(user)
+        if get_user_role(user) == "coach" and not sport_type_name:
             if update.callback_query:
                 await update.callback_query.answer("❌ У вас не указан вид спорта")
             else:
@@ -1676,14 +1756,13 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
             month_end = datetime(current_year + 1, 1, 1)
         else:
             month_end = datetime(current_year, current_month + 1, 1)
-        
+
         if isinstance(user, Admin):
             trainings = session.query(Training).filter(
                 Training.training_date >= month_start,
                 Training.training_date < month_end,
                 Training.is_cancelled == False
             ).order_by(Training.training_date.asc()).all()
-            message_header = "📅 <b>КАЛЕНДАРЬ</b>\n\n"
         else:
             query = session.query(Training).filter(
                 Training.coach_id == user.id,
@@ -1691,10 +1770,9 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                 Training.training_date < month_end,
                 Training.is_cancelled == False
             )
-            if sport_type:
-                query = query.filter(Training.sport_type == sport_type)
+            if sport_type_name:
+                query = query.filter(Training.sport_type == sport_type_name)
             trainings = query.order_by(Training.training_date.asc()).all()
-            message_header = f"📅 <b>КАЛЕНДАРЬ</b>\n\n"
 
         # Группируем тренировки по датам
         trainings_by_date = {}
@@ -1704,64 +1782,59 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                 trainings_by_date[date_key] = []
             trainings_by_date[date_key].append(training)
 
-        # Получаем все дни недели, когда есть тренировки по расписанию для данного вида спорта
+        # Дни недели с тренировками по расписанию (для тренера с видом спорта)
         scheduled_days = set()
-        if sport_type:
-            schedule_dict = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {})
+        if sport_type_name:
+            schedule_dict = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {})
             for age_group in ['children', 'adults']:
                 schedule = schedule_dict.get(age_group)
                 if schedule and 'days' in schedule:
                     scheduled_days.update(schedule['days'])
 
-        # Формируем сообщение
-        message = message_header
-        
-        # Создаем календарь (monthcalendar возвращает недели с понедельника как первый день)
+        message = _coach_calendar_message_header(
+            current_year=current_year,
+            current_month=current_month,
+            is_admin=isinstance(user, Admin),
+            sport_type_name=sport_type_name,
+        )
+
+        # Календарь (monthcalendar: недели с понедельника)
         cal = calendar.monthcalendar(current_year, current_month)
-        
-        # Создаем интерактивную клавиатуру из 35 квадратных кнопок (5 строк × 7 дней)
         keyboard = []
-        
-        # Добавляем строку с днями недели над календарем
+
         day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        day_names_buttons = []
-        for day_name in day_names:
-            # Формат: Пн. Вт. Ср. (просто текст)
-            # Примечание: В Telegram Bot API нельзя задать цвет текста в InlineKeyboardButton
-            day_names_buttons.append(InlineKeyboardButton(f"{day_name}.", callback_data="cal_empty"))
+        day_names_buttons = [
+            InlineKeyboardButton(f"{day_name}.", callback_data="cal_empty") for day_name in day_names
+        ]
         keyboard.append(day_names_buttons)
-        
-        # Обеспечиваем ровно 5 строк (если недель меньше - дополняем пустыми, если больше - берем первые 5)
-        weeks_to_show = cal[:5]  # Берем максимум 5 недель
+
+        weeks_to_show = list(cal)
         while len(weeks_to_show) < 5:
-            # Дополняем пустыми неделями до 5 строк
             weeks_to_show.append([0, 0, 0, 0, 0, 0, 0])
-        
-        # Создаем ровно 5 строк по 7 квадратов (минимальный размер)
+
         for week in weeks_to_show:
             week_buttons = []
             for day in week:
                 if day == 0:
-                    # Пустой день - создаем неактивную квадратную кнопку
                     week_buttons.append(InlineKeyboardButton(" ", callback_data="cal_empty"))
                 else:
                     date_obj = datetime(current_year, current_month, day).date()
-                    # Проверяем, есть ли тренировка по расписанию на этот день недели
                     weekday = date_obj.weekday()
                     has_scheduled_training = weekday in scheduled_days
-                    
-                    # Формируем текст квадратной кнопки
+                    has_db_training = date_obj in trainings_by_date
+
                     if date_obj == today:
-                        btn_text = f"[{day:2d}]"  # Сегодня - квадратные скобки (приоритет)
+                        btn_text = f"[{day:2d}]"
+                    elif has_db_training:
+                        btn_text = f"+{day:2d}"
                     elif has_scheduled_training:
-                        btn_text = f"({day:2d})"  # Есть тренировка по расписанию - круглые скобки
+                        btn_text = f"({day:2d})"
                     else:
-                        btn_text = f"{day:2d}"  # Обычный день
-                    
+                        btn_text = f"{day:2d}"
+
                     callback_data = f"cal_date_{current_year}_{current_month}_{day}"
                     week_buttons.append(InlineKeyboardButton(btn_text, callback_data=callback_data))
-            
-            # Всегда добавляем строку из 7 кнопок (квадратов)
+
             keyboard.append(week_buttons)
         
         # Кнопки навигации по месяцам
@@ -1812,11 +1885,7 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
 
     except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ КАЛЕНДАРЯ: {e}")
-        print(f"❌ ТРАССИРОВКА: {error_trace}")
-        logger.error(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ КАЛЕНДАРЯ: {e}", exc_info=True)
+        logger.error("Ошибка при получении календаря тренера: %s", e, exc_info=True)
         error_msg = "❌ Ошибка при загрузке календаря"
         if update.callback_query:
             await update.callback_query.answer(error_msg)
@@ -1853,35 +1922,43 @@ async def handle_calendar_empty_click(update: Update, context: ContextTypes.DEFA
 async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик клика по дате в календаре - показывает тренировки на эту дату"""
     query = update.callback_query
-    await query.answer()
-    
     user_id = update.effective_user.id
-    logger.info(f"📅 Клик по дате в календаре: {query.data} от пользователя {user_id}")
+    logger.info("Клик по дате в календаре: %s от пользователя %s", query.data, user_id)
     session = Session()
-    
+
     try:
-        # Парсим callback_data: cal_date_YYYY_MM_DD
         parts = query.data.split("_")
-        logger.info(f"📅 Парсинг callback_data: {parts}, длина: {len(parts)}")
         if len(parts) != 5:
-            logger.error(f"❌ Неверный формат callback_data: {query.data}, частей: {len(parts)}")
+            logger.error("Неверный формат callback_data: %s, частей: %s", query.data, len(parts))
             await query.answer("❌ Ошибка при обработке даты")
             return
-        
+
         year = int(parts[2])
         month = int(parts[3])
         day = int(parts[4])
-        
+
         selected_date = datetime(year, month, day).date()
         date_start = datetime.combine(selected_date, datetime.min.time())
         date_end = datetime.combine(selected_date, datetime.max.time())
-        
+
         user = get_user_by_telegram_id(session, user_id)
         if not user or get_user_role(user) not in ['coach', 'admin']:
             await query.answer("❌ У вас нет доступа")
             return
-        
-        # Получаем тренировки на выбранную дату
+
+        if isinstance(user, Coach):
+            user = (
+                session.query(Coach)
+                .options(joinedload(Coach.sport_type_rel))
+                .filter_by(id=user.id)
+                .first()
+            )
+            if not user:
+                await query.answer("❌ Пользователь не найден")
+                return
+
+        sport_type_name = resolve_coach_sport_type_name(user)
+
         if isinstance(user, Admin):
             trainings = session.query(Training).filter(
                 Training.training_date >= date_start,
@@ -1895,31 +1972,20 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                 Training.training_date <= date_end,
                 Training.is_cancelled == False
             )
-            # Получаем вид спорта из связи или из строки (для обратной совместимости)
-            sport_type_name = None
-            if isinstance(user, Coach):
-                if user.sport_type_rel:
-                    sport_type_name = user.sport_type_rel.name
-                elif user.sport_type:
-                    sport_type_name = user.sport_type
             if sport_type_name:
                 query_filter = query_filter.filter(Training.sport_type == sport_type_name)
             trainings = query_filter.order_by(Training.training_date.asc()).all()
-        
-        # Формируем сообщение
+
         date_str = selected_date.strftime("%d.%m.%Y")
         message = f"<b>📅 {date_str}</b>\n\n"
-        
+
         if trainings:
             message += f"<b>Тренировок: {len(trainings)}</b>\n\n"
             for training in trainings:
                 age_group_ru = "Дети" if training.age_group == "children" else "Взрослые"
                 time_str = training.training_date.strftime("%H:%M")
                 message += f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru})\n"
-                
-                # Получаем спортсменов по активным абонементам (а Attendance используем только для статуса).
-                # Это нужно, чтобы новые/разовые абонементы отображались в календаре сразу после активации,
-                # даже если еще не создана запись Attendance.
+
                 training_date_only = training.training_date.date()
                 subs = session.query(Subscription).join(
                     Athlete, Subscription.athlete_id == Athlete.id
@@ -1930,126 +1996,134 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     func.date(Subscription.start_date) <= training_date_only,
                     func.date(Subscription.end_date) >= training_date_only,
                 ).all()
-                
+
                 if subs:
                     message += f"  <b>Записано спортсменов: {len(subs)}</b>\n"
+                    athlete_ids = [sub.athlete_id for sub in subs]
+                    athletes_map = {
+                        a.id: a
+                        for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
+                    }
+                    sub_ids = [s.id for s in subs]
+                    att_by_sub = {
+                        a.subscription_id: a
+                        for a in session.query(Attendance).filter(
+                            Attendance.training_id == training.id,
+                            Attendance.subscription_id.in_(sub_ids),
+                        ).all()
+                    }
                     for sub in subs[:10]:
-                        ath = session.query(Athlete).filter_by(id=sub.athlete_id).first()
+                        ath = athletes_map.get(sub.athlete_id)
                         if not ath:
                             continue
-                        att = session.query(Attendance).filter_by(
-                            athlete_id=ath.id,
-                            training_id=training.id,
-                            subscription_id=sub.id
-                        ).first()
+                        att = att_by_sub.get(sub.id)
                         if att is None:
                             status_icon = "⏳"
                         else:
                             status_icon = "✅" if att.attended else "❌"
-                        message += f"    {status_icon} {ath.full_name}\n"
+                        message += f"    {status_icon} {html.escape(ath.full_name)}\n"
                     if len(subs) > 10:
                         message += f"    ... и еще {len(subs) - 10}\n"
                 else:
                     message += f"  Нет записанных спортсменов\n"
-                
+
                 message += "\n"
         else:
-            # Если тренировок нет в базе, но есть расписание - показываем спортсменов по расписанию
             weekday = selected_date.weekday()
-            # Получаем вид спорта из связи или из строки (для обратной совместимости)
-            sport_type = None
-            if user.sport_type_rel:
-                sport_type = user.sport_type_rel.name
-            elif user.sport_type:
-                sport_type = user.sport_type
-            
-            if sport_type:
+
+            if sport_type_name:
                 schedule_info = {}
                 for age_group in ['children', 'adults']:
-                    schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+                    schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {}).get(age_group)
                     if schedule and weekday in schedule['days']:
                         schedule_info[age_group] = schedule
-                
+
                 if schedule_info:
                     message += "<b>По расписанию:</b>\n\n"
-                    
-                    # Создаем datetime для этой даты и времени тренировки
+
                     for age_group, schedule in schedule_info.items():
                         age_group_ru = "Дети" if age_group == "children" else "Взрослые"
-                        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-                        day_name = day_names[weekday]
                         time_str = TrainingManager.get_time_str_for_weekday(schedule, weekday)
-                        hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, weekday)
-                        training_datetime = datetime.combine(selected_date, datetime.min.time()).replace(hour=hour, minute=minute)
-                        
-                        message += f"• <b>{time_str}</b> - {sport_type} ({age_group_ru})\n"
-                        
-                        # Получаем спортсменов с активными абонементами на эту дату
-                        # Проверяем, что выбранная дата попадает в диапазон действия абонемента (включительно)
-                        # Связь один-ко-многим через athlete_id
-                        athletes_with_subscriptions = session.query(Athlete).join(
-                            Subscription, Athlete.id == Subscription.athlete_id
-                        ).filter(
-                            Subscription.is_active == True,
-                            func.date(Subscription.start_date) <= selected_date,  # Дата начала <= выбранная дата
-                            func.date(Subscription.end_date) >= selected_date,    # Дата окончания >= выбранная дата
-                            Athlete.sport_type == sport_type,
-                            Athlete.age_group == age_group
+
+                        message += f"• <b>{time_str}</b> - {sport_type_name} ({age_group_ru})\n"
+
+                        athletes_with_subscriptions = (
+                            session.query(Athlete)
+                            .options(joinedload(Athlete.subscriptions))
+                            .join(Subscription, Athlete.id == Subscription.athlete_id)
+                            .filter(
+                                Subscription.is_active == True,
+                                func.date(Subscription.start_date) <= selected_date,
+                                func.date(Subscription.end_date) >= selected_date,
+                                Athlete.sport_type == sport_type_name,
+                                Athlete.age_group == age_group,
+                            )
                         )
-                        
-                        # Фильтруем по тренеру, если это тренер
+
                         if isinstance(user, Coach):
                             athletes_with_subscriptions = athletes_with_subscriptions.filter(
                                 Athlete.created_by == user.id
                             )
-                        
+
                         athletes_list = athletes_with_subscriptions.all()
-                        
+
                         if athletes_list:
                             message += f"  <b>Записано спортсменов: {len(athletes_list)}</b>\n"
-                            for athlete in athletes_list[:10]:  # Показываем до 10 спортсменов
-                                # Проверяем, есть ли запись Attendance (для отметки статуса)
+                            aid_list = [a.id for a in athletes_list]
+                            atts = (
+                                session.query(Attendance)
+                                .join(Training, Attendance.training_id == Training.id)
+                                .filter(
+                                    Training.sport_type == sport_type_name,
+                                    Training.age_group == age_group,
+                                    func.date(Training.training_date) == selected_date,
+                                    Attendance.athlete_id.in_(aid_list),
+                                )
+                                .all()
+                            )
+                            att_by_pair = {}
+                            for att in atts:
+                                key = (att.athlete_id, att.subscription_id)
+                                if key not in att_by_pair:
+                                    att_by_pair[key] = att
+
+                            for athlete in athletes_list[:10]:
                                 subscription = athlete.current_subscription
                                 if subscription:
-                                    attendance = session.query(Attendance).join(
-                                        Training
-                                    ).filter(
-                                        Attendance.athlete_id == athlete.id,
-                                        Attendance.subscription_id == subscription.id,
-                                        Training.sport_type == sport_type,
-                                        Training.age_group == age_group,
-                                        func.date(Training.training_date) == selected_date
-                                    ).first()
-                                    
+                                    attendance = att_by_pair.get((athlete.id, subscription.id))
                                     if attendance:
                                         status_icon = "✅" if attendance.attended else "❌"
                                     else:
-                                        status_icon = "❌"  # Неиспользовано по умолчанию
-                                    
-                                    message += f"    {status_icon} {athlete.full_name}\n"
+                                        status_icon = "❌"
+                                    message += f"    {status_icon} {html.escape(athlete.full_name)}\n"
                             if len(athletes_list) > 10:
                                 message += f"    ... и еще {len(athletes_list) - 10}\n"
                         else:
                             message += f"  Нет записанных спортсменов\n"
-                        
+
                         message += "\n"
                 else:
                     message += "На эту дату тренировок не запланировано.\n\n"
-        
-        # Кнопка возврата к календарю
+            else:
+                message += "На эту дату тренировок не запланировано.\n\n"
+
         keyboard = [[
             InlineKeyboardButton("🔙 К календарю", callback_data=f"calendar_{year}_{month}")
         ]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
+        await query.answer()
         await query.edit_message_text(
-            message,
+            truncate_for_telegram_message(message),
             reply_markup=reply_markup,
             parse_mode='HTML'
         )
-        
+
     except Exception as e:
-        logger.error(f"❌ ОШИБКА ПРИ ОБРАБОТКЕ КЛИКА ПО ДАТЕ: {e}", exc_info=True)
-        await query.answer("❌ Ошибка при загрузке данных")
+        logger.error("Ошибка при обработке клика по дате календаря: %s", e, exc_info=True)
+        try:
+            await query.answer("❌ Ошибка при загрузке данных")
+        except Exception:
+            pass
     finally:
         session.close()
