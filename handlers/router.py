@@ -320,6 +320,29 @@ def _list_active_global_freezes(session):
     )
 
 
+def _format_global_freeze_history_html(session, limit: int = 15) -> str:
+    """Короткая история массовых заморозок (активные и неактивные)."""
+    from database.models import GlobalFreeze
+
+    rows = (
+        session.query(GlobalFreeze)
+        .order_by(GlobalFreeze.id.desc())
+        .limit(limit)
+        .all()
+    )
+    if not rows:
+        return "📭 <b>История массовых заморозок пуста.</b>"
+
+    lines = [f"📚 <b>История массовых заморозок</b> (последние {len(rows)}):"]
+    for g in rows:
+        status = "🟢 active" if g.is_active else "⚪ inactive"
+        title = html.escape((g.title or "").strip() or "без названия")
+        ds = g.start_date.strftime("%d.%m.%Y")
+        de = g.end_date.strftime("%d.%m.%Y")
+        lines.append(f"• <code>#{g.id}</code> {status} — <b>{title}</b> ({ds}—{de})")
+    return "\n".join(lines)
+
+
 def _gf_keyboard_button_label(g) -> str:
     t = (g.title or "").strip() or "без названия"
     if len(t) > 28:
@@ -592,6 +615,17 @@ async def handle_gf_deact_confirm(update, context):
         )
         return ConversationHandler.END
 
+    audit_summary = ""
+    try:
+        with get_db_session() as session:
+            report = run_subscription_audit(session)
+        audit_summary = (
+            f"\n• Audit: critical={report.get('severity_counts', {}).get('critical', 0)}, "
+            f"warning={report.get('severity_counts', {}).get('warning', 0)}"
+        )
+    except Exception as audit_exc:
+        logger.error("Ошибка post-deactivate (UI flow) аудита GF: %s", audit_exc, exc_info=True)
+
     esc = html.escape((result.get("title") or "").strip())
     await _gf_safe_edit(
         update,
@@ -600,7 +634,8 @@ async def handle_gf_deact_confirm(update, context):
         f"• Мигрировано абонементов (monthly): {result.get('migrated', 0)}\n"
         f"• Проверено затронутых абонементов: {result.get('checked', 0)}\n"
         f"• Синхронизировано остатков: {result.get('synced', 0)}\n"
-        f"• Название: <b>{esc}</b>",
+        f"• Название: <b>{esc}</b>"
+        f"{audit_summary}",
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -732,6 +767,15 @@ async def handle_global_freeze_confirm_apply(update, context):
                     update, context, f"❌ {result.get('message', 'Не удалось применить заморозку')}"
                 )
                 return ConversationHandler.END
+            audit_summary = ""
+            try:
+                report = run_subscription_audit(session)
+                audit_summary = (
+                    f"\n• Audit: critical={report.get('severity_counts', {}).get('critical', 0)}, "
+                    f"warning={report.get('severity_counts', {}).get('warning', 0)}"
+                )
+            except Exception as audit_exc:
+                logger.error("Ошибка post-apply аудита GF: %s", audit_exc, exc_info=True)
             esc_ok_title = html.escape((title or "").strip())
             await _gf_safe_edit(
                 update,
@@ -742,7 +786,8 @@ async def handle_global_freeze_confirm_apply(update, context):
                 f"• Обновлено абонементов: {result['updated_subscriptions']}\n"
                 f"• Пропущено: {result['skipped_subscriptions']}\n"
                 f"• Суммарно добавлено тренировочных дней: {result.get('total_training_days_added', 0)}\n"
-                f"• Название: <b>{esc_ok_title}</b>",
+                f"• Название: <b>{esc_ok_title}</b>"
+                f"{audit_summary}",
                 parse_mode="HTML",
             )
     except Exception as e:
@@ -805,16 +850,43 @@ async def deactivate_global_freeze(update, context):
                 )
                 return
 
+            audit_summary = ""
+            try:
+                report = run_subscription_audit(session)
+                audit_summary = (
+                    f"\n• Audit: critical={report.get('severity_counts', {}).get('critical', 0)}, "
+                    f"warning={report.get('severity_counts', {}).get('warning', 0)}"
+                )
+            except Exception as audit_exc:
+                logger.error("Ошибка post-deactivate аудита GF: %s", audit_exc, exc_info=True)
+
             await update.message.reply_text(
                 f"✅ Массовая заморозка #{gf_id} деактивирована.\n"
                 f"• Мигрировано абонементов (monthly): {result.get('migrated', 0)}\n"
                 f"• Проверено затронутых абонементов: {result.get('checked', 0)}\n"
                 f"• Синхронизировано остатков: {result.get('synced', 0)}\n"
                 f"• Название: {result.get('title', '')}"
+                f"{audit_summary}"
             )
     except Exception as e:
         logger.error(f"Ошибка деактивации массовой заморозки: {e}", exc_info=True)
         await update.message.reply_text("❌ Ошибка при деактивации массовой заморозки")
+
+
+async def global_freeze_history(update, context):
+    """Показать историю массовых заморозок."""
+    user_id = update.effective_user.id
+    try:
+        with get_db_session() as session:
+            user = UserService.get_user_by_telegram_id(session, user_id)
+            if not user or get_user_role(user) not in ["coach", "admin"]:
+                await update.message.reply_text("❌ У вас нет прав для этой команды")
+                return
+            text = _format_global_freeze_history_html(session)
+            await update.message.reply_text(text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Ошибка команды /global_freeze_history: {e}", exc_info=True)
+        await update.message.reply_text("❌ Ошибка при формировании истории массовых заморозок")
 
 
 def register_all_handlers(registrar: HandlerRegistrar) -> None:
@@ -1038,6 +1110,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(CommandHandler("audit_now", audit_subscriptions_now))
     # Команда массовой заморозки
     registrar.register(CommandHandler("global_freeze", create_global_freeze))
+    registrar.register(CommandHandler("global_freeze_history", global_freeze_history))
     # Деактивация массовой заморозки
     registrar.register(CommandHandler("global_freeze_deactivate", deactivate_global_freeze))
 

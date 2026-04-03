@@ -1543,6 +1543,18 @@ def apply_global_freeze(
         session.add(app)
 
     session.commit()
+    import logging
+
+    logging.getLogger(__name__).info(
+        "GF apply: id=%s title=%r range=%s..%s updated=%s skipped=%s added_days=%s",
+        global_freeze.id,
+        global_freeze.title,
+        freeze_start.strftime("%Y-%m-%d"),
+        freeze_end.strftime("%Y-%m-%d"),
+        updated,
+        skipped,
+        total_training_days_added,
+    )
     return {
         "success": True,
         "message": "Массовая заморозка применена",
@@ -1581,6 +1593,20 @@ def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
             "global_freeze_id": gf_id,
         }
 
+    # Защита от "случайного отката истории": очень старые периоды отключаем только вручную.
+    now = now_moscow()
+    if gf.end_date and gf.end_date < (now - timedelta(days=30)):
+        return {
+            "success": False,
+            "message": (
+                f"Массовая заморозка #{gf_id} завершилась более 30 дней назад. "
+                "Для таких записей используйте ручной регламент (админ/БД)."
+            ),
+            "migrated": 0,
+            "checked": 0,
+            "synced": 0,
+        }
+
     gf.is_active = False
     session.commit()
 
@@ -1608,6 +1634,17 @@ def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
 
     if synced > 0:
         session.commit()
+
+    import logging
+
+    logging.getLogger(__name__).info(
+        "GF deactivate: id=%s title=%r checked=%s migrated=%s synced=%s",
+        gf_id,
+        gf.title,
+        checked,
+        migrated,
+        synced,
+    )
 
     return {
         "success": True,

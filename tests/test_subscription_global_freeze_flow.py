@@ -270,6 +270,21 @@ def test_deactivate_global_freeze_is_idempotent_and_sets_inactive():
     s.close()
 
 
+def test_deactivate_global_freeze_rejects_very_old_period():
+    s, _, _ = _session_with_active_global_freeze()
+    gf = s.query(GlobalFreeze).one()
+    gf.start_date = datetime(2025, 1, 1)
+    gf.end_date = datetime(2025, 1, 10, 23, 59, 59)
+    s.commit()
+    with patch("database.db_utils.now_moscow", return_value=datetime(2026, 4, 3, 12, 0, 0)):
+        result = deactivate_global_freeze_and_migrate(s, gf.id)
+    assert result["success"] is False
+    assert "более 30 дней назад" in result["message"]
+    s.refresh(gf)
+    assert gf.is_active is True
+    s.close()
+
+
 def _session_with_monthly_sub_and_without_any_gf():
     """Чистая БД: спортсмен + активный monthly, без записей global_freezes."""
     engine = create_engine("sqlite:///:memory:")
