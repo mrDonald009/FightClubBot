@@ -105,7 +105,7 @@ _GF_NOTICE_MAIN_HTML = (
 )
 
 _GF_NOTICE_CREATE_HTML = (
-    "Вводите даты аккуратно. Прервать: <code>/cancel</code>."
+    "Вводите даты аккуратно."
 )
 
 # Состояния диалога массовой заморозки
@@ -435,11 +435,11 @@ async def start_global_freeze_flow(update, context):
     context.user_data.pop("gf_start_date", None)
     context.user_data.pop("gf_end_date", None)
     context.user_data.pop("gf_title", None)
+    main_status_block = "" if status_block.startswith("📭 ") else f"{status_block}\n\n"
 
     await update.message.reply_text(
         "🌍 <b>МАССОВАЯ ЗАМОРОЗКА</b>\n\n"
-        f"{_GF_NOTICE_MAIN_HTML}\n\n"
-        f"{status_block}\n\n"
+        f"{main_status_block}"
         "Выберите действие:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
@@ -498,9 +498,9 @@ async def handle_global_freeze_action_create(update, context):
         update,
         context,
         f"{status_block}\n\n"
+        f"{_GF_NOTICE_MAIN_HTML}\n"
         f"{_GF_NOTICE_CREATE_HTML}\n\n"
-        "<b>Введите дату начала</b> (ДД.ММ.ГГГГ):\n"
-        "Для отмены используйте кнопку ниже или команду /cancel.",
+        "<b>Введите дату начала</b> (ДД.ММ.ГГГГ):",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("❌ Отменить операцию", callback_data="gf_cancel_flow")]]
@@ -533,9 +533,7 @@ async def handle_global_freeze_action_cancel(update, context):
         await _gf_safe_edit(
             update,
             context,
-            "📭 Нет <b>активных</b> массовых заморозок для деактивации.\n\n"
-            "Отключённые ранее записи сохранены в истории.\n"
-            "Чтобы посмотреть историю, используйте: <code>/global_freeze_history</code>.",
+            "📭 Нет <b>активных</b> массовых заморозок для деактивации.",
             parse_mode="HTML",
         )
         return ConversationHandler.END
