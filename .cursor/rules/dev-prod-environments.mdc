@@ -36,24 +36,34 @@ grep -h '^DATABASE_URL=' .env 2>/dev/null || echo "PROD: нет .env или не
 
 У **тестового** бота на сервере часто в **systemd** указано `EnvironmentFile=.../.env.dev`, а корневой `.env` только под другие цели или пустой по `DATABASE_URL` — смотреть нужно **тот файл, который реально подключаёт сервис** (`systemctl cat … | grep EnvironmentFile`).
 
-Полный отчёт по каталогам dev/prod, `.env`, файлам БД и строкам `global_freezes` на сервере: `bash scripts/server_report_dev_prod_layout.sh` (после `git pull` в dev-клоне).
-
-Или скрипт сравнения URL: сначала **войти в каталог клона** (не из `~`), затем `git pull`, затем запуск:
+**Запросы на сервере (скопировать в SSH, вывод прислать в чат)** — пути при необходимости заменить:
 
 ```bash
-cd /home/cat/FightClubBot-dev
-git pull origin dev
-bash scripts/server_compare_database_urls.sh \
-  /home/cat/FightClubBot-dev \
-  /home/cat/FightClubBot
+# --- DEV ---
+echo "=== DEV: $HOME/FightClubBot-dev ==="
+ls -la "$HOME/FightClubBot-dev/.env" "$HOME/FightClubBot-dev/.env.dev" 2>/dev/null
+grep -h '^DATABASE_URL=' "$HOME/FightClubBot-dev/.env" "$HOME/FightClubBot-dev/.env.dev" 2>/dev/null
+ls -la "$HOME/FightClubBot-dev/database/" 2>/dev/null
+sqlite3 "$HOME/FightClubBot-dev/database/club_dev.db" \
+  "SELECT id, title, is_active, start_date, end_date FROM global_freezes ORDER BY id;" 2>/dev/null || echo "(sqlite3 или БД недоступны)"
+
+# --- PROD ---
+echo "=== PROD: $HOME/FightClubBot ==="
+ls -la "$HOME/FightClubBot/.env" 2>/dev/null
+grep -h '^DATABASE_URL=' "$HOME/FightClubBot/.env" 2>/dev/null
+ls -la "$HOME/FightClubBot/database/" 2>/dev/null
+sqlite3 "$HOME/FightClubBot/database/club.db" \
+  "SELECT id, title, is_active, start_date, end_date FROM global_freezes ORDER BY id;" 2>/dev/null || echo "(sqlite3 или БД недоступны)"
+
+# --- systemd (имена юнитов подставьте свои) ---
+systemctl list-units --type=service --all 2>/dev/null | grep -i fight || true
 ```
 
-Без `cd` можно так (путь к скрипту — абсолютный):
+Опционально сравнение `DATABASE_URL` скриптом из репозитория (после `git pull` в dev-клоне):
 
 ```bash
-bash /home/cat/FightClubBot-dev/scripts/server_compare_database_urls.sh \
-  /home/cat/FightClubBot-dev \
-  /home/cat/FightClubBot
+cd "$HOME/FightClubBot-dev" && git pull origin dev
+bash scripts/server_compare_database_urls.sh "$HOME/FightClubBot-dev" "$HOME/FightClubBot"
 ```
 
 **Интерпретация:** если строки **разные** — обычно разные БД. Если строки **одинаковые** (например оба `sqlite:///database/club.db`), для SQLite путь **относительный**: фактический файл зависит от `WorkingDirectory` процесса; при **разных** каталогах деплоя (`FightClubBot-dev` vs `FightClubBot`) это **два разных файла** на диске — это нормально.
