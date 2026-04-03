@@ -963,59 +963,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     logger.info("✅ Зарегистрирован обработчик: 📅 Мой календарь")
 
-    # ConversationHandler для добавления спортсмена (регистрируем после обычных обработчиков)
-    logger.info("📝 Регистрируем ConversationHandler для добавления спортсмена...")
-    conv_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start)
-        ],
-        states={
-            ATHLETE_FULL_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_full_name)
-            ],
-            ATHLETE_PHONE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_phone)
-            ],
-            ATHLETE_BIRTH_DATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_birth_date)
-            ],
-            ATHLETE_MEDICAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_medical)
-            ],
-            ATHLETE_AGE_GROUP: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_age_group)
-            ],
-            ATHLETE_SUBSCRIPTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_subscription)
-            ],
-            ATHLETE_TRAINING_DATE: [
-                CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_"),
-                CallbackQueryHandler(handle_add_athlete_calendar_nav, pattern="^addath_cal_"),
-                CallbackQueryHandler(handle_add_athlete_calendar_date_pick, pattern="^addath_date_"),
-                CallbackQueryHandler(handle_add_athlete_calendar_ignore, pattern="^addath_ignore$"),
-                CallbackQueryHandler(
-                    handle_add_athlete_shift_confirm,
-                    pattern=r"^addath_shift_confirm(?:_\d{12})?$",
-                ),
-                CallbackQueryHandler(handle_add_athlete_shift_cancel, pattern="^addath_shift_cancel$"),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_athlete_creation),
-            # Добавляем кнопки меню в fallbacks, чтобы они могли прерывать разговор
-            MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
-            MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training),
-            MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
-            MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
-        ],
-        name="add_athlete_conversation",
-        persistent=False,
-        allow_reentry=True
-    )
-    registrar.register(conv_handler)
-    logger.info("✅ Зарегистрирован ConversationHandler для добавления спортсмена")
-
-    # ConversationHandler для массовой заморозки (по датам)
+    # Массовая заморозка — РАНЬШЕ диалога добавления спортсмена: иначе при «залипшем» состоянии
+    # add_athlete команда /cancel обрабатывается первым зарегистрированным CH и показывает текст про спортсмена.
+    logger.info("📝 Регистрируем ConversationHandler для массовой заморозки...")
     gf_conv = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex("^(🌍 Массовая заморозка)$"), start_global_freeze_flow)
@@ -1076,6 +1026,56 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     ):
         registrar.register(CallbackQueryHandler(_cb, pattern=_pat))
     logger.info("✅ Зарегистрирован ConversationHandler для массовой заморозки (+ резервные callback)")
+
+    logger.info("📝 Регистрируем ConversationHandler для добавления спортсмена...")
+    conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start)
+        ],
+        states={
+            ATHLETE_FULL_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_full_name)
+            ],
+            ATHLETE_PHONE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_phone)
+            ],
+            ATHLETE_BIRTH_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_birth_date)
+            ],
+            ATHLETE_MEDICAL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_medical)
+            ],
+            ATHLETE_AGE_GROUP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_age_group)
+            ],
+            ATHLETE_SUBSCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_subscription)
+            ],
+            ATHLETE_TRAINING_DATE: [
+                CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_nav, pattern="^addath_cal_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_date_pick, pattern="^addath_date_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_ignore, pattern="^addath_ignore$"),
+                CallbackQueryHandler(
+                    handle_add_athlete_shift_confirm,
+                    pattern=r"^addath_shift_confirm(?:_\d{12})?$",
+                ),
+                CallbackQueryHandler(handle_add_athlete_shift_cancel, pattern="^addath_shift_cancel$"),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_athlete_creation),
+            MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
+            MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training),
+            MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
+            MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
+        ],
+        name="add_athlete_conversation",
+        persistent=False,
+        allow_reentry=True
+    )
+    registrar.register(conv_handler)
+    logger.info("✅ Зарегистрирован ConversationHandler для добавления спортсмена")
 
     # Обработчики для списка спортсменов
     registrar.register(
