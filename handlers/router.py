@@ -503,6 +503,10 @@ async def handle_gf_deact_pick(update, context):
         return GF_ACTION_MENU
     gf_id = int(m.group(1))
     user_id = query.from_user.id
+    gf_title = None
+    gf_is_active = False
+    gf_start_str = None
+    gf_end_str = None
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
@@ -512,18 +516,23 @@ async def handle_gf_deact_pick(update, context):
             from database.models import GlobalFreeze
 
             gf = session.query(GlobalFreeze).filter_by(id=gf_id).first()
+            if gf:
+                gf_is_active = bool(gf.is_active)
+                gf_title = (gf.title or "").strip() or "без названия"
+                gf_start_str = gf.start_date.strftime("%d.%m.%Y") if gf.start_date else ""
+                gf_end_str = gf.end_date.strftime("%d.%m.%Y") if gf.end_date else ""
     except Exception as e:
         logger.error(f"Ошибка (gf_deact_pick): {e}", exc_info=True)
         await _gf_safe_edit(update, context, "❌ Ошибка")
         return ConversationHandler.END
 
-    if not gf or not gf.is_active:
+    if not gf_is_active:
         await _gf_safe_edit(update, context, "❌ Запись не найдена или уже не активна.")
         return ConversationHandler.END
 
-    title = html.escape((gf.title or "").strip() or "без названия")
-    ds = gf.start_date.strftime("%d.%m.%Y")
-    de = gf.end_date.strftime("%d.%m.%Y")
+    title = html.escape(gf_title or "без названия")
+    ds = gf_start_str or ""
+    de = gf_end_str or ""
     await _gf_safe_edit(
         update,
         context,
