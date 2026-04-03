@@ -16,6 +16,20 @@ alwaysApply: true
 
 Два бота = два разных токена Telegram и, как правило, **два независимых процесса** на сервере.
 
+### Зафиксированная схема на VPS (эталон для этого проекта)
+
+Ниже — фактическая раскладка с прод-сервера (пользователь **`cat`**, домашний каталог `/home/cat`). Если инфраструктура сменится — обновить этот блок.
+
+| | **DEV (тест)** | **PROD (бой)** |
+|---|----------------|----------------|
+| **Каталог кода** | `/home/cat/FightClubBot-dev` | `/home/cat/FightClubBot` |
+| **systemd** | `fightclubbot-dev.service` | `fightclubbot.service` |
+| **Юнит** | `User=cat`, `WorkingDirectory=/home/cat/FightClubBot-dev`, `EnvironmentFile=/home/cat/FightClubBot-dev/.env.dev`, `ExecStart=…/.venv/bin/python …/bot.py` | Аналогично для prod-каталога и **`.env`** (без `.env.dev` в типичной схеме) |
+| **`DATABASE_URL`** | В **`.env.dev`**: `sqlite:///database/club_dev.db` | В **`.env`**: `sqlite:///database/club.db` |
+| **Файл SQLite** | `/home/cat/FightClubBot-dev/database/club_dev.db` | `/home/cat/FightClubBot/database/club.db` |
+
+**Важно для DEV:** в `FightClubBot-dev/database/` может лежать и **`club.db`** — проверкой `lsof` установлено, что **запущенный** `fightclubbot-dev` открывает только **`club_dev.db`**; **`club.db` в dev-каталоге ботом не используется** (скорее старый/лишний файл; не путать с prod).
+
 ## Базы данных
 
 - У **тестового** и **боевого** бота должны быть **разные БД**: у каждого свой `DATABASE_URL` / свой файл SQLite (или своя схема/инстанс), иначе тесты затронут прод.
@@ -70,7 +84,7 @@ bash scripts/server_compare_database_urls.sh "$HOME/FightClubBot-dev" "$HOME/Fig
 
 Если `DATABASE_URL` задаётся через **systemd** / **docker-compose**, смотрите `Environment=` / блок `environment:` у соответствующего сервиса.
 
-**После проверки** можно дописать сюда одну строку-факт (без паролей), например: «dev: `sqlite:///…/dev-club.db`, prod: `sqlite:///…/club.db`».
+При смене сервера или путей — обновить раздел **«Зафиксированная схема на VPS»** выше.
 
 ## Правило для ассистента (чтобы не путать данные)
 
