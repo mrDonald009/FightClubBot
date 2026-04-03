@@ -30,6 +30,19 @@ class Config:
         self.ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "26655492"))
         _thai_raw = os.getenv("THAI_COACH_TELEGRAM_ID", "").strip()
         self.THAI_COACH_TELEGRAM_ID = int(_thai_raw) if _thai_raw else None
+        _coaches_raw = os.getenv("COACH_TELEGRAM_IDS", "").strip()
+        self.COACH_TELEGRAM_IDS: list[int] = []
+        for part in _coaches_raw.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                self.COACH_TELEGRAM_IDS.append(int(part))
+            except ValueError:
+                print(f"⚠️ Пропуск невалидного id в COACH_TELEGRAM_IDS: {part!r}")
+        self.COACH_DEFAULT_SPORT_TYPE = (
+            os.getenv("COACH_DEFAULT_SPORT_TYPE", "MMA").strip() or "MMA"
+        )
         self.DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database/club.db")
         self.APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
         self.TRAINING_DURATION_MINUTES = int(os.getenv("TRAINING_DURATION_MINUTES", "90"))
@@ -53,6 +66,13 @@ class Config:
             print(f"   Тренер Тайский бокс (THAI_COACH_TELEGRAM_ID): {self.THAI_COACH_TELEGRAM_ID}")
         else:
             print("   Тренер Тайский бокс: не задан (THAI_COACH_TELEGRAM_ID) — автосоздание отключено")
+        if self.COACH_TELEGRAM_IDS:
+            print(
+                f"   Тренеры из COACH_TELEGRAM_IDS ({self.COACH_DEFAULT_SPORT_TYPE}): "
+                f"{self.COACH_TELEGRAM_IDS}"
+            )
+        else:
+            print("   COACH_TELEGRAM_IDS: не задан — автосоздание тренеров из списка отключено")
         print(f"   БД: {self.DATABASE_URL}")
         print(f"   Таймзона: {self.APP_TIMEZONE}")
         print(f"   Длительность тренировки: {self.TRAINING_DURATION_MINUTES} мин")
