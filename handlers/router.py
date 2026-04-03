@@ -101,11 +101,11 @@ logger = logging.getLogger(__name__)
 
 _GF_NOTICE_MAIN_HTML = (
     "ℹ️ Вводите данные <b>внимательно</b> и убедитесь в <b>правильности решения</b> "
-    "— действие затрагивает активные абонементы. Формат дат: <b>ДД.ММ.ГГГГ</b>."
+    "— действие затрагивает активные абонементы."
 )
 
 _GF_NOTICE_CREATE_HTML = (
-    "Вводите даты аккуратно."
+    ""
 )
 
 # Состояния диалога массовой заморозки
@@ -670,9 +670,9 @@ async def handle_gf_deact_confirm(update, context):
         update,
         context,
         f"✅ Массовая заморозка деактивирована.\n\n"
-        f"• Мигрировано абонементов (monthly): {result.get('migrated', 0)}\n"
-        f"• Проверено затронутых абонементов: {result.get('checked', 0)}\n"
-        f"• Синхронизировано остатков: {result.get('synced', 0)}\n"
+        f"• Проверено абонементов: {result.get('checked', 0)}\n"
+        f"• Обновлено абонементов: {result.get('updated_subscriptions', result.get('migrated', 0))}\n"
+        f"• Без изменений: {result.get('skipped_subscriptions', 0)}\n"
         f"• Название: <b>{esc}</b>"
         f"{audit_summary}",
         parse_mode="HTML",
@@ -776,7 +776,7 @@ async def handle_global_freeze_title(update, context):
         "🌍 <b>Подтвердите</b>\n\n"
         f"{esc_title}\n"
         f"<b>{start_date.strftime('%d.%m.%Y')} — {end_date.strftime('%d.%m.%Y')}</b>\n\n"
-        "Убедитесь, что всё верно. Откат — «Отмена массовой заморозки» (пересчёт monthly)."
+        "Убедитесь, что всё верно."
         f"{overlap_note}\n\n"
         "Применить?",
         parse_mode="HTML",
@@ -908,9 +908,9 @@ async def deactivate_global_freeze(update, context):
 
             await update.message.reply_text(
                 f"✅ Массовая заморозка деактивирована.\n"
-                f"• Мигрировано абонементов (monthly): {result.get('migrated', 0)}\n"
-                f"• Проверено затронутых абонементов: {result.get('checked', 0)}\n"
-                f"• Синхронизировано остатков: {result.get('synced', 0)}\n"
+                f"• Проверено абонементов: {result.get('checked', 0)}\n"
+                f"• Обновлено абонементов: {result.get('updated_subscriptions', result.get('migrated', 0))}\n"
+                f"• Без изменений: {result.get('skipped_subscriptions', 0)}\n"
                 f"• Название: {result.get('title', '')}"
                 f"{audit_summary}"
             )

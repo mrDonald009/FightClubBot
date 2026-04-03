@@ -1621,16 +1621,25 @@ def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
     migrated = 0
     checked = 0
     synced = 0
+    updated = 0
     for sid in subscription_ids:
         sub = session.query(Subscription).filter_by(id=sid).first()
         if not sub:
             continue
         checked += 1
+        sub_updated = False
         if sub.subscription_type == "monthly":
-            migrate_existing_subscription(session, sid)
+            migrate_result = migrate_existing_subscription(session, sid)
             migrated += 1
+            if migrate_result.get("success") and (
+                migrate_result.get("message") == "Абонемент обновлен" or migrate_result.get("changes")
+            ):
+                sub_updated = True
         if sync_subscription_trainings_remaining(session, sub, reason="after_global_freeze_deactivate"):
             synced += 1
+            sub_updated = True
+        if sub_updated:
+            updated += 1
 
     if synced > 0:
         session.commit()
@@ -1638,12 +1647,13 @@ def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
     import logging
 
     logging.getLogger(__name__).info(
-        "GF deactivate: id=%s title=%r checked=%s migrated=%s synced=%s",
+        "GF deactivate: id=%s title=%r checked=%s migrated=%s synced=%s updated=%s",
         gf_id,
         gf.title,
         checked,
         migrated,
         synced,
+        updated,
     )
 
     return {
@@ -1653,6 +1663,8 @@ def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
         "migrated": migrated,
         "checked": checked,
         "synced": synced,
+        "updated_subscriptions": updated,
+        "skipped_subscriptions": max(checked - updated, 0),
         "title": gf.title,
         "global_freeze_id": gf_id,
     }
