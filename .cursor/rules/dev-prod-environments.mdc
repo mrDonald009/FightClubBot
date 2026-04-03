@@ -27,11 +27,13 @@ alwaysApply: true
 
 ```bash
 cd ~/FightClubBot-dev && git rev-parse --show-toplevel
-grep -h '^DATABASE_URL=' .env 2>/dev/null || echo "DEV: нет .env или нет DATABASE_URL"
+grep -h '^DATABASE_URL=' .env .env.dev 2>/dev/null || echo "DEV: нет DATABASE_URL в .env / .env.dev"
 
 cd ~/FightClubBot && git rev-parse --show-toplevel
 grep -h '^DATABASE_URL=' .env 2>/dev/null || echo "PROD: нет .env или нет DATABASE_URL"
 ```
+
+У **тестового** бота на сервере часто в **systemd** указано `EnvironmentFile=.../.env.dev`, а корневой `.env` только под другие цели или пустой по `DATABASE_URL` — смотреть нужно **тот файл, который реально подключаёт сервис** (`systemctl cat … | grep EnvironmentFile`).
 
 Или скрипт из репозитория: сначала **войти в каталог клона** (не из `~`), затем `git pull`, затем запуск:
 
@@ -51,7 +53,7 @@ bash /home/cat/FightClubBot-dev/scripts/server_compare_database_urls.sh \
   /home/cat/FightClubBot
 ```
 
-**Интерпретация:** одинаковый `DATABASE_URL` → dev и prod смотрят в **одну** БД (часто ошибка). Разные URL → обычно **разные** БД.
+**Интерпретация:** если строки **разные** — обычно разные БД. Если строки **одинаковые** (например оба `sqlite:///database/club.db`), для SQLite путь **относительный**: фактический файл зависит от `WorkingDirectory` процесса; при **разных** каталогах деплоя (`FightClubBot-dev` vs `FightClubBot`) это **два разных файла** на диске — это нормально.
 
 Если `DATABASE_URL` задаётся через **systemd** / **docker-compose**, смотрите `Environment=` / блок `environment:` у соответствующего сервиса.
 
@@ -69,6 +71,6 @@ bash /home/cat/FightClubBot-dev/scripts/server_compare_database_urls.sh \
 
 | Где | Что это |
 |-----|---------|
-| Сервер, тестовый бот + `DATABASE_URL` из `.env` dev | **Истина для dev** |
-| Сервер, боевой бот + `DATABASE_URL` prod | **Истина для prod** |
+| Сервер, тестовый бот + `DATABASE_URL` из **файла окружения процесса** (часто `.env.dev` + systemd `EnvironmentFile`) | **Истина для dev** |
+| Сервер, боевой бот + `DATABASE_URL` из `.env` prod | **Истина для prod** |
 | `database/club.db` в локальном клоне | **Только локальная копия**, не сервер |
