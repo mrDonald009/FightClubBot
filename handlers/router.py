@@ -327,6 +327,14 @@ def _gf_keyboard_button_label(g) -> str:
     return f"#{g.id} {t}"
 
 
+def _gf_keyboard_button_label_from_parts(gf_id: int, title: str) -> str:
+    """Безопасный label: работает с примитивами, не зависит от ORM-сессии."""
+    t = (title or "").strip() or "без названия"
+    if len(t) > 28:
+        t = t[:25] + "…"
+    return f"#{gf_id} {t}"
+
+
 async def _gf_safe_edit(
     update,
     context,
@@ -447,12 +455,15 @@ async def handle_global_freeze_action_cancel(update, context):
                 await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
             rows = _list_active_global_freezes(session)
+            # Важно: после выхода из `with` ORM-объекты могут стать detached.
+            # Поэтому извлекаем id/title заранее.
+            rows_safe = [(g.id, (g.title or "").strip() or "без названия") for g in rows]
     except Exception as e:
         logger.error(f"Ошибка (gf_action_cancel): {e}", exc_info=True)
         await _gf_safe_edit(update, context, "❌ Ошибка при загрузке списка")
         return ConversationHandler.END
 
-    if not rows:
+    if not rows_safe:
         await _gf_safe_edit(
             update,
             context,
@@ -465,8 +476,13 @@ async def handle_global_freeze_action_cancel(update, context):
         return ConversationHandler.END
 
     kb = [
-        [InlineKeyboardButton(_gf_keyboard_button_label(g), callback_data=f"gf_deact_pick_{g.id}")]
-        for g in rows
+        [
+            InlineKeyboardButton(
+                _gf_keyboard_button_label_from_parts(gf_id, title),
+                callback_data=f"gf_deact_pick_{gf_id}",
+            )
+        ]
+        for gf_id, title in rows_safe
     ]
     await _gf_safe_edit(
         update,
