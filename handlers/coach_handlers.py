@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from database.models import Session, Coach, Admin, Athlete, Subscription, Training, Attendance, GlobalFreeze
 from database.db_utils import get_user_by_telegram_id, get_user_role, create_athlete
 import database.db_utils as db_utils_pkg
-from typing import Union
+from typing import List, Optional, Tuple, Union
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow, ACTIVATION_GRACE_AFTER_START
 from keyboards.coach_kb import get_coach_main_menu
@@ -17,6 +17,69 @@ import html
 
 
 logger = logging.getLogger(__name__)
+
+# Пагинация списка спортсменов (лимит Telegram на callback_data — 64 байта, префикс alpg_)
+ATHLETE_LIST_PAGE_SIZE = 20
+_ATHLETE_LIST_FILTER_CODES = {
+    "active_children": "ac",
+    "active_adults": "aa",
+    "inactive_children": "ic",
+    "inactive_adults": "ia",
+    "all": "al",
+    "children": "ch",
+    "adults": "ad",
+    "inactive": "in",
+}
+_ATHLETE_LIST_CODE_TO_FILTER = {v: k for k, v in _ATHLETE_LIST_FILTER_CODES.items()}
+
+
+def encode_athlete_list_page(filter_key: str, page: int) -> str:
+    code = _ATHLETE_LIST_FILTER_CODES.get(filter_key, "al")
+    return f"alpg_{code}_{page}"
+
+
+def decode_athlete_list_page(callback_data: str) -> Optional[Tuple[str, int]]:
+    m = re.match(r"^alpg_([a-z]{2})_(\d+)$", callback_data or "")
+    if not m:
+        return None
+    code, page_s = m.group(1), m.group(2)
+    fk = _ATHLETE_LIST_CODE_TO_FILTER.get(code)
+    if fk is None:
+        return None
+    return fk, int(page_s)
+
+
+def load_athletes_for_list(session, user) -> Tuple[List[Athlete], str]:
+    """
+    Спортсмены для экранов «Список спортсменов» с eager-loading абонементов
+    (избегает N+1 при обращении к current_subscription).
+    """
+    if isinstance(user, Admin):
+        athletes = (
+            session.query(Athlete)
+            .options(joinedload(Athlete.subscriptions))
+            .all()
+        )
+        header = "🏃‍♂️ <b>СПИСОК СПОРТСМЕНОВ</b>\n\n"
+    elif isinstance(user, Coach):
+        q = (
+            session.query(Athlete)
+            .options(joinedload(Athlete.subscriptions))
+            .filter_by(created_by=user.id)
+        )
+        sport_type_name = None
+        if user.sport_type_rel:
+            sport_type_name = user.sport_type_rel.name
+        elif user.sport_type:
+            sport_type_name = user.sport_type
+        if sport_type_name:
+            q = q.filter_by(sport_type=sport_type_name)
+        athletes = q.all()
+        header = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
+    else:
+        athletes = []
+        header = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
+    return athletes, header
 
 
 # Состояния для добавления спортсмена
@@ -1036,14 +1099,12 @@ async def handle_training_date_selection(update: Update, context: ContextTypes.D
 async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать меню выбора категории для списка спортсменов тренера"""
     user_id = update.effective_user.id
-    print(f"🔔🔔🔔 ОБРАБОТЧИК ВЫЗВАН: athletes_list для пользователя {user_id}")
-    print(f"📋 ПОЛЬЗОВАТЕЛЬ {user_id} ЗАПРОСИЛ СПИСОК СПОРТСМЕНОВ (КАТЕГОРИИ)")
-    print(f"🔍 DEBUG: athletes_list вызван для пользователя {user_id}")
+    logger.debug("athletes_list user_id=%s", user_id)
 
     session = Session()
     try:
         user = get_user_by_telegram_id(session, user_id)
-        print(f"🔍 DEBUG: Пользователь найден: {user}, тип: {type(user)}")
+        logger.debug("athletes_list user_id=%s found=%s type=%s", user_id, bool(user), type(user).__name__ if user else None)
 
         if not user or get_user_role(user) not in ['coach', 'admin']:
             if update.callback_query:
@@ -1052,26 +1113,7 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ У вас нет доступа к этому меню")
             return
 
-        # Получаем спортсменов
-        if isinstance(user, Admin):
-            athletes = session.query(Athlete).all()
-            message_header = "🏃‍♂️ <b>СПИСОК СПОРТСМЕНОВ</b>\n\n"
-        else:
-            # Фильтруем по тренеру и виду спорта
-            if isinstance(user, Coach):
-                query = session.query(Athlete).filter_by(created_by=user.id)
-                # Получаем вид спорта из связи или из строки (для обратной совместимости)
-                sport_type_name = None
-                if user.sport_type_rel:
-                    sport_type_name = user.sport_type_rel.name
-                elif user.sport_type:
-                    sport_type_name = user.sport_type
-                if sport_type_name:
-                    query = query.filter_by(sport_type=sport_type_name)
-                athletes = query.all()
-            else:
-                athletes = []
-            message_header = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
+        athletes, message_header = load_athletes_for_list(session, user)
 
         if not athletes:
             if update.callback_query:
@@ -1170,22 +1212,32 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def athletes_list_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать список спортсменов по выбранному фильтру или подменю"""
     query = update.callback_query
-    await query.answer()
-
     filter_key = (query.data or "").replace("athletes_", "").strip()
-    
+
     # Если выбран active или inactive, показываем подменю с детьми/взрослыми
     if filter_key == "active":
+        await query.answer()
         await show_active_inactive_submenu(update, context, "active")
         return
-    elif filter_key == "inactive":
+    if filter_key == "inactive":
+        await query.answer()
         await show_active_inactive_submenu(update, context, "inactive")
         return
-    elif filter_key in ("active_children", "active_adults", "inactive_children", "inactive_adults", "all"):
+    if filter_key in (
+        "active_children",
+        "active_adults",
+        "inactive_children",
+        "inactive_adults",
+        "all",
+        "children",
+        "adults",
+        "inactive",
+    ):
+        await query.answer()
         await show_athletes_list_by_filter(update, context, filter_key)
         return
-    
-    await query.answer("❌ Неизвестный фильтр")
+
+    await query.answer("❌ Неизвестный фильтр", show_alert=True)
 
 
 async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEFAULT_TYPE, status_type: str):
@@ -1200,26 +1252,7 @@ async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEF
                 await update.callback_query.answer("❌ У вас нет доступа")
             return
 
-        # Получаем спортсменов с явной загрузкой subscription
-        if isinstance(user, Admin):
-            athletes = session.query(Athlete).options(joinedload(Athlete.subscriptions)).all()
-            message_header = "🏃‍♂️ <b>СПИСОК СПОРТСМЕНОВ</b>\n\n"
-        else:
-            # Фильтруем по тренеру и виду спорта
-            if isinstance(user, Coach):
-                query = session.query(Athlete).options(joinedload(Athlete.subscriptions)).filter_by(created_by=user.id)
-                # Получаем вид спорта из связи или из строки (для обратной совместимости)
-                sport_type_name = None
-                if user.sport_type_rel:
-                    sport_type_name = user.sport_type_rel.name
-                elif user.sport_type:
-                    sport_type_name = user.sport_type
-                if sport_type_name:
-                    query = query.filter_by(sport_type=sport_type_name)
-                athletes = query.all()
-            else:
-                athletes = []
-            message_header = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
+        athletes, message_header = load_athletes_for_list(session, user)
 
         from utils.subscription_checker import SubscriptionChecker
 
@@ -1278,12 +1311,27 @@ async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEF
 
 async def athletes_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Вернуться к экрану выбора категорий"""
-    # сбрасываем последний фильтр, чтобы «к списку» из карточки возвращал в категории
+    # сбрасываем последний фильтр и страницу, чтобы «к списку» из карточки возвращал в категории
     context.user_data.pop("athletes_list_filter", None)
+    context.user_data.pop("athletes_list_page", None)
     await athletes_list(update, context)
 
 
-async def show_athletes_list_by_filter(update: Update, context: ContextTypes.DEFAULT_TYPE, filter_key: str):
+async def athletes_list_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Перелистывание страниц списка спортсменов (callback alpg_*)."""
+    query = update.callback_query
+    parsed = decode_athlete_list_page(query.data or "")
+    if not parsed:
+        await query.answer("❌ Некорректная страница", show_alert=True)
+        return
+    await query.answer()
+    filter_key, page = parsed
+    await show_athletes_list_by_filter(update, context, filter_key, page=page)
+
+
+async def show_athletes_list_by_filter(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, filter_key: str, page: int = 0
+):
     """Отрисовать список спортсменов в зависимости от фильтра (all/children/adults/inactive)."""
     user_id = update.effective_user.id
     session = Session()
@@ -1300,26 +1348,7 @@ async def show_athletes_list_by_filter(update: Update, context: ContextTypes.DEF
         # Запоминаем фильтр, чтобы возврат «📋 К списку» из карточки работал ожидаемо
         context.user_data["athletes_list_filter"] = filter_key
 
-        # Берем базовый список с явной загрузкой subscriptions (один-ко-многим)
-        if isinstance(user, Admin):
-            athletes = session.query(Athlete).options(joinedload(Athlete.subscriptions)).all()
-            header_base = "🏃‍♂️ <b>СПИСОК СПОРТСМЕНОВ</b>\n\n"
-        else:
-            # Фильтруем по тренеру и виду спорта
-            if isinstance(user, Coach):
-                query = session.query(Athlete).options(joinedload(Athlete.subscriptions)).filter_by(created_by=user.id)
-                # Получаем вид спорта из связи или из строки (для обратной совместимости)
-                sport_type_name = None
-                if user.sport_type_rel:
-                    sport_type_name = user.sport_type_rel.name
-                elif user.sport_type:
-                    sport_type_name = user.sport_type
-                if sport_type_name:
-                    query = query.filter_by(sport_type=sport_type_name)
-                athletes = query.all()
-            else:
-                athletes = []
-            header_base = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
+        athletes, header_base = load_athletes_for_list(session, user)
 
         from utils.subscription_checker import SubscriptionChecker
 
@@ -1360,6 +1389,8 @@ async def show_athletes_list_by_filter(update: Update, context: ContextTypes.DEF
                 filtered = list(athletes)
                 filter_title = "📋 <b>ВСЕ СПОРТСМЕНЫ</b>\n\n"
 
+        filtered.sort(key=lambda a: (a.full_name or "").strip().lower())
+
         if not filtered:
             message = header_base + filter_title + "📭 В этой категории пока нет спортсменов."
             keyboard = [
@@ -1383,17 +1414,26 @@ async def show_athletes_list_by_filter(update: Update, context: ContextTypes.DEF
         # Добавляем вид спорта в заголовок, если он есть
         if sport_type:
             filter_title = filter_title.replace("</b>", f" - {sport_type}</b>")
-        
+
+        total_count = len(filtered)
+        total_pages = max(1, (total_count + ATHLETE_LIST_PAGE_SIZE - 1) // ATHLETE_LIST_PAGE_SIZE)
+        page = max(0, min(int(page), total_pages - 1))
+        context.user_data["athletes_list_page"] = page
+        start = page * ATHLETE_LIST_PAGE_SIZE
+        page_slice = filtered[start : start + ATHLETE_LIST_PAGE_SIZE]
+
         # Формируем текст
         message = header_base + filter_title
+        if total_pages > 1:
+            message += f"\n📄 Страница <b>{page + 1}</b> из <b>{total_pages}</b> · всего <b>{total_count}</b>\n"
 
-        # Клавиатура спортсменов (первые 20)
+        # Клавиатура спортсменов (текущая страница, по 2 в ряд)
         keyboard = []
-        for i in range(0, min(len(filtered), 20), 2):
+        for i in range(0, len(page_slice), 2):
             row = []
             for j in range(2):
-                if i + j < len(filtered):
-                    a = filtered[i + j]
+                if i + j < len(page_slice):
+                    a = page_slice[i + j]
 
                     status = athlete_status(a)
                     icons = []
@@ -1416,8 +1456,25 @@ async def show_athletes_list_by_filter(update: Update, context: ContextTypes.DEF
             if row:
                 keyboard.append(row)
 
-        if len(filtered) > 20:
-            keyboard.append([InlineKeyboardButton(f"📝 Показано 20 из {len(filtered)}", callback_data="show_more_info")])
+        if total_pages > 1:
+            nav_row = []
+            if page > 0:
+                nav_row.append(
+                    InlineKeyboardButton(
+                        "◀️ Назад",
+                        callback_data=encode_athlete_list_page(filter_key, page - 1),
+                    )
+                )
+            remaining = total_count - (page + 1) * ATHLETE_LIST_PAGE_SIZE
+            if page < total_pages - 1:
+                label = f"▶️ Ещё ({remaining})" if remaining <= 99 else "▶️ Ещё"
+                nav_row.append(
+                    InlineKeyboardButton(
+                        label,
+                        callback_data=encode_athlete_list_page(filter_key, page + 1),
+                    )
+                )
+            keyboard.append(nav_row)
 
         keyboard.append([InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories")])
         keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")])

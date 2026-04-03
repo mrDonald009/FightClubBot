@@ -42,6 +42,7 @@ from handlers.coach_handlers import (
     handle_training_date_selection,
     athletes_list,
     athletes_list_filtered,
+    athletes_list_page,
     athletes_categories,
     cancel_athlete_creation,
     cancel_global_freeze,
@@ -1086,6 +1087,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     registrar.register(
         CallbackQueryHandler(athletes_list_filtered, pattern="^athletes_(all|active|inactive|active_children|active_adults|inactive_children|inactive_adults|children|adults)$")
+    )
+    registrar.register(
+        CallbackQueryHandler(athletes_list_page, pattern=r"^alpg_[a-z]{2}_\d+$")
     )
 
     # Обработчики для карточек
