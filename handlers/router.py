@@ -1,5 +1,7 @@
 """Роутер для регистрации всех обработчиков."""
+import html
 import logging
+import re
 from datetime import datetime, timedelta
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
@@ -16,7 +18,11 @@ from services.user_service import UserService
 from database.db_utils import get_user_role
 from services.subscription_service import SubscriptionService
 from services.subscription_audit_service import run_subscription_audit, format_audit_report
-from database.db_utils import apply_global_freeze
+from database.db_utils import (
+    apply_global_freeze,
+    deactivate_global_freeze_and_migrate,
+    list_active_global_freezes_overlapping_range,
+)
 from utils.time_utils import now_moscow
 from handlers.start import start
 from handlers.coach_handlers import (
@@ -28,6 +34,11 @@ from handlers.coach_handlers import (
     add_athlete_medical,
     add_athlete_age_group,
     add_athlete_subscription,
+    handle_add_athlete_calendar_nav,
+    handle_add_athlete_calendar_date_pick,
+    handle_add_athlete_calendar_ignore,
+    handle_add_athlete_shift_confirm,
+    handle_add_athlete_shift_cancel,
     handle_training_date_selection,
     athletes_list,
     athletes_list_filtered,
@@ -37,6 +48,7 @@ from handlers.coach_handlers import (
     handle_back_to_menu_main,
     handle_show_more_info,
     start_training,
+    handle_attendance_training_list,
     show_coach_calendar,
     handle_calendar_navigation,
     handle_calendar_date_click,
@@ -62,6 +74,8 @@ from handlers.card_handlers import (
     handle_activation_calendar_nav,
     handle_activation_date_pick,
     handle_activation_ignore,
+    handle_activation_shift_confirm,
+    handle_activation_shift_cancel,
     show_my_athlete_card,
     show_athlete_visits,
     show_athlete_stats,
@@ -77,12 +91,22 @@ from handlers.card_handlers import (
     handle_unfreeze_subscription,
 )
 from handlers.attendance_handlers import (
+    select_training_for_attendance,
     mark_attendance_start,
     handle_training_selection,
     execute_mark_attendance,
 )
 
 logger = logging.getLogger(__name__)
+
+_GF_NOTICE_MAIN_HTML = (
+    "ℹ️ Вводите данные <b>внимательно</b> и убедитесь в <b>правильности решения</b> "
+    "— действие затрагивает активные абонементы."
+)
+
+_GF_NOTICE_CREATE_HTML = (
+    ""
+)
 
 # Состояния диалога массовой заморозки
 GF_ACTION_MENU, GF_START_DATE, GF_END_DATE, GF_TITLE, GF_CONFIRM = range(5)
@@ -194,9 +218,16 @@ async def create_global_freeze(update, context):
 
     args = context.args or []
     if len(args) < 2:
+        try:
+            with get_db_session() as session:
+                status_block = _format_current_global_freezes_html(session)
+        except Exception:
+            status_block = ""
         await update.message.reply_text(
+            f"{status_block}\n\n"
             "Формат: /global_freeze YYYY-MM-DD YYYY-MM-DD Название\n"
-            "Пример: /global_freeze 2026-05-01 2026-05-09 Майские праздники"
+            "Пример: /global_freeze 2026-05-01 2026-05-09 Майские праздники",
+            parse_mode="HTML",
         )
         return
 
@@ -244,6 +275,148 @@ def _parse_ui_date(text: str):
         return None
 
 
+def _format_current_global_freezes_html(session) -> str:
+    """
+    Текст для UI: массовые заморозки, действующие «сейчас» (по времени и is_active).
+    """
+    from database.models import GlobalFreeze
+
+    now = now_moscow()
+    rows = (
+        session.query(GlobalFreeze)
+        .filter(GlobalFreeze.is_active == True)
+        .filter(GlobalFreeze.start_date <= now)
+        .filter(GlobalFreeze.end_date >= now)
+        .order_by(GlobalFreeze.id.asc())
+        .all()
+    )
+    if not rows:
+        return "📭 <b>Сейчас действующих массовых заморозок нет.</b>"
+
+    header = (
+        "📌 <b>Сейчас действует массовая заморозка:</b>"
+        if len(rows) == 1
+        else "📌 <b>Сейчас действуют массовые заморозки:</b>"
+    )
+    lines = [header]
+    for g in rows:
+        title = html.escape((g.title or "").strip() or "без названия")
+        ds = g.start_date.strftime("%d.%m.%Y")
+        de = g.end_date.strftime("%d.%m.%Y")
+        lines.append(f"• ID <code>{g.id}</code> — <b>{title}</b>")
+        lines.append(f"  <i>{ds} — {de}</i>")
+    return "\n".join(lines)
+
+
+def _list_active_global_freezes(session):
+    """Все массовые заморозки с is_active=True (в т.ч. будущие по календарю)."""
+    from database.models import GlobalFreeze
+
+    return (
+        session.query(GlobalFreeze)
+        .filter(GlobalFreeze.is_active == True)
+        .order_by(GlobalFreeze.start_date.asc())
+        .all()
+    )
+
+
+def _format_global_freeze_history_html(session, limit: int = 15) -> str:
+    """Короткая история массовых заморозок (активные и неактивные)."""
+    from database.models import GlobalFreeze
+
+    rows = (
+        session.query(GlobalFreeze)
+        .order_by(GlobalFreeze.id.desc())
+        .limit(limit)
+        .all()
+    )
+    if not rows:
+        return "📭 <b>История массовых заморозок пуста.</b>"
+
+    lines = [f"📚 <b>История массовых заморозок</b> (последние {len(rows)}):"]
+    for g in rows:
+        status = "🟢 Действует" if g.is_active else "⚪ Отключена"
+        title = html.escape((g.title or "").strip() or "без названия")
+        ds = g.start_date.strftime("%d.%m.%Y")
+        de = g.end_date.strftime("%d.%m.%Y")
+        created = g.created_at.strftime("%d.%m.%Y") if g.created_at else "—"
+        initiator = str(g.created_by) if g.created_by else "не указан"
+        lines.append(f"• <b>{title}</b>")
+        lines.append(f"  Создано: {created}")
+        lines.append(f"  Период действия: {ds}—{de}")
+        lines.append(f"  Текущий статус: {status}")
+        lines.append(f"  Инициатор: {initiator}")
+    return "\n".join(lines)
+
+
+def _gf_keyboard_button_label(g) -> str:
+    t = (g.title or "").strip() or "без названия"
+    if len(t) > 28:
+        t = t[:25] + "…"
+    return f"#{g.id} {t}"
+
+
+def _gf_keyboard_button_label_from_parts(gf_id: int, title: str) -> str:
+    """Безопасный label: работает с примитивами, не зависит от ORM-сессии."""
+    t = (title or "").strip() or "без названия"
+    if len(t) > 28:
+        t = t[:25] + "…"
+    return f"#{gf_id} {t}"
+
+
+async def _gf_safe_edit(
+    update,
+    context,
+    text: str,
+    *,
+    parse_mode=None,
+    reply_markup=None,
+) -> None:
+    """Редактирование сообщения с inline-кнопкой; при ошибке API — новое сообщение в чат."""
+    query = update.callback_query
+    if not query:
+        logger.error("GF UI: _gf_safe_edit вызван без callback_query")
+        return
+    kwargs = {}
+    if parse_mode is not None:
+        kwargs["parse_mode"] = parse_mode
+    if reply_markup is not None:
+        kwargs["reply_markup"] = reply_markup
+    try:
+        await query.edit_message_text(text, **kwargs)
+    except Exception as exc:
+        logger.warning(
+            "GF UI: edit_message_text не удался (%s), дублирую ответом в чат",
+            exc,
+            exc_info=True,
+        )
+        chat_id = None
+        if query.message:
+            chat_id = query.message.chat_id
+        elif update.effective_chat:
+            chat_id = update.effective_chat.id
+        else:
+            chat_id = query.from_user.id if query.from_user else None
+        if chat_id is None:
+            logger.error("GF UI: не удалось определить chat_id для запасного сообщения")
+            return
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+        except Exception as send_exc:
+            logger.error("GF UI: send_message тоже не удался: %s", send_exc, exc_info=True)
+
+
+async def handle_global_freeze_flow_cancel(update, context):
+    """Явная отмена потока массовой заморозки через inline-кнопку."""
+    query = update.callback_query
+    await query.answer("Отменено")
+    context.user_data.pop("gf_start_date", None)
+    context.user_data.pop("gf_end_date", None)
+    context.user_data.pop("gf_title", None)
+    await _gf_safe_edit(update, context, "✅ Операция прервана.")
+    return ConversationHandler.END
+
+
 async def start_global_freeze_flow(update, context):
     """Показать меню массовой заморозки."""
     user_id = update.effective_user.id
@@ -253,6 +426,7 @@ async def start_global_freeze_flow(update, context):
             if not user or get_user_role(user) not in ['coach', 'admin']:
                 await update.message.reply_text("❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
+            status_block = _format_current_global_freezes_html(session)
     except Exception as e:
         logger.error(f"Ошибка проверки прав для массовой заморозки: {e}", exc_info=True)
         await update.message.reply_text("❌ Ошибка проверки прав")
@@ -261,17 +435,40 @@ async def start_global_freeze_flow(update, context):
     context.user_data.pop("gf_start_date", None)
     context.user_data.pop("gf_end_date", None)
     context.user_data.pop("gf_title", None)
+    main_status_block = "" if status_block.startswith("📭 ") else f"{status_block}\n\n"
 
     await update.message.reply_text(
         "🌍 <b>МАССОВАЯ ЗАМОРОЗКА</b>\n\n"
+        f"{main_status_block}"
         "Выберите действие:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Создать новую", callback_data="gf_action_create")],
             [InlineKeyboardButton("❌ Отмена массовой заморозки", callback_data="gf_action_cancel")],
-            [InlineKeyboardButton("✏️ Редактирование массовой", callback_data="gf_action_edit")],
+            [InlineKeyboardButton("📚 История массовых заморозок", callback_data="gf_action_history")],
         ]),
     )
+    return GF_ACTION_MENU
+
+
+async def handle_global_freeze_action_history(update, context):
+    """Показать историю массовых заморозок из меню GF."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    try:
+        with get_db_session() as session:
+            user = UserService.get_user_by_telegram_id(session, user_id)
+            if not user or get_user_role(user) not in ["coach", "admin"]:
+                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
+                return ConversationHandler.END
+            text = _format_global_freeze_history_html(session)
+    except Exception as e:
+        logger.error(f"Ошибка (gf_action_history): {e}", exc_info=True)
+        await _gf_safe_edit(update, context, "❌ Ошибка при формировании истории")
+        return ConversationHandler.END
+
+    await _gf_safe_edit(update, context, text, parse_mode="HTML")
     return GF_ACTION_MENU
 
 
@@ -285,45 +482,208 @@ async def handle_global_freeze_action_create(update, context):
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
             if not user or get_user_role(user) not in ['coach', 'admin']:
-                await query.edit_message_text("❌ У вас нет прав для этой функции")
+                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
+            status_block = _format_current_global_freezes_html(session)
     except Exception as e:
         logger.error(f"Ошибка проверки прав (gf_action_create): {e}", exc_info=True)
-        await query.edit_message_text("❌ Ошибка проверки прав")
+        await _gf_safe_edit(update, context, "❌ Ошибка проверки прав")
         return ConversationHandler.END
 
     context.user_data.pop("gf_start_date", None)
     context.user_data.pop("gf_end_date", None)
     context.user_data.pop("gf_title", None)
 
-    await query.edit_message_text(
-        "Введите <b>дату начала</b> в формате <b>ДД.ММ.ГГГГ</b>.\n"
-        "Для отмены: /cancel",
+    await _gf_safe_edit(
+        update,
+        context,
+        f"{status_block}\n\n"
+        f"{_GF_NOTICE_MAIN_HTML}\n"
+        f"{_GF_NOTICE_CREATE_HTML}\n\n"
+        "<b>Введите дату начала</b> (ДД.ММ.ГГГГ):",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Отменить операцию", callback_data="gf_cancel_flow")]]
+        ),
     )
     return GF_START_DATE
 
 
 async def handle_global_freeze_action_cancel(update, context):
-    """Заглушка: отмена массовой заморозки (доработка завтра)."""
+    """Деактивация массовой заморозки: список активных → подтверждение."""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(
-        "❌ Отмена массовой заморозки будет добавлена завтра.\n\n"
-        "Пока используйте команду:\n"
-        "`/global_freeze_deactivate <global_freeze_id>`",
-        parse_mode="Markdown",
+    user_id = query.from_user.id
+    try:
+        with get_db_session() as session:
+            user = UserService.get_user_by_telegram_id(session, user_id)
+            if not user or get_user_role(user) not in ["coach", "admin"]:
+                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
+                return ConversationHandler.END
+            rows = _list_active_global_freezes(session)
+            # Важно: после выхода из `with` ORM-объекты могут стать detached.
+            # Поэтому извлекаем id/title заранее.
+            rows_safe = [(g.id, (g.title or "").strip() or "без названия") for g in rows]
+    except Exception as e:
+        logger.error(f"Ошибка (gf_action_cancel): {e}", exc_info=True)
+        await _gf_safe_edit(update, context, "❌ Ошибка при загрузке списка")
+        return ConversationHandler.END
+
+    if not rows_safe:
+        await _gf_safe_edit(
+            update,
+            context,
+            "📭 Нет <b>активных</b> массовых заморозок для деактивации.",
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
+    kb = [
+        [
+            InlineKeyboardButton(
+                _gf_keyboard_button_label_from_parts(gf_id, title),
+                callback_data=f"gf_deact_pick_{gf_id}",
+            )
+        ]
+        for gf_id, title in rows_safe
+    ]
+    await _gf_safe_edit(
+        update,
+        context,
+        "❌ <b>Снять действие</b> заморозки\n\n"
+        "Выберите запись (будет пересчёт <b>месячных</b> абонементов).",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(kb),
+    )
+    return GF_ACTION_MENU
+
+
+async def handle_gf_deact_pick(update, context):
+    query = update.callback_query
+    await query.answer()
+    m = re.fullmatch(r"gf_deact_pick_(\d+)", query.data or "")
+    if not m:
+        return GF_ACTION_MENU
+    gf_id = int(m.group(1))
+    user_id = query.from_user.id
+    gf_title = None
+    gf_is_active = False
+    gf_start_str = None
+    gf_end_str = None
+    try:
+        with get_db_session() as session:
+            user = UserService.get_user_by_telegram_id(session, user_id)
+            if not user or get_user_role(user) not in ["coach", "admin"]:
+                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
+                return ConversationHandler.END
+            from database.models import GlobalFreeze
+
+            gf = session.query(GlobalFreeze).filter_by(id=gf_id).first()
+            if gf:
+                gf_is_active = bool(gf.is_active)
+                gf_title = (gf.title or "").strip() or "без названия"
+                gf_start_str = gf.start_date.strftime("%d.%m.%Y") if gf.start_date else ""
+                gf_end_str = gf.end_date.strftime("%d.%m.%Y") if gf.end_date else ""
+    except Exception as e:
+        logger.error(f"Ошибка (gf_deact_pick): {e}", exc_info=True)
+        await _gf_safe_edit(update, context, "❌ Ошибка")
+        return ConversationHandler.END
+
+    if not gf_is_active:
+        await _gf_safe_edit(update, context, "❌ Запись не найдена или уже не активна.")
+        return ConversationHandler.END
+
+    title = html.escape(gf_title or "без названия")
+    ds = gf_start_str or ""
+    de = gf_end_str or ""
+    await _gf_safe_edit(
+        update,
+        context,
+        "⚠️ <b>Подтверждение деактивации</b>\n\n"
+        f"Название: <b>{title}</b>\n"
+        f"Период: <i>{ds} — {de}</i>\n\n"
+        "Деактивировать? Ограничения по массовой заморозке перестанут действовать.",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✅ Да, деактивировать",
+                        callback_data=f"gf_deact_confirm_{gf_id}",
+                    )
+                ],
+                [InlineKeyboardButton("↩️ Нет", callback_data="gf_deact_abort")],
+            ]
+        ),
+    )
+    return GF_ACTION_MENU
+
+
+async def handle_gf_deact_confirm(update, context):
+    query = update.callback_query
+    await query.answer()
+    m = re.fullmatch(r"gf_deact_confirm_(\d+)", query.data or "")
+    if not m:
+        return GF_ACTION_MENU
+    gf_id = int(m.group(1))
+    user_id = query.from_user.id
+
+    try:
+        with get_db_session() as session:
+            user = UserService.get_user_by_telegram_id(session, user_id)
+            if not user or get_user_role(user) not in ["coach", "admin"]:
+                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
+                return ConversationHandler.END
+            result = deactivate_global_freeze_and_migrate(session, gf_id)
+    except Exception as e:
+        logger.error(f"Ошибка (gf_deact_confirm): {e}", exc_info=True)
+        await _gf_safe_edit(update, context, "❌ Ошибка при деактивации")
+        return ConversationHandler.END
+
+    if not result.get("success"):
+        await _gf_safe_edit(update, context, f"❌ {result.get('message', 'Ошибка')}")
+        return ConversationHandler.END
+
+    if result.get("already_inactive"):
+        esc = html.escape((result.get("title") or "").strip())
+        await _gf_safe_edit(
+            update,
+            context,
+            f"ℹ️ {html.escape(result.get('message', ''))}\nНазвание: <b>{esc}</b>",
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
+    audit_summary = ""
+    try:
+        with get_db_session() as session:
+            report = run_subscription_audit(session)
+        audit_summary = (
+            f"\n• Audit: critical={report.get('severity_counts', {}).get('critical', 0)}, "
+            f"warning={report.get('severity_counts', {}).get('warning', 0)}"
+        )
+    except Exception as audit_exc:
+        logger.error("Ошибка post-deactivate (UI flow) аудита GF: %s", audit_exc, exc_info=True)
+
+    esc = html.escape((result.get("title") or "").strip())
+    await _gf_safe_edit(
+        update,
+        context,
+        f"✅ Массовая заморозка деактивирована.\n\n"
+        f"• Проверено абонементов: {result.get('checked', 0)}\n"
+        f"• Обновлено абонементов: {result.get('updated_subscriptions', result.get('migrated', 0))}\n"
+        f"• Без изменений: {result.get('skipped_subscriptions', 0)}\n"
+        f"• Название: <b>{esc}</b>"
+        f"{audit_summary}",
+        parse_mode="HTML",
     )
     return ConversationHandler.END
 
 
-async def handle_global_freeze_action_edit(update, context):
-    """Заглушка: редактирование массовой заморозки (доработка завтра)."""
+async def handle_gf_deact_abort(update, context):
     query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "✏️ Редактирование массовой заморозки будет добавлено завтра.",
-    )
+    await query.answer("Отменено")
+    await _gf_safe_edit(update, context, "↩️ Деактивация отменена.")
     return ConversationHandler.END
 
 
@@ -333,7 +693,14 @@ async def handle_global_freeze_start_date(update, context):
         await update.message.reply_text("❌ Неверный формат. Введите дату начала как ДД.ММ.ГГГГ")
         return GF_START_DATE
     context.user_data["gf_start_date"] = dt
-    await update.message.reply_text("Введите <b>дату окончания</b> (ДД.ММ.ГГГГ).", parse_mode="HTML")
+    await update.message.reply_text(
+        f"Начало: <b>{dt.strftime('%d.%m.%Y')}</b>\n"
+        "<b>Дата окончания</b> (ДД.ММ.ГГГГ), не раньше начала:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Отменить операцию", callback_data="gf_cancel_flow")]]
+        ),
+    )
     return GF_END_DATE
 
 
@@ -350,9 +717,21 @@ async def handle_global_freeze_end_date(update, context):
         await update.message.reply_text("❌ Дата окончания не может быть раньше даты начала.")
         return GF_END_DATE
     context.user_data["gf_end_date"] = dt
+
+    sd0 = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    ed0 = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    span_days = (ed0 - sd0).days + 1
+    span_hint = ""
+    if span_days > 21:
+        span_hint = f"\n⚠️ Долго ({span_days} дн.) — проверьте даты."
+
     await update.message.reply_text(
-        "Введите название заморозки (например: Майские праздники).",
+        f"Конец: <b>{dt.strftime('%d.%m.%Y')}</b>{span_hint}\n"
+        "<b>Название</b> заморозки:",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Отменить операцию", callback_data="gf_cancel_flow")]]
+        ),
     )
     return GF_TITLE
 
@@ -370,15 +749,36 @@ async def handle_global_freeze_title(update, context):
 
     start_date = context.user_data["gf_start_date"]
     end_date = context.user_data["gf_end_date"]
+    esc_title = html.escape(title)
+
+    overlap_note = ""
+    try:
+        with get_db_session() as session:
+            overlapping = list_active_global_freezes_overlapping_range(session, start_date, end_date)
+            if overlapping:
+                oids = ", ".join(str(g.id) for g in overlapping[:5])
+                if len(overlapping) > 5:
+                    oids += ", …"
+                overlap_note = (
+                    f"\n\n⚠️ Период пересекается с уже действующей массовой заморозкой "
+                    f"(записи: <code>{html.escape(oids)}</code>). "
+                    "Выберите другой период."
+                )
+    except Exception as e:
+        logger.error(f"Ошибка проверки пересечения GF перед подтверждением: {e}", exc_info=True)
+        overlap_note = "\n\n⚠️ Проверка пересечений не удалась — лучше отложить применение."
+
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Применить", callback_data="gf_apply_confirm")],
         [InlineKeyboardButton("❌ Отмена", callback_data="gf_cancel_confirm")],
     ])
     await update.message.reply_text(
-        "🌍 <b>ПОДТВЕРЖДЕНИЕ</b>\n\n"
-        f"• Название: <b>{title}</b>\n"
-        f"• Период: <b>{start_date.strftime('%d.%m.%Y')} — {end_date.strftime('%d.%m.%Y')}</b>\n\n"
-        "Применить массовую заморозку?",
+        "🌍 <b>Подтвердите</b>\n\n"
+        f"{esc_title}\n"
+        f"<b>{start_date.strftime('%d.%m.%Y')} — {end_date.strftime('%d.%m.%Y')}</b>\n\n"
+        "Убедитесь, что всё верно."
+        f"{overlap_note}\n\n"
+        "Применить?",
         parse_mode="HTML",
         reply_markup=keyboard,
     )
@@ -394,7 +794,9 @@ async def handle_global_freeze_confirm_apply(update, context):
     end_date = context.user_data.get("gf_end_date")
     title = context.user_data.get("gf_title", "Массовая заморозка")
     if not start_date or not end_date:
-        await query.edit_message_text("❌ Сессия истекла. Начните заново: 🌍 Массовая заморозка")
+        await _gf_safe_edit(
+            update, context, "❌ Сессия истекла. Начните заново: 🌍 Массовая заморозка"
+        )
         return ConversationHandler.END
 
     try:
@@ -407,21 +809,36 @@ async def handle_global_freeze_confirm_apply(update, context):
                 created_by=user_id,
             )
             if not result.get("success"):
-                await query.edit_message_text(f"❌ {result.get('message', 'Не удалось применить заморозку')}")
+                await _gf_safe_edit(
+                    update, context, f"❌ {result.get('message', 'Не удалось применить заморозку')}"
+                )
                 return ConversationHandler.END
-            await query.edit_message_text(
+            audit_summary = ""
+            try:
+                report = run_subscription_audit(session)
+                audit_summary = (
+                    f"\n• Audit: critical={report.get('severity_counts', {}).get('critical', 0)}, "
+                    f"warning={report.get('severity_counts', {}).get('warning', 0)}"
+                )
+            except Exception as audit_exc:
+                logger.error("Ошибка post-apply аудита GF: %s", audit_exc, exc_info=True)
+            esc_ok_title = html.escape((title or "").strip())
+            await _gf_safe_edit(
+                update,
+                context,
                 f"✅ <b>Массовая заморозка применена</b>\n\n"
                 f"• ID: {result['global_freeze_id']}\n"
                 f"• Период: {result['start_date'].strftime('%d.%m.%Y')} — {result['end_date'].strftime('%d.%m.%Y')}\n"
                 f"• Обновлено абонементов: {result['updated_subscriptions']}\n"
                 f"• Пропущено: {result['skipped_subscriptions']}\n"
                 f"• Суммарно добавлено тренировочных дней: {result.get('total_training_days_added', 0)}\n"
-                f"• Название: {title}",
+                f"• Название: <b>{esc_ok_title}</b>"
+                f"{audit_summary}",
                 parse_mode="HTML",
             )
     except Exception as e:
         logger.error(f"Ошибка применения массовой заморозки (UI flow): {e}", exc_info=True)
-        await query.edit_message_text("❌ Ошибка при применении массовой заморозки")
+        await _gf_safe_edit(update, context, "❌ Ошибка при применении массовой заморозки")
     finally:
         context.user_data.pop("gf_start_date", None)
         context.user_data.pop("gf_end_date", None)
@@ -432,7 +849,7 @@ async def handle_global_freeze_confirm_apply(update, context):
 async def handle_global_freeze_confirm_cancel(update, context):
     query = update.callback_query
     await query.answer("Отменено")
-    await query.edit_message_text("❌ Операция массовой заморозки отменена.")
+    await _gf_safe_edit(update, context, "❌ Операция массовой заморозки отменена.")
     context.user_data.pop("gf_start_date", None)
     context.user_data.pop("gf_end_date", None)
     context.user_data.pop("gf_title", None)
@@ -466,45 +883,56 @@ async def deactivate_global_freeze(update, context):
                 await update.message.reply_text("❌ У вас нет прав для этой команды")
                 return
 
-            from database.models import GlobalFreeze, GlobalFreezeApplication, Subscription
-            from database.db_utils import migrate_existing_subscription
+            result = deactivate_global_freeze_and_migrate(session, gf_id)
 
-            gf = session.query(GlobalFreeze).filter_by(id=gf_id).first()
-            if not gf:
-                await update.message.reply_text(f"❌ Массовая заморозка с ID={gf_id} не найдена")
+            if not result.get("success"):
+                await update.message.reply_text(f"❌ {result.get('message', 'Ошибка')}")
                 return
 
-            if not gf.is_active:
-                await update.message.reply_text(f"ℹ️ Массовая заморозка #{gf_id} уже не активна")
+            if result.get("already_inactive"):
+                await update.message.reply_text(
+                    f"ℹ️ {result.get('message', 'Уже не активна')}\n"
+                    f"• Название: {result.get('title', '')}"
+                )
                 return
 
-            gf.is_active = False
-            session.commit()
-
-            subscription_ids = (
-                session.query(GlobalFreezeApplication.subscription_id)
-                .filter(GlobalFreezeApplication.global_freeze_id == gf_id)
-                .distinct()
-                .all()
-            )
-            subscription_ids = [x[0] for x in subscription_ids]
-
-            migrated = 0
-            for sid in subscription_ids:
-                sub = session.query(Subscription).filter_by(id=sid).first()
-                if not sub or sub.subscription_type != "monthly":
-                    continue
-                migrate_existing_subscription(session, sid)
-                migrated += 1
+            audit_summary = ""
+            try:
+                report = run_subscription_audit(session)
+                audit_summary = (
+                    f"\n• Audit: critical={report.get('severity_counts', {}).get('critical', 0)}, "
+                    f"warning={report.get('severity_counts', {}).get('warning', 0)}"
+                )
+            except Exception as audit_exc:
+                logger.error("Ошибка post-deactivate аудита GF: %s", audit_exc, exc_info=True)
 
             await update.message.reply_text(
-                f"✅ Массовая заморозка #{gf_id} деактивирована.\n"
-                f"• Мигрировано абонементов (monthly): {migrated}\n"
-                f"• Название: {gf.title}"
+                f"✅ Массовая заморозка деактивирована.\n"
+                f"• Проверено абонементов: {result.get('checked', 0)}\n"
+                f"• Обновлено абонементов: {result.get('updated_subscriptions', result.get('migrated', 0))}\n"
+                f"• Без изменений: {result.get('skipped_subscriptions', 0)}\n"
+                f"• Название: {result.get('title', '')}"
+                f"{audit_summary}"
             )
     except Exception as e:
         logger.error(f"Ошибка деактивации массовой заморозки: {e}", exc_info=True)
         await update.message.reply_text("❌ Ошибка при деактивации массовой заморозки")
+
+
+async def global_freeze_history(update, context):
+    """Показать историю массовых заморозок."""
+    user_id = update.effective_user.id
+    try:
+        with get_db_session() as session:
+            user = UserService.get_user_by_telegram_id(session, user_id)
+            if not user or get_user_role(user) not in ["coach", "admin"]:
+                await update.message.reply_text("❌ У вас нет прав для этой команды")
+                return
+            text = _format_global_freeze_history_html(session)
+            await update.message.reply_text(text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Ошибка команды /global_freeze_history: {e}", exc_info=True)
+        await update.message.reply_text("❌ Ошибка при формировании истории массовых заморозок")
 
 
 def register_all_handlers(registrar: HandlerRegistrar) -> None:
@@ -558,7 +986,15 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_subscription)
             ],
             ATHLETE_TRAINING_DATE: [
-                CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_")
+                CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_nav, pattern="^addath_cal_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_date_pick, pattern="^addath_date_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_ignore, pattern="^addath_ignore$"),
+                CallbackQueryHandler(
+                    handle_add_athlete_shift_confirm,
+                    pattern=r"^addath_shift_confirm(?:_\d{12})?$",
+                ),
+                CallbackQueryHandler(handle_add_athlete_shift_cancel, pattern="^addath_shift_cancel$"),
             ],
         },
         fallbacks=[
@@ -583,9 +1019,13 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         ],
         states={
             GF_ACTION_MENU: [
+                CallbackQueryHandler(handle_global_freeze_flow_cancel, pattern=r"^gf_cancel_flow$"),
+                CallbackQueryHandler(handle_gf_deact_confirm, pattern=r"^gf_deact_confirm_\d+$"),
+                CallbackQueryHandler(handle_gf_deact_pick, pattern=r"^gf_deact_pick_\d+$"),
+                CallbackQueryHandler(handle_gf_deact_abort, pattern=r"^gf_deact_abort$"),
                 CallbackQueryHandler(handle_global_freeze_action_create, pattern="^gf_action_create$"),
                 CallbackQueryHandler(handle_global_freeze_action_cancel, pattern="^gf_action_cancel$"),
-                CallbackQueryHandler(handle_global_freeze_action_edit, pattern="^gf_action_edit$"),
+                CallbackQueryHandler(handle_global_freeze_action_history, pattern="^gf_action_history$"),
             ],
             GF_START_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_global_freeze_start_date)],
             GF_END_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_global_freeze_end_date)],
@@ -596,6 +1036,16 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
             ],
         },
         fallbacks=[
+            # Inline-кнопки GF из любого состояния (иначе при вводе дат callback с меню «отмена» теряется)
+            CallbackQueryHandler(handle_global_freeze_flow_cancel, pattern=r"^gf_cancel_flow$"),
+            CallbackQueryHandler(handle_gf_deact_confirm, pattern=r"^gf_deact_confirm_\d+$"),
+            CallbackQueryHandler(handle_gf_deact_pick, pattern=r"^gf_deact_pick_\d+$"),
+            CallbackQueryHandler(handle_gf_deact_abort, pattern=r"^gf_deact_abort$"),
+            CallbackQueryHandler(handle_global_freeze_confirm_apply, pattern="^gf_apply_confirm$"),
+            CallbackQueryHandler(handle_global_freeze_confirm_cancel, pattern="^gf_cancel_confirm$"),
+            CallbackQueryHandler(handle_global_freeze_action_create, pattern="^gf_action_create$"),
+            CallbackQueryHandler(handle_global_freeze_action_cancel, pattern="^gf_action_cancel$"),
+            CallbackQueryHandler(handle_global_freeze_action_history, pattern="^gf_action_history$"),
             CommandHandler("cancel", cancel_global_freeze),
             MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
             MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training),
@@ -607,7 +1057,22 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         allow_reentry=True,
     )
     registrar.register(gf_conv)
-    logger.info("✅ Зарегистрирован ConversationHandler для массовой заморозки")
+    # Если диалог GF не в памяти (перезапуск, клик по старому сообщению), ConversationHandler
+    # не забирает callback — без этих обработчиков кнопки «отмена» / деактивация «молчат».
+    # Регистрируются после CH: срабатывают только когда check_update у CH вернул None.
+    for _cb, _pat in (
+        (handle_global_freeze_flow_cancel, r"^gf_cancel_flow$"),
+        (handle_gf_deact_confirm, r"^gf_deact_confirm_\d+$"),
+        (handle_gf_deact_pick, r"^gf_deact_pick_\d+$"),
+        (handle_gf_deact_abort, r"^gf_deact_abort$"),
+        (handle_global_freeze_confirm_apply, r"^gf_apply_confirm$"),
+        (handle_global_freeze_confirm_cancel, r"^gf_cancel_confirm$"),
+        (handle_global_freeze_action_create, r"^gf_action_create$"),
+        (handle_global_freeze_action_cancel, r"^gf_action_cancel$"),
+        (handle_global_freeze_action_history, r"^gf_action_history$"),
+    ):
+        registrar.register(CallbackQueryHandler(_cb, pattern=_pat))
+    logger.info("✅ Зарегистрирован ConversationHandler для массовой заморозки (+ резервные callback)")
 
     # Обработчики для списка спортсменов
     registrar.register(
@@ -664,6 +1129,12 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(
         CallbackQueryHandler(mark_attendance_start, pattern="^mark_attendance_")
     )
+    registrar.register(
+        CallbackQueryHandler(handle_attendance_training_list, pattern="^attendance_training_list$")
+    )
+    registrar.register(
+        CallbackQueryHandler(select_training_for_attendance, pattern="^select_mark_training_")
+    )
     # Сначала более специфичный паттерн: дата первой тренировки при добавлении спортсмена
     registrar.register(
         CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_")
@@ -691,6 +1162,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(CommandHandler("audit_now", audit_subscriptions_now))
     # Команда массовой заморозки
     registrar.register(CommandHandler("global_freeze", create_global_freeze))
+    registrar.register(CommandHandler("global_freeze_history", global_freeze_history))
     # Деактивация массовой заморозки
     registrar.register(CommandHandler("global_freeze_deactivate", deactivate_global_freeze))
 
@@ -751,7 +1223,13 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(CallbackQueryHandler(handle_activation_calendar_nav, pattern="^act_cal_"))
     registrar.register(CallbackQueryHandler(handle_activation_date_pick, pattern="^act_date_"))
     registrar.register(CallbackQueryHandler(handle_activation_ignore, pattern="^act_ignore$"))
-    
+    registrar.register(
+        CallbackQueryHandler(handle_activation_shift_confirm, pattern=r"^act_shift_confirm_\d+_\d{12}$")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_activation_shift_cancel, pattern=r"^act_shift_cancel_\d+$")
+    )
+
     # Обработчики для заморозки абонемента
     registrar.register(
         CallbackQueryHandler(handle_freeze_subscription_start, pattern="^freeze_sub_")

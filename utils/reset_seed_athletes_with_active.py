@@ -28,8 +28,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database.db_utils import _find_nearest_training_date, _calculate_12th_training_date
 
-DB_PATH = Path("database/club.db")
-
 # Windows/PowerShell часто падает на emoji/юникод в выводе (cp1251/cp866).
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -100,12 +98,27 @@ def _get_primary_coach(cur: sqlite3.Cursor) -> CoachInfo:
     return CoachInfo(id=row[0], sport_type_id=row[1], sport_type_name=row[2], sport_type_legacy=row[3])
 
 
-def _backup_db() -> Path:
-    if not DB_PATH.exists():
-        raise FileNotFoundError(f"База не найдена: {DB_PATH}")
+def _resolve_db_path(cli_db: Optional[str]) -> Path:
+    """Определить путь к SQLite БД: --db -> DATABASE_URL -> fallback."""
+    if cli_db:
+        return Path(cli_db)
+
+    database_url = os.getenv("DATABASE_URL", "sqlite:///database/club.db")
+    if database_url.startswith("sqlite:///"):
+        return Path(database_url.replace("sqlite:///", "", 1))
+
+    raise ValueError(
+        "Поддерживается только sqlite DATABASE_URL для этого скрипта. "
+        "Передайте --db database/club_dev.db"
+    )
+
+
+def _backup_db(db_path: Path) -> Path:
+    if not db_path.exists():
+        raise FileNotFoundError(f"База не найдена: {db_path}")
     ts = now_moscow().strftime("%Y%m%d-%H%M%S")
-    backup_path = DB_PATH.with_suffix(f".db.bak-{ts}")
-    shutil.copy2(DB_PATH, backup_path)
+    backup_path = db_path.with_suffix(f".db.bak-{ts}")
+    shutil.copy2(db_path, backup_path)
     return backup_path
 
 
@@ -283,6 +296,7 @@ def main() -> int:
     parser.add_argument("--count", type=int, default=25, help="Сколько спортсменов создать")
     parser.add_argument("--seed", type=int, default=None, help="Seed для random (для воспроизводимости)")
     parser.add_argument("--add-only", action="store_true", help="Добавить спортсменов без удаления существующих")
+    parser.add_argument("--db", type=str, default=None, help="Путь к SQLite БД (например: database/club_dev.db)")
     args = parser.parse_args()
 
     if args.count <= 0:
@@ -291,12 +305,14 @@ def main() -> int:
     if args.seed is not None:
         random.seed(args.seed)
 
-    os.makedirs(DB_PATH.parent, exist_ok=True)
+    db_path = _resolve_db_path(args.db)
+    os.makedirs(db_path.parent, exist_ok=True)
 
-    backup = _backup_db()
+    backup = _backup_db(db_path)
     print(f"[OK] Backup created: {backup}")
+    print(f"[INFO] DB path: {db_path}")
 
-    con = sqlite3.connect(str(DB_PATH))
+    con = sqlite3.connect(str(db_path))
     try:
         con.execute("PRAGMA foreign_keys = ON")
         cur = con.cursor()

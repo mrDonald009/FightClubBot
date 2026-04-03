@@ -1,9 +1,10 @@
 import logging
+import re
 from datetime import datetime, timedelta
 import calendar as py_calendar
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
-from database.models import Session, Athlete, Subscription, Training, Attendance, Coach, Admin
+from database.models import Session, Athlete, Subscription, Training, Attendance, Coach, Admin, GlobalFreeze
 from database.db_utils import (
     get_user_by_telegram_id,
     get_user_role,
@@ -11,6 +12,9 @@ from database.db_utils import (
     calculate_actual_trainings_remaining as db_calculate_actual_trainings_remaining,
     sync_subscription_trainings_remaining,
     is_training_in_global_freeze,
+    find_next_non_frozen_training_date,
+    training_datetime_compact,
+    parse_training_datetime_compact,
     now_moscow,
 )
 from typing import Union
@@ -89,6 +93,70 @@ def _status_icon_from_status_text(status_text: str) -> str:
 def _get_schedule(sport_type: str, age_group: str):
     schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
     return schedule
+
+
+async def _finalize_subscription_activation(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    query,
+    session,
+    subscription: Subscription,
+    athlete: Athlete,
+    start_date: datetime,
+):
+    """Сохранить активацию с выбранной первой датой тренировки."""
+    sport_type = subscription.sport_type or athlete.sport_type
+    age_group = athlete.age_group
+
+    from database.db_utils import (
+        _calculate_12th_training_date,
+        training_end_time,
+        _create_and_deduct_scheduled_trainings,
+    )
+
+    if subscription.subscription_type == "monthly":
+        end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
+    elif subscription.subscription_type == "single":
+        end_date = training_end_time(start_date)
+    else:
+        await query.edit_message_text("❌ Сначала выберите тип абонемента.")
+        return
+
+    for old_sub in [s for s in athlete.subscriptions if s.is_active and s.id != subscription.id]:
+        old_sub.is_active = False
+
+    subscription.is_active = True
+    subscription.start_date = start_date
+    subscription.end_date = end_date
+
+    if subscription.subscription_type == "monthly" and subscription.sport_type and athlete.age_group:
+        _create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
+    elif subscription.subscription_type == "single":
+        coach_id = athlete.created_by if athlete.created_by else None
+        training = session.query(Training).filter_by(
+            sport_type=sport_type,
+            age_group=age_group,
+            training_date=start_date,
+            is_cancelled=False,
+        ).first()
+        if not training:
+            training = Training(
+                sport_type=sport_type,
+                age_group=age_group,
+                training_date=start_date,
+                is_cancelled=False,
+                coach_id=coach_id,
+            )
+            session.add(training)
+            session.flush()
+        elif coach_id and not getattr(training, "coach_id", None):
+            training.coach_id = coach_id
+            session.flush()
+
+    sync_subscription_trainings_remaining(session, subscription)
+    session.commit()
+
+    await show_subscription_card(update, context, override_query_data=f"subscription_{subscription.id}")
 
 
 def _build_activation_calendar(
@@ -261,68 +329,59 @@ async def handle_activation_date_pick(update: Update, context: ContextTypes.DEFA
         # Дата, выбранная тренером (без времени)
         coach_selected_date = datetime(year, month, day, 0, 0, 0)
         
-        # Находим ближайшую дату тренировки согласно расписанию
         from database.db_utils import _find_nearest_training_date
+
         start_date = _find_nearest_training_date(coach_selected_date, sport_type, age_group)
 
-        # Рассчитываем end_date
-        from database.db_utils import _calculate_12th_training_date, training_end_time
-
-        if subscription.subscription_type == "monthly":
-            # Дата окончания = дата 12-й тренировки + 1,5 часа (окончание последней тренировки)
-            end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
-        elif subscription.subscription_type == "single":
-            # Дата окончания = дата начала + 1,5 часа (окончание тренировки)
-            end_date = training_end_time(start_date)
-        else:
-            # Тип еще не выбран — просим вернуться назад
+        if subscription.subscription_type not in ("monthly", "single"):
             await query.edit_message_text("❌ Сначала выберите тип абонемента.")
             return
 
-        # Деактивируем другие активные абонементы
-        for old_sub in [s for s in athlete.subscriptions if s.is_active and s.id != subscription.id]:
-            old_sub.is_active = False
-
-        subscription.is_active = True
-        subscription.start_date = start_date
-        subscription.end_date = end_date
-
-        # Для месячных создаем тренировки по расписанию
-        if subscription.subscription_type == "monthly" and subscription.sport_type and athlete.age_group:
-            from database.db_utils import _create_and_deduct_scheduled_trainings
-            _create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
-        elif subscription.subscription_type == "single":
-            # Для разового: создаем/находим тренировку на выбранную дату
-            coach_id = athlete.created_by if athlete.created_by else None
-            training = session.query(Training).filter_by(
-                sport_type=sport_type,
-                age_group=age_group,
-                training_date=start_date,
-                is_cancelled=False
-            ).first()
-            if not training:
-                training = Training(
-                    sport_type=sport_type,
-                    age_group=age_group,
-                    training_date=start_date,
-                    is_cancelled=False,
-                    coach_id=coach_id
+        if is_training_in_global_freeze(session, start_date):
+            freeze = (
+                session.query(GlobalFreeze)
+                .filter(
+                    GlobalFreeze.is_active == True,
+                    GlobalFreeze.start_date <= start_date,
+                    GlobalFreeze.end_date >= start_date,
                 )
-                session.add(training)
-                session.flush()
-            elif coach_id and not getattr(training, "coach_id", None):
-                training.coach_id = coach_id
-                session.flush()
-            # Важно: не списываем тренировку при активации.
-            # Списание должно происходить по факту (авто-списание/отметка посещения),
-            # а отображение в календаре делаем по активным абонементам и диапазону дат.
+                .order_by(GlobalFreeze.end_date.desc())
+                .first()
+            )
+            shifted_start = find_next_non_frozen_training_date(
+                session,
+                (freeze.end_date + timedelta(seconds=1)) if freeze else (start_date + timedelta(days=1)),
+                sport_type,
+                age_group,
+            )
+            confirm_cb = f"act_shift_confirm_{subscription_id}_{training_datetime_compact(shifted_start)}"
+            cancel_cb = f"act_shift_cancel_{subscription_id}"
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("✅ Подтвердить сдвиг", callback_data=confirm_cb),
+                        InlineKeyboardButton("❌ Выбрать другую дату", callback_data=cancel_cb),
+                    ]
+                ]
+            )
+            freeze_label = (
+                f"{freeze.start_date.strftime('%d.%m.%Y')} — {freeze.end_date.strftime('%d.%m.%Y')}"
+                if freeze
+                else "активной массовой заморозки"
+            )
+            await query.edit_message_text(
+                "⚠️ Выбранная первая тренировка попадает в период массовой заморозки.\n\n"
+                f"Период заморозки: <b>{freeze_label}</b>\n"
+                f"Предлагаемая новая дата старта: <b>{shifted_start.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+                "Подтвердить сдвиг и продолжить активацию?",
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            return
 
-        # Защитная синхронизация остатка после установки дат.
-        sync_subscription_trainings_remaining(session, subscription)
-        session.commit()
-
-        # Показать карточку абонемента
-        await show_subscription_card(update, context, override_query_data=f"subscription_{subscription.id}")
+        await _finalize_subscription_activation(
+            update, context, query, session, subscription, athlete, start_date
+        )
     except Exception as e:
         logger.error(f"❌ ОШИБКА ВЫБОРА ДАТЫ АКТИВАЦИИ: {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка при активации абонемента")
@@ -334,6 +393,121 @@ async def handle_activation_ignore(update: Update, context: ContextTypes.DEFAULT
     """Игнор-кнопка для календаря (пустые клетки/дни недели)."""
     query = update.callback_query
     await query.answer()
+
+
+async def handle_activation_shift_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение сдвига даты активации за пределы массовой заморозки."""
+    query = update.callback_query
+    await query.answer()
+
+    m = re.match(r"^act_shift_confirm_(\d+)_(\d{12})$", (query.data or "").strip())
+    if not m:
+        await query.edit_message_text("❌ Некорректная кнопка.")
+        return
+
+    subscription_id = int(m.group(1))
+    shifted_start = parse_training_datetime_compact(m.group(2))
+    if not shifted_start:
+        await query.edit_message_text("❌ Некорректная дата в кнопке.")
+        return
+
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        if not user or get_user_role(user) not in ["coach", "admin"]:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+
+        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+        if not subscription:
+            await query.edit_message_text("❌ Абонемент не найден")
+            return
+
+        athlete = subscription.athlete
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
+            return
+
+        if is_training_in_global_freeze(session, shifted_start):
+            await query.edit_message_text(
+                "❌ Период заморозки изменился. Вернитесь к календарю и выберите дату снова."
+            )
+            return
+
+        await _finalize_subscription_activation(
+            update, context, query, session, subscription, athlete, shifted_start
+        )
+    except Exception as e:
+        logger.error("❌ ОШИБКА ПОДТВЕРЖДЕНИЯ СДВИГА АКТИВАЦИИ: %s", e, exc_info=True)
+        await query.edit_message_text("❌ Ошибка при активации абонемента")
+    finally:
+        session.close()
+
+
+async def handle_activation_shift_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена сдвига: календарь активации или карточка абонемента."""
+    query = update.callback_query
+    m = re.match(r"^act_shift_cancel_(\d+)$", (query.data or "").strip())
+    if not m:
+        await query.answer()
+        return
+
+    subscription_id = int(m.group(1))
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        if not user or get_user_role(user) not in ["coach", "admin"]:
+            await query.answer()
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+
+        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+        if not subscription:
+            await query.answer()
+            await query.edit_message_text("❌ Абонемент не найден")
+            return
+
+        athlete = subscription.athlete
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.answer()
+            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
+            return
+
+        if not subscription.is_active and subscription.start_date is None:
+            await query.answer()
+            now = now_moscow()
+            sport_type = subscription.sport_type or athlete.sport_type
+            schedule = _get_schedule(sport_type, athlete.age_group)
+            if not schedule:
+                await query.edit_message_text(
+                    "❌ Расписание для этой группы не найдено. Обратитесь к администратору."
+                )
+                return
+            reply_markup = _build_activation_calendar(
+                subscription.id, sport_type, athlete.age_group, now.year, now.month
+            )
+            sub_type_ru = _format_subscription_type_ru(subscription.subscription_type)
+            await query.edit_message_text(
+                f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+                f"🎫 <b>АКТИВАЦИЯ АБОНЕМЕНТА</b>\n\n"
+                f"Тип: <b>{sub_type_ru}</b>\n\n"
+                f"Выберите дату <b>первой тренировки</b> (она будет датой активации):",
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+        else:
+            await show_subscription_card(
+                update, context, override_query_data=f"subscription_{subscription.id}"
+            )
+    except Exception as e:
+        logger.error("❌ ОШИБКА ОТМЕНЫ СДВИГА АКТИВАЦИИ: %s", e, exc_info=True)
+        try:
+            await query.answer()
+        except Exception:
+            pass
+        await query.edit_message_text("❌ Ошибка")
+    finally:
+        session.close()
 
 
 async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1640,46 +1814,64 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             )
             return
         
-        # Если тип уже определен, активируем абонемент
-        from database.db_utils import _find_nearest_training_date, _calculate_12th_training_date, training_end_time
-        from datetime import timedelta
-        
-        # Находим ближайшую дату тренировки согласно расписанию, начиная с текущей даты
+        # Если тип уже определен, активируем абонемент (первая тренировка — ближайший слот от «сейчас»)
+        from database.db_utils import _find_nearest_training_date
+
         sport_type = subscription.sport_type or athlete.sport_type
         age_group = athlete.age_group
         coach_selected_date = now_moscow()
         start_date = _find_nearest_training_date(coach_selected_date, sport_type, age_group)
-        
-        if subscription.subscription_type == "monthly":
-            # Дата окончания = дата 12-й тренировки + 1,5 часа (окончание последней тренировки)
-            end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
-        elif subscription.subscription_type == "single":
-            # Дата окончания = дата начала + 1,5 часа (окончание тренировки)
-            end_date = training_end_time(start_date)
-        else:
-            end_date = start_date + timedelta(days=30)  # По умолчанию 30 дней
-        
-        # Связь 1:1 - деактивируем все старые активные абонементы
-        active_subs = [s for s in athlete.subscriptions if s.is_active and s.id != subscription.id]
-        for old_sub in active_subs:
-            old_sub.is_active = False
-        
-        subscription.is_active = True
-        subscription.start_date = start_date
-        subscription.end_date = end_date
-        
-        # Для месячных абонементов создаем тренировки по расписанию
-        if subscription.subscription_type == "monthly" and subscription.sport_type and athlete.age_group:
-            from database.db_utils import _create_and_deduct_scheduled_trainings
-            _create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
-        
-        sync_subscription_trainings_remaining(session, subscription)
-        session.commit()
-        
-        await query.answer("✅ Абонемент активирован", show_alert=True)
-        
-        # Обновляем карточку абонемента
-        await show_subscription_card(update, context)
+
+        if subscription.subscription_type not in ("monthly", "single"):
+            await query.edit_message_text("❌ Сначала выберите тип абонемента на экране активации.")
+            return
+
+        if is_training_in_global_freeze(session, start_date):
+            freeze = (
+                session.query(GlobalFreeze)
+                .filter(
+                    GlobalFreeze.is_active == True,
+                    GlobalFreeze.start_date <= start_date,
+                    GlobalFreeze.end_date >= start_date,
+                )
+                .order_by(GlobalFreeze.end_date.desc())
+                .first()
+            )
+            shifted_start = find_next_non_frozen_training_date(
+                session,
+                (freeze.end_date + timedelta(seconds=1)) if freeze else (start_date + timedelta(days=1)),
+                sport_type,
+                age_group,
+            )
+            sid = subscription.id
+            confirm_cb = f"act_shift_confirm_{sid}_{training_datetime_compact(shifted_start)}"
+            cancel_cb = f"act_shift_cancel_{sid}"
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("✅ Подтвердить сдвиг", callback_data=confirm_cb),
+                        InlineKeyboardButton("❌ Отмена", callback_data=cancel_cb),
+                    ]
+                ]
+            )
+            freeze_label = (
+                f"{freeze.start_date.strftime('%d.%m.%Y')} — {freeze.end_date.strftime('%d.%m.%Y')}"
+                if freeze
+                else "активной массовой заморозки"
+            )
+            await query.edit_message_text(
+                "⚠️ Ближайший слот по расписанию попадает в период массовой заморозки.\n\n"
+                f"Период заморозки: <b>{freeze_label}</b>\n"
+                f"Предлагаемая дата начала: <b>{shifted_start.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+                "Подтвердить сдвиг и активировать абонемент?",
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+            return
+
+        await _finalize_subscription_activation(
+            update, context, query, session, subscription, athlete, start_date
+        )
         
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ АКТИВАЦИИ АБОНЕМЕНТА: {e}", exc_info=True)

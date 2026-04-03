@@ -1,9 +1,12 @@
 """Сервис для работы с пользователями."""
+import logging
 from typing import Optional, List, Union
 from sqlalchemy.orm import Session
-from database.models import Coach, Admin, Assistant, Athlete
+from database.models import Coach, Admin, Assistant, Athlete, Training
 from database.db_utils import get_user_by_telegram_id, get_user_role, create_user as db_create_user
 from core.exceptions import UserNotFoundError, PermissionDeniedError
+
+logger = logging.getLogger(__name__)
 
 
 class UserService:
@@ -134,6 +137,59 @@ class UserService:
         return True
     
     @staticmethod
+    def ensure_admin(
+        session: Session,
+        telegram_id: int,
+        username: str = "admin",
+        first_name: str = "Администратор",
+    ) -> Optional[Admin]:
+        """
+        Убедиться, что в БД есть администратор с данным telegram_id.
+        Не трогает спортсменов/ассистентов; тренера с тем же id удаляет только если нет привязанных данных.
+        """
+        user = get_user_by_telegram_id(session, telegram_id)
+        if isinstance(user, Admin):
+            return user
+        if user is None:
+            return db_create_user(
+                session=session,
+                telegram_id=telegram_id,
+                username=username,
+                first_name=first_name,
+                role="admin",
+            )
+        if isinstance(user, Coach):
+            athletes_cnt = (
+                session.query(Athlete).filter(Athlete.created_by == user.id).count()
+            )
+            trainings_cnt = (
+                session.query(Training).filter(Training.coach_id == user.id).count()
+            )
+            if athletes_cnt > 0 or trainings_cnt > 0:
+                logger.warning(
+                    "ADMIN_TELEGRAM_ID=%s совпадает с тренером id=%s, у которого есть спортсмены или тренировки. "
+                    "Администратор не создан — исправьте БД или смените ADMIN_TELEGRAM_ID.",
+                    telegram_id,
+                    user.id,
+                )
+                return None
+            session.delete(user)
+            session.commit()
+            return db_create_user(
+                session=session,
+                telegram_id=telegram_id,
+                username=username,
+                first_name=first_name,
+                role="admin",
+            )
+        logger.warning(
+            "ADMIN_TELEGRAM_ID=%s уже занят ролью %s (не admin). Администратор не создан.",
+            telegram_id,
+            get_user_role(user),
+        )
+        return None
+
+    @staticmethod
     def ensure_test_coach(session: Session, telegram_id: int, username: str = "coach_mma", 
                          first_name: str = "Тренер ММА", sport_type: str = "MMA") -> Coach:
         """
@@ -166,8 +222,20 @@ class UserService:
                 user.sport_type = sport_type
                 session.commit()
             return user
+        if isinstance(user, Admin):
+            logger.warning(
+                "ensure_test_coach: telegram_id=%s уже администратор — тренер не создаётся (используйте другой THAI_COACH_TELEGRAM_ID).",
+                telegram_id,
+            )
+            raise ValueError("telegram_id уже занят администратором")
+        if isinstance(user, Athlete):
+            logger.warning(
+                "ensure_test_coach: telegram_id=%s уже спортсмен — тренер не создаётся.",
+                telegram_id,
+            )
+            raise ValueError("telegram_id уже занят спортсменом")
         elif user:
-            # Если пользователь существует, но не тренер - удаляем и создаем тренера
+            # Ассистент и прочие: удаляем и создаём тренера
             session.delete(user)
             session.commit()
         
