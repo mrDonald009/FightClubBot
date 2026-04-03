@@ -1,4 +1,4 @@
-"""Регрессия: списания не должны жить внутри активной массовой заморозки (кроме ручных отметок)."""
+"""Тесты домена абонементов: массовая заморозка, деактивация, пересчёт и аудит."""
 from datetime import datetime
 from unittest.mock import patch
 
@@ -27,11 +27,12 @@ from database.models import (
 from services.subscription_audit_service import run_subscription_audit
 
 
-def _base_session():
+def _session_with_active_global_freeze():
+    """Базовая in-memory БД: sport/coach/athlete + 1 активная глобальная заморозка."""
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
-    S = sessionmaker(bind=engine)
-    s = S()
+    SessionLocal = sessionmaker(bind=engine)
+    s = SessionLocal()
     st = SportType(name="Тайский Бокс", display_name="Тайский Бокс")
     s.add(st)
     s.flush()
@@ -58,8 +59,8 @@ def _base_session():
 
 
 @pytest.fixture
-def memory_session():
-    s, a, c = _base_session()
+def session_with_monthly_subscription():
+    s, a, _ = _session_with_active_global_freeze()
     sub = Subscription(
         athlete_id=a.id,
         sport_type="Тайский Бокс",
@@ -78,9 +79,9 @@ def memory_session():
 
 
 @pytest.fixture
-def session_migrate_start_in_freeze():
-    """Старт в первый день заморозки — в миграции обрабатывается один тренировочный слот."""
-    s, a, c = _base_session()
+def session_migrate_start_inside_global_freeze():
+    """Старт абонемента в первый день GF — для проверки чистки авто-списаний."""
+    s, a, c = _session_with_active_global_freeze()
     sub = Subscription(
         athlete_id=a.id,
         sport_type="Тайский Бокс",
@@ -98,8 +99,11 @@ def session_migrate_start_in_freeze():
     s.close()
 
 
-def test_calculate_remaining_ignores_auto_usage_during_global_freeze(memory_session):
-    s = memory_session
+# --- Блок 1: корректность остатка и миграции monthly -----------------------------------------
+
+
+def test_remaining_ignores_auto_usage_during_active_global_freeze(session_with_monthly_subscription):
+    s = session_with_monthly_subscription
     sub = s.query(Subscription).one()
     tr = Training(
         sport_type="Тайский Бокс",
@@ -121,14 +125,13 @@ def test_calculate_remaining_ignores_auto_usage_during_global_freeze(memory_sess
         )
     )
     s.commit()
-    fake_now = datetime(2026, 3, 25, 20, 0, 0)
-    with patch("database.db_utils.now_moscow", return_value=fake_now):
+    with patch("database.db_utils.now_moscow", return_value=datetime(2026, 3, 25, 20, 0, 0)):
         rem = calculate_actual_trainings_remaining(s, sub)
     assert rem == 12
 
 
-def test_calculate_remaining_counts_usage_outside_global_freeze(memory_session):
-    s = memory_session
+def test_remaining_counts_usage_outside_global_freeze(session_with_monthly_subscription):
+    s = session_with_monthly_subscription
     sub = s.query(Subscription).one()
     tr = Training(
         sport_type="Тайский Бокс",
@@ -150,14 +153,15 @@ def test_calculate_remaining_counts_usage_outside_global_freeze(memory_session):
         )
     )
     s.commit()
-    fake_now = datetime(2026, 3, 22, 20, 0, 0)
-    with patch("database.db_utils.now_moscow", return_value=fake_now):
+    with patch("database.db_utils.now_moscow", return_value=datetime(2026, 3, 22, 20, 0, 0)):
         rem = calculate_actual_trainings_remaining(s, sub)
     assert rem == 11
 
 
-def test_migrate_deletes_spurious_auto_attendance_in_freeze_window(session_migrate_start_in_freeze):
-    s, sub, a, c = session_migrate_start_in_freeze
+def test_monthly_migration_removes_auto_attendance_inside_freeze_window(
+    session_migrate_start_inside_global_freeze,
+):
+    s, sub, a, c = session_migrate_start_inside_global_freeze
     tr = Training(
         sport_type="Тайский Бокс",
         age_group="children",
@@ -179,15 +183,17 @@ def test_migrate_deletes_spurious_auto_attendance_in_freeze_window(session_migra
     s.commit()
     assert s.query(Attendance).filter_by(subscription_id=sub.id).count() == 1
 
-    fake_now = datetime(2026, 3, 25, 10, 0, 0)
-    with patch("database.db_utils.now_moscow", return_value=fake_now):
+    with patch("database.db_utils.now_moscow", return_value=datetime(2026, 3, 25, 10, 0, 0)):
         migrate_existing_subscription(s, sub.id)
 
     assert s.query(Attendance).filter_by(subscription_id=sub.id).count() == 0
 
 
-def test_list_active_global_freezes_overlapping_range_matches_apply_logic():
-    s, _, _ = _base_session()
+# --- Блок 2: создание/пересечения глобальных заморозок ---------------------------------------
+
+
+def test_overlapping_range_helper_matches_apply_overlap_logic():
+    s, _, _ = _session_with_active_global_freeze()
     gf = s.query(GlobalFreeze).one()
     ov = list_active_global_freezes_overlapping_range(s, datetime(2026, 3, 25), datetime(2026, 4, 1))
     assert len(ov) == 1
@@ -196,7 +202,7 @@ def test_list_active_global_freezes_overlapping_range_matches_apply_logic():
 
 
 def test_apply_global_freeze_rejects_overlapping_ranges():
-    s, _, _ = _base_session()
+    s, _, _ = _session_with_active_global_freeze()
     result = apply_global_freeze(
         session=s,
         start_date=datetime(2026, 3, 25),
@@ -211,7 +217,7 @@ def test_apply_global_freeze_rejects_overlapping_ranges():
 
 
 def test_apply_global_freeze_allows_non_overlapping_ranges():
-    s, _, _ = _base_session()
+    s, _, _ = _session_with_active_global_freeze()
     result = apply_global_freeze(
         session=s,
         start_date=datetime(2026, 4, 6),
@@ -224,8 +230,8 @@ def test_apply_global_freeze_allows_non_overlapping_ranges():
     s.close()
 
 
-def test_audit_reports_overlapping_global_freezes():
-    s, _, _ = _base_session()
+def test_subscription_audit_reports_overlapping_global_freezes():
+    s, _, _ = _session_with_active_global_freeze()
     s.add(
         GlobalFreeze(
             title="second_overlap",
@@ -241,8 +247,11 @@ def test_audit_reports_overlapping_global_freezes():
     s.close()
 
 
-def test_deactivate_global_freeze_sets_inactive_and_idempotent():
-    s, _, _ = _base_session()
+# --- Блок 3: деактивация GF и цикл re-apply ---------------------------------------------------
+
+
+def test_deactivate_global_freeze_is_idempotent_and_sets_inactive():
+    s, _, _ = _session_with_active_global_freeze()
     gf = s.query(GlobalFreeze).one()
     r1 = deactivate_global_freeze_and_migrate(s, gf.id)
     assert r1["success"] is True
@@ -257,12 +266,12 @@ def test_deactivate_global_freeze_sets_inactive_and_idempotent():
     s.close()
 
 
-def _session_with_monthly_sub_no_global_freeze():
+def _session_with_monthly_sub_and_without_any_gf():
     """Чистая БД: спортсмен + активный monthly, без записей global_freezes."""
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
-    S = sessionmaker(bind=engine)
-    s = S()
+    SessionLocal = sessionmaker(bind=engine)
+    s = SessionLocal()
     st = SportType(name="Тайский Бокс", display_name="Тайский Бокс")
     s.add(st)
     s.flush()
@@ -292,13 +301,12 @@ def _session_with_monthly_sub_no_global_freeze():
     return s, sub
 
 
-def test_deactivate_then_reapply_same_global_freeze_recalculates_monthly():
+def test_global_freeze_cycle_deactivate_then_reapply_recalculates_monthly_consistently():
     """
-    Цикл: применить GF → деактивировать (миграция monthly) → снова применить с теми же датами.
-    Проверяем успех операций и отсутствие пересечения активных GF; end_date после повторного
-    применения снова учитывает продление.
+    Цикл: apply GF -> deactivate GF (migration monthly) -> apply GF again same dates.
+    Проверяем согласованность продления и отсутствие overlap среди активных GF.
     """
-    s, sub = _session_with_monthly_sub_no_global_freeze()
+    s, sub = _session_with_monthly_sub_and_without_any_gf()
     freeze_start = datetime(2026, 3, 24)
     freeze_end = datetime(2026, 3, 30)
     title = "cycle_test_gf"
@@ -316,29 +324,24 @@ def test_deactivate_then_reapply_same_global_freeze_recalculates_monthly():
     s.refresh(sub)
     end_after_apply1 = sub.end_date
 
-    app_rows = (
+    apps = (
         s.query(GlobalFreezeApplication)
         .filter(GlobalFreezeApplication.global_freeze_id == gf_id_1)
         .all()
     )
-    assert len(app_rows) >= 1
-    assert any(a.training_days_added > 0 for a in app_rows)
+    assert len(apps) >= 1
+    assert any(a.training_days_added > 0 for a in apps)
 
-    fake_now = datetime(2026, 3, 25, 10, 0, 0)
-    with patch("database.db_utils.now_moscow", return_value=fake_now):
+    with patch("database.db_utils.now_moscow", return_value=datetime(2026, 3, 25, 10, 0, 0)):
         r_deact = deactivate_global_freeze_and_migrate(s, gf_id_1)
 
     assert r_deact["success"] is True
     assert r_deact.get("already_inactive") is False
     assert r_deact["migrated"] >= 1
-
-    gf1 = s.query(GlobalFreeze).filter_by(id=gf_id_1).one()
-    assert gf1.is_active is False
+    assert s.query(GlobalFreeze).filter_by(id=gf_id_1).one().is_active is False
 
     s.refresh(sub)
     end_after_deactivate = sub.end_date
-    # После снятия активной GF потолок по applications не действует — дата окончания
-    # пересчитывается и обычно не длиннее, чем при активной GF.
     assert end_after_deactivate <= end_after_apply1
 
     r_apply2 = apply_global_freeze(
@@ -350,7 +353,6 @@ def test_deactivate_then_reapply_same_global_freeze_recalculates_monthly():
     )
     assert r_apply2["success"] is True
     assert r_apply2["global_freeze_id"] != gf_id_1
-    gf_id_2 = r_apply2["global_freeze_id"]
 
     s.refresh(sub)
     end_after_apply2 = sub.end_date
@@ -362,5 +364,4 @@ def test_deactivate_then_reapply_same_global_freeze_recalculates_monthly():
     report = run_subscription_audit(s)
     codes = {issue["code"] for issue in report["issues"]}
     assert "overlapping_global_freezes" not in codes
-
     s.close()
