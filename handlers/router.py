@@ -342,8 +342,10 @@ def _format_global_freeze_history_html(session, limit: int = 15) -> str:
         created = g.created_at.strftime("%d.%m.%Y") if g.created_at else "—"
         initiator = str(g.created_by) if g.created_by else "не указан"
         lines.append(f"• <b>{title}</b>")
-        lines.append(f"  {status} • {ds}—{de}")
-        lines.append(f"  Создано: {created} • Инициатор: {initiator}")
+        lines.append(f"  Создано: {created}")
+        lines.append(f"  Период действия: {ds}—{de}")
+        lines.append(f"  Текущий статус: {status}")
+        lines.append(f"  Инициатор: {initiator}")
     return "\n".join(lines)
 
 
