@@ -406,6 +406,17 @@ async def _gf_safe_edit(
             logger.error("GF UI: send_message тоже не удался: %s", send_exc, exc_info=True)
 
 
+async def handle_global_freeze_flow_cancel(update, context):
+    """Явная отмена потока массовой заморозки через inline-кнопку."""
+    query = update.callback_query
+    await query.answer("Отменено")
+    context.user_data.pop("gf_start_date", None)
+    context.user_data.pop("gf_end_date", None)
+    context.user_data.pop("gf_title", None)
+    await _gf_safe_edit(update, context, "✅ Операция прервана.")
+    return ConversationHandler.END
+
+
 async def start_global_freeze_flow(update, context):
     """Показать меню массовой заморозки."""
     user_id = update.effective_user.id
@@ -488,8 +499,12 @@ async def handle_global_freeze_action_create(update, context):
         context,
         f"{status_block}\n\n"
         f"{_GF_NOTICE_CREATE_HTML}\n\n"
-        "<b>Дата начала</b> (ДД.ММ.ГГГГ):",
+        "<b>Введите дату начала</b> (ДД.ММ.ГГГГ):\n"
+        "Для отмены используйте кнопку ниже или команду /cancel.",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Отменить операцию", callback_data="gf_cancel_flow")]]
+        ),
     )
     return GF_START_DATE
 
@@ -684,6 +699,9 @@ async def handle_global_freeze_start_date(update, context):
         f"Начало: <b>{dt.strftime('%d.%m.%Y')}</b>\n"
         "<b>Дата окончания</b> (ДД.ММ.ГГГГ), не раньше начала:",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Отменить операцию", callback_data="gf_cancel_flow")]]
+        ),
     )
     return GF_END_DATE
 
@@ -713,6 +731,9 @@ async def handle_global_freeze_end_date(update, context):
         f"Конец: <b>{dt.strftime('%d.%m.%Y')}</b>{span_hint}\n"
         "<b>Название</b> заморозки:",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Отменить операцию", callback_data="gf_cancel_flow")]]
+        ),
     )
     return GF_TITLE
 
@@ -1000,6 +1021,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         ],
         states={
             GF_ACTION_MENU: [
+                CallbackQueryHandler(handle_global_freeze_flow_cancel, pattern=r"^gf_cancel_flow$"),
                 CallbackQueryHandler(handle_gf_deact_confirm, pattern=r"^gf_deact_confirm_\d+$"),
                 CallbackQueryHandler(handle_gf_deact_pick, pattern=r"^gf_deact_pick_\d+$"),
                 CallbackQueryHandler(handle_gf_deact_abort, pattern=r"^gf_deact_abort$"),
@@ -1017,6 +1039,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         },
         fallbacks=[
             # Inline-кнопки GF из любого состояния (иначе при вводе дат callback с меню «отмена» теряется)
+            CallbackQueryHandler(handle_global_freeze_flow_cancel, pattern=r"^gf_cancel_flow$"),
             CallbackQueryHandler(handle_gf_deact_confirm, pattern=r"^gf_deact_confirm_\d+$"),
             CallbackQueryHandler(handle_gf_deact_pick, pattern=r"^gf_deact_pick_\d+$"),
             CallbackQueryHandler(handle_gf_deact_abort, pattern=r"^gf_deact_abort$"),
@@ -1040,6 +1063,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     # не забирает callback — без этих обработчиков кнопки «отмена» / деактивация «молчат».
     # Регистрируются после CH: срабатывают только когда check_update у CH вернул None.
     for _cb, _pat in (
+        (handle_global_freeze_flow_cancel, r"^gf_cancel_flow$"),
         (handle_gf_deact_confirm, r"^gf_deact_confirm_\d+$"),
         (handle_gf_deact_pick, r"^gf_deact_pick_\d+$"),
         (handle_gf_deact_abort, r"^gf_deact_abort$"),
