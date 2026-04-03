@@ -798,8 +798,8 @@ def test_add_athlete_start_wrong_role(monkeypatch):
     assert "нет прав" in update.message.calls[-1]["text"].lower()
 
 
-def test_add_athlete_start_admin_gets_no_sport_message(monkeypatch):
-    admin = SimpleNamespace()
+def test_add_athlete_start_admin_no_delegate_fails(monkeypatch):
+    admin = SimpleNamespace(telegram_id=4242)
 
     class _S:
         def close(self):
@@ -808,12 +808,16 @@ def test_add_athlete_start_admin_gets_no_sport_message(monkeypatch):
     monkeypatch.setattr(ch, "Session", lambda: _S())
     monkeypatch.setattr(ch, "get_user_by_telegram_id", lambda *_a, **_k: admin)
     monkeypatch.setattr(ch, "get_user_role", lambda *_a, **_k: "admin")
+    monkeypatch.setattr(ch, "get_coach_by_telegram_id", lambda *_a, **_k: None)
+    monkeypatch.setattr(ch, "get_delegate_coach_for_admin", lambda *_a, **_k: None)
 
     real_isinstance = builtins.isinstance
 
     def _isinstance(obj, cls):
         if obj is admin and cls is ch.Coach:
             return False
+        if obj is admin and cls is ch.Admin:
+            return True
         return real_isinstance(obj, cls)
 
     monkeypatch.setattr(builtins, "isinstance", _isinstance)
@@ -824,7 +828,47 @@ def test_add_athlete_start_admin_gets_no_sport_message(monkeypatch):
     state = _run(ch.add_athlete_start(update, context))
 
     assert state == ch.ConversationHandler.END
-    assert "специализац" in update.message.calls[-1]["text"].lower()
+    assert "тренер" in update.message.calls[-1]["text"].lower()
+
+
+def test_add_athlete_start_admin_uses_delegate(monkeypatch):
+    admin = SimpleNamespace(telegram_id=4242)
+    delegate = SimpleNamespace(
+        id=77,
+        sport_type_rel=SimpleNamespace(name="Тайский Бокс"),
+        sport_type=None,
+    )
+
+    class _S:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(ch, "Session", lambda: _S())
+    monkeypatch.setattr(ch, "get_user_by_telegram_id", lambda *_a, **_k: admin)
+    monkeypatch.setattr(ch, "get_user_role", lambda *_a, **_k: "admin")
+    monkeypatch.setattr(ch, "get_coach_by_telegram_id", lambda *_a, **_k: None)
+    monkeypatch.setattr(ch, "get_delegate_coach_for_admin", lambda *_a, **_k: delegate)
+
+    real_isinstance = builtins.isinstance
+
+    def _isinstance(obj, cls):
+        if obj is admin and cls is ch.Coach:
+            return False
+        if obj is admin and cls is ch.Admin:
+            return True
+        return real_isinstance(obj, cls)
+
+    monkeypatch.setattr(builtins, "isinstance", _isinstance)
+
+    update = _update_with_message("")
+    context = _ctx({})
+
+    state = _run(ch.add_athlete_start(update, context))
+
+    assert state == ch.ATHLETE_FULL_NAME
+    assert context.user_data["sport_type"] == "Тайский Бокс"
+    assert context.user_data["coach_id"] == 77
+    assert "ФИО" in update.message.calls[-1]["text"]
 
 
 def test_add_athlete_start_coach_with_sport(monkeypatch):

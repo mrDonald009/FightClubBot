@@ -1,8 +1,15 @@
 import logging
+import os
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 from database.models import Session, Coach, Admin, Athlete, Subscription, Training, Attendance, GlobalFreeze
-from database.db_utils import get_user_by_telegram_id, get_user_role, create_athlete
+from database.db_utils import (
+    get_user_by_telegram_id,
+    get_user_role,
+    create_athlete,
+    get_coach_by_telegram_id,
+    get_delegate_coach_for_admin,
+)
 import database.db_utils as db_utils_pkg
 from typing import List, Optional, Tuple, Union
 from utils.training_manager import TrainingManager
@@ -348,10 +355,66 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "❌ У вас не указана спортивная специализация в профиле. Обратитесь к администратору."
             )
             return ConversationHandler.END
-        # Админ и прочие роли с правами coach/admin, но не запись Coach (нет привязки к виду спорта)
-        await update.message.reply_text(
-            "❌ У вас не указана спортивная специализация. Обратитесь к администратору."
-        )
+
+        if isinstance(user, Admin):
+            linked = get_coach_by_telegram_id(session, user.telegram_id)
+            if linked:
+                sport_type_name = None
+                if linked.sport_type_rel:
+                    sport_type_name = linked.sport_type_rel.name
+                elif linked.sport_type:
+                    sport_type_name = linked.sport_type
+                if sport_type_name:
+                    context.user_data["sport_type"] = sport_type_name
+                    context.user_data["coach_id"] = linked.id
+                    logger.info(
+                        "add_athlete_start admin+linked_coach coach_id=%s sport=%s",
+                        linked.id,
+                        sport_type_name,
+                    )
+                    await update.message.reply_text(
+                        f"👤 <b>Добавление нового спортсмена</b>\n\n"
+                        f"<b>Вид спорта:</b> {sport_type_name}\n\n"
+                        f"Введите ФИО спортсмена:",
+                        parse_mode="HTML",
+                    )
+                    return ATHLETE_FULL_NAME
+            _thai = os.getenv("THAI_COACH_TELEGRAM_ID", "").strip()
+            thai_id = int(_thai) if _thai else None
+            delegate = get_delegate_coach_for_admin(session, thai_id)
+            if not delegate:
+                await update.message.reply_text(
+                    "❌ В базе нет тренеров — добавление спортсмена недоступно. "
+                    "Создайте тренера или задайте THAI_COACH_TELEGRAM_ID в окружении."
+                )
+                return ConversationHandler.END
+            sport_type_name = None
+            if delegate.sport_type_rel:
+                sport_type_name = delegate.sport_type_rel.name
+            elif delegate.sport_type:
+                sport_type_name = delegate.sport_type
+            if not sport_type_name:
+                await update.message.reply_text(
+                    "❌ У тренера в базе не указана спортивная специализация."
+                )
+                return ConversationHandler.END
+            context.user_data["sport_type"] = sport_type_name
+            context.user_data["coach_id"] = delegate.id
+            logger.info(
+                "add_athlete_start admin delegate coach_id=%s sport=%s",
+                delegate.id,
+                sport_type_name,
+            )
+            await update.message.reply_text(
+                f"👤 <b>Добавление нового спортсмена</b>\n\n"
+                f"<b>Вид спорта:</b> {sport_type_name}\n"
+                f"<i>Запись будет привязана к тренеру в БД (id {delegate.id}).</i>\n\n"
+                f"Введите ФИО спортсмена:",
+                parse_mode="HTML",
+            )
+            return ATHLETE_FULL_NAME
+
+        await update.message.reply_text("❌ У вас нет прав для добавления спортсменов")
         return ConversationHandler.END
 
     except Exception as e:
