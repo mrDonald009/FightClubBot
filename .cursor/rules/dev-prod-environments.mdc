@@ -36,7 +36,9 @@ grep -h '^DATABASE_URL=' .env 2>/dev/null || echo "PROD: нет .env или не
 
 У **тестового** бота на сервере часто в **systemd** указано `EnvironmentFile=.../.env.dev`, а корневой `.env` только под другие цели или пустой по `DATABASE_URL` — смотреть нужно **тот файл, который реально подключаёт сервис** (`systemctl cat … | grep EnvironmentFile`).
 
-Или скрипт из репозитория: сначала **войти в каталог клона** (не из `~`), затем `git pull`, затем запуск:
+Полный отчёт по каталогам dev/prod, `.env`, файлам БД и строкам `global_freezes` на сервере: `bash scripts/server_report_dev_prod_layout.sh` (после `git pull` в dev-клоне).
+
+Или скрипт сравнения URL: сначала **войти в каталог клона** (не из `~`), затем `git pull`, затем запуск:
 
 ```bash
 cd /home/cat/FightClubBot-dev
