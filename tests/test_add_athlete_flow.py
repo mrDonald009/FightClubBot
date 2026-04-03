@@ -808,7 +808,6 @@ def test_add_athlete_start_admin_no_delegate_fails(monkeypatch):
     monkeypatch.setattr(ch, "Session", lambda: _S())
     monkeypatch.setattr(ch, "get_user_by_telegram_id", lambda *_a, **_k: admin)
     monkeypatch.setattr(ch, "get_user_role", lambda *_a, **_k: "admin")
-    monkeypatch.setattr(ch, "get_coach_by_telegram_id", lambda *_a, **_k: None)
     monkeypatch.setattr(ch, "get_delegate_coach_for_admin", lambda *_a, **_k: None)
 
     real_isinstance = builtins.isinstance
@@ -846,7 +845,6 @@ def test_add_athlete_start_admin_uses_delegate(monkeypatch):
     monkeypatch.setattr(ch, "Session", lambda: _S())
     monkeypatch.setattr(ch, "get_user_by_telegram_id", lambda *_a, **_k: admin)
     monkeypatch.setattr(ch, "get_user_role", lambda *_a, **_k: "admin")
-    monkeypatch.setattr(ch, "get_coach_by_telegram_id", lambda *_a, **_k: None)
     monkeypatch.setattr(ch, "get_delegate_coach_for_admin", lambda *_a, **_k: delegate)
 
     real_isinstance = builtins.isinstance
@@ -867,7 +865,7 @@ def test_add_athlete_start_admin_uses_delegate(monkeypatch):
 
     assert state == ch.ATHLETE_FULL_NAME
     assert context.user_data["sport_type"] == "Тайский Бокс"
-    assert context.user_data["coach_id"] == 77
+    assert context.user_data.get("coach_id") is None
     assert "ФИО" in update.message.calls[-1]["text"]
 
 

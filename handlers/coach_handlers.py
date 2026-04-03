@@ -7,7 +7,6 @@ from database.db_utils import (
     get_user_by_telegram_id,
     get_user_role,
     create_athlete,
-    get_coach_by_telegram_id,
     get_delegate_coach_for_admin,
 )
 import database.db_utils as db_utils_pkg
@@ -357,28 +356,8 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
 
         if isinstance(user, Admin):
-            linked = get_coach_by_telegram_id(session, user.telegram_id)
-            if linked:
-                sport_type_name = None
-                if linked.sport_type_rel:
-                    sport_type_name = linked.sport_type_rel.name
-                elif linked.sport_type:
-                    sport_type_name = linked.sport_type
-                if sport_type_name:
-                    context.user_data["sport_type"] = sport_type_name
-                    context.user_data["coach_id"] = linked.id
-                    logger.info(
-                        "add_athlete_start admin+linked_coach coach_id=%s sport=%s",
-                        linked.id,
-                        sport_type_name,
-                    )
-                    await update.message.reply_text(
-                        f"👤 <b>Добавление нового спортсмена</b>\n\n"
-                        f"<b>Вид спорта:</b> {sport_type_name}\n\n"
-                        f"Введите ФИО спортсмена:",
-                        parse_mode="HTML",
-                    )
-                    return ATHLETE_FULL_NAME
+            # Вид спорта и слоты — по шаблону делегата (THAI / первый тренер), но created_by у спортсмена = NULL:
+            # в списке тренера такие не показываются, только у администратора.
             _thai = os.getenv("THAI_COACH_TELEGRAM_ID", "").strip()
             thai_id = int(_thai) if _thai else None
             delegate = get_delegate_coach_for_admin(session, thai_id)
@@ -399,16 +378,16 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return ConversationHandler.END
             context.user_data["sport_type"] = sport_type_name
-            context.user_data["coach_id"] = delegate.id
+            context.user_data["coach_id"] = None
             logger.info(
-                "add_athlete_start admin delegate coach_id=%s sport=%s",
-                delegate.id,
+                "add_athlete_start admin sport=%s (no created_by / not in coach lists)",
                 sport_type_name,
             )
             await update.message.reply_text(
                 f"👤 <b>Добавление нового спортсмена</b>\n\n"
                 f"<b>Вид спорта:</b> {sport_type_name}\n"
-                f"<i>Запись будет привязана к тренеру в БД (id {delegate.id}).</i>\n\n"
+                f"<i>Без привязки к тренеру: в списке «своих» у тренеров не отображается, "
+                f"только в полном списке администратора.</i>\n\n"
                 f"Введите ФИО спортсмена:",
                 parse_mode="HTML",
             )
@@ -1040,7 +1019,7 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
             medical_info=context.user_data['medical_info'],
             sport_type=sport_type,
             age_group=age_group,
-            created_by=context.user_data['coach_id'],
+            created_by=context.user_data.get("coach_id"),
             commit=False,
         )
         subscription = db_utils_pkg.create_subscription(

@@ -265,7 +265,7 @@ def create_athlete(
     medical_info: str,
     sport_type: str,
     age_group: str,
-    created_by: int,
+    created_by: Optional[int] = None,
     birth_date: datetime = None,
     height: int = None,
     weight: int = None,
