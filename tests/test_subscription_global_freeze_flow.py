@@ -257,12 +257,16 @@ def test_deactivate_global_freeze_is_idempotent_and_sets_inactive():
     assert r1["success"] is True
     assert r1.get("already_inactive") is False
     assert r1["migrated"] == 0
+    assert r1["checked"] == 0
+    assert r1["synced"] == 0
     s.refresh(gf)
     assert gf.is_active is False
 
     r2 = deactivate_global_freeze_and_migrate(s, gf.id)
     assert r2["success"] is True
     assert r2.get("already_inactive") is True
+    assert r2["checked"] == 0
+    assert r2["synced"] == 0
     s.close()
 
 
@@ -338,6 +342,7 @@ def test_global_freeze_cycle_deactivate_then_reapply_recalculates_monthly_consis
     assert r_deact["success"] is True
     assert r_deact.get("already_inactive") is False
     assert r_deact["migrated"] >= 1
+    assert r_deact["checked"] >= 1
     assert s.query(GlobalFreeze).filter_by(id=gf_id_1).one().is_active is False
 
     s.refresh(sub)
@@ -364,4 +369,44 @@ def test_global_freeze_cycle_deactivate_then_reapply_recalculates_monthly_consis
     report = run_subscription_audit(s)
     codes = {issue["code"] for issue in report["issues"]}
     assert "overlapping_global_freezes" not in codes
+    s.close()
+
+
+def test_deactivate_global_freeze_checks_non_monthly_subscriptions_too():
+    """После деактивации выполняется контрольная синхронизация для всех затронутых типов."""
+    s, _ = _session_with_monthly_sub_and_without_any_gf()
+    coach_id = s.query(Coach).one().id
+    athlete = Athlete(
+        full_name="Single Sub Athlete",
+        sport_type="Тайский Бокс",
+        age_group="children",
+        created_by=coach_id,
+    )
+    s.add(athlete)
+    s.flush()
+    single = Subscription(
+        athlete_id=athlete.id,
+        sport_type="Тайский Бокс",
+        subscription_type="single",
+        start_date=datetime(2026, 3, 24, 18, 0),
+        end_date=datetime(2026, 3, 24, 19, 30),
+        trainings_total=1,
+        trainings_remaining=1,
+        is_active=True,
+    )
+    s.add(single)
+    s.commit()
+
+    r_apply = apply_global_freeze(
+        session=s,
+        start_date=datetime(2026, 3, 24),
+        end_date=datetime(2026, 3, 30),
+        title="mix_types",
+        created_by=1,
+    )
+    assert r_apply["success"] is True
+    r_deact = deactivate_global_freeze_and_migrate(s, r_apply["global_freeze_id"])
+    assert r_deact["success"] is True
+    # Затронуты monthly + single: проверка должна учитывать оба.
+    assert r_deact["checked"] >= 2
     s.close()

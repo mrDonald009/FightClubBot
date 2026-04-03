@@ -598,6 +598,8 @@ async def handle_gf_deact_confirm(update, context):
         context,
         f"✅ Массовая заморозка #{result['global_freeze_id']} деактивирована.\n\n"
         f"• Мигрировано абонементов (monthly): {result.get('migrated', 0)}\n"
+        f"• Проверено затронутых абонементов: {result.get('checked', 0)}\n"
+        f"• Синхронизировано остатков: {result.get('synced', 0)}\n"
         f"• Название: <b>{esc}</b>",
         parse_mode="HTML",
     )
@@ -806,6 +808,8 @@ async def deactivate_global_freeze(update, context):
             await update.message.reply_text(
                 f"✅ Массовая заморозка #{gf_id} деактивирована.\n"
                 f"• Мигрировано абонементов (monthly): {result.get('migrated', 0)}\n"
+                f"• Проверено затронутых абонементов: {result.get('checked', 0)}\n"
+                f"• Синхронизировано остатков: {result.get('synced', 0)}\n"
                 f"• Название: {result.get('title', '')}"
             )
     except Exception as e:

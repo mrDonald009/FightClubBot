@@ -1557,8 +1557,9 @@ def apply_global_freeze(
 
 def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
     """
-    Деактивировать массовую заморозку (is_active=False) и мигрировать затронутые monthly-абонементы.
-    Повторяет логику команды /global_freeze_deactivate.
+    Деактивировать массовую заморозку (is_active=False) и пересчитать затронутые абонементы.
+    - monthly: полный migrate_existing_subscription
+    - все типы: контрольная синхронизация trainings_remaining
     """
     gf = session.query(GlobalFreeze).filter_by(id=gf_id).first()
     if not gf:
@@ -1574,6 +1575,8 @@ def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
             "already_inactive": True,
             "message": f"Массовая заморозка #{gf_id} уже не активна",
             "migrated": 0,
+            "checked": 0,
+            "synced": 0,
             "title": gf.title,
             "global_freeze_id": gf_id,
         }
@@ -1590,18 +1593,29 @@ def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
     subscription_ids = [x[0] for x in subscription_ids]
 
     migrated = 0
+    checked = 0
+    synced = 0
     for sid in subscription_ids:
         sub = session.query(Subscription).filter_by(id=sid).first()
-        if not sub or sub.subscription_type != "monthly":
+        if not sub:
             continue
-        migrate_existing_subscription(session, sid)
-        migrated += 1
+        checked += 1
+        if sub.subscription_type == "monthly":
+            migrate_existing_subscription(session, sid)
+            migrated += 1
+        if sync_subscription_trainings_remaining(session, sub, reason="after_global_freeze_deactivate"):
+            synced += 1
+
+    if synced > 0:
+        session.commit()
 
     return {
         "success": True,
         "already_inactive": False,
         "message": "Деактивирована",
         "migrated": migrated,
+        "checked": checked,
+        "synced": synced,
         "title": gf.title,
         "global_freeze_id": gf_id,
     }
