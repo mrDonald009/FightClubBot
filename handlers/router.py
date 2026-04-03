@@ -335,11 +335,15 @@ def _format_global_freeze_history_html(session, limit: int = 15) -> str:
 
     lines = [f"📚 <b>История массовых заморозок</b> (последние {len(rows)}):"]
     for g in rows:
-        status = "🟢 active" if g.is_active else "⚪ inactive"
+        status = "🟢 Действует" if g.is_active else "⚪ Отключена"
         title = html.escape((g.title or "").strip() or "без названия")
         ds = g.start_date.strftime("%d.%m.%Y")
         de = g.end_date.strftime("%d.%m.%Y")
-        lines.append(f"• <code>#{g.id}</code> {status} — <b>{title}</b> ({ds}—{de})")
+        created = g.created_at.strftime("%d.%m.%Y") if g.created_at else "—"
+        initiator = str(g.created_by) if g.created_by else "не указан"
+        lines.append(f"• <b>{title}</b>")
+        lines.append(f"  {status} • {ds}—{de}")
+        lines.append(f"  Создано: {created} • Инициатор: {initiator}")
     return "\n".join(lines)
 
 
@@ -428,8 +432,30 @@ async def start_global_freeze_flow(update, context):
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Создать новую", callback_data="gf_action_create")],
             [InlineKeyboardButton("❌ Отмена массовой заморозки", callback_data="gf_action_cancel")],
+            [InlineKeyboardButton("📚 История массовых заморозок", callback_data="gf_action_history")],
         ]),
     )
+    return GF_ACTION_MENU
+
+
+async def handle_global_freeze_action_history(update, context):
+    """Показать историю массовых заморозок из меню GF."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    try:
+        with get_db_session() as session:
+            user = UserService.get_user_by_telegram_id(session, user_id)
+            if not user or get_user_role(user) not in ["coach", "admin"]:
+                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
+                return ConversationHandler.END
+            text = _format_global_freeze_history_html(session)
+    except Exception as e:
+        logger.error(f"Ошибка (gf_action_history): {e}", exc_info=True)
+        await _gf_safe_edit(update, context, "❌ Ошибка при формировании истории")
+        return ConversationHandler.END
+
+    await _gf_safe_edit(update, context, text, parse_mode="HTML")
     return GF_ACTION_MENU
 
 
@@ -491,9 +517,8 @@ async def handle_global_freeze_action_cancel(update, context):
             update,
             context,
             "📭 Нет <b>активных</b> массовых заморозок для деактивации.\n\n"
-            "Отключённые ранее записи остаются в базе как история.\n"
-            "При необходимости используйте команду:\n"
-            "<code>/global_freeze_deactivate &lt;id&gt;</code>",
+            "Отключённые ранее записи сохранены в истории.\n"
+            "Чтобы посмотреть историю, используйте: <code>/global_freeze_history</code>.",
             parse_mode="HTML",
         )
         return ConversationHandler.END
@@ -560,7 +585,6 @@ async def handle_gf_deact_pick(update, context):
         update,
         context,
         "⚠️ <b>Подтверждение деактивации</b>\n\n"
-        f"ID: <code>{gf_id}</code>\n"
         f"Название: <b>{title}</b>\n"
         f"Период: <i>{ds} — {de}</i>\n\n"
         "Деактивировать? Ограничения по массовой заморозке перестанут действовать.",
@@ -630,7 +654,7 @@ async def handle_gf_deact_confirm(update, context):
     await _gf_safe_edit(
         update,
         context,
-        f"✅ Массовая заморозка #{result['global_freeze_id']} деактивирована.\n\n"
+        f"✅ Массовая заморозка деактивирована.\n\n"
         f"• Мигрировано абонементов (monthly): {result.get('migrated', 0)}\n"
         f"• Проверено затронутых абонементов: {result.get('checked', 0)}\n"
         f"• Синхронизировано остатков: {result.get('synced', 0)}\n"
@@ -715,8 +739,9 @@ async def handle_global_freeze_title(update, context):
                 if len(overlapping) > 5:
                     oids += ", …"
                 overlap_note = (
-                    f"\n\n⚠️ Пересечение с активной GF (ID: <code>{html.escape(oids)}</code>) — "
-                    "применить нельзя. <code>/cancel</code> и заново."
+                    f"\n\n⚠️ Период пересекается с уже действующей массовой заморозкой "
+                    f"(записи: <code>{html.escape(oids)}</code>). "
+                    "Выберите другой период."
                 )
     except Exception as e:
         logger.error(f"Ошибка проверки пересечения GF перед подтверждением: {e}", exc_info=True)
@@ -861,7 +886,7 @@ async def deactivate_global_freeze(update, context):
                 logger.error("Ошибка post-deactivate аудита GF: %s", audit_exc, exc_info=True)
 
             await update.message.reply_text(
-                f"✅ Массовая заморозка #{gf_id} деактивирована.\n"
+                f"✅ Массовая заморозка деактивирована.\n"
                 f"• Мигрировано абонементов (monthly): {result.get('migrated', 0)}\n"
                 f"• Проверено затронутых абонементов: {result.get('checked', 0)}\n"
                 f"• Синхронизировано остатков: {result.get('synced', 0)}\n"
@@ -978,6 +1003,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 CallbackQueryHandler(handle_gf_deact_abort, pattern=r"^gf_deact_abort$"),
                 CallbackQueryHandler(handle_global_freeze_action_create, pattern="^gf_action_create$"),
                 CallbackQueryHandler(handle_global_freeze_action_cancel, pattern="^gf_action_cancel$"),
+                CallbackQueryHandler(handle_global_freeze_action_history, pattern="^gf_action_history$"),
             ],
             GF_START_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_global_freeze_start_date)],
             GF_END_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_global_freeze_end_date)],
@@ -996,6 +1022,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
             CallbackQueryHandler(handle_global_freeze_confirm_cancel, pattern="^gf_cancel_confirm$"),
             CallbackQueryHandler(handle_global_freeze_action_create, pattern="^gf_action_create$"),
             CallbackQueryHandler(handle_global_freeze_action_cancel, pattern="^gf_action_cancel$"),
+            CallbackQueryHandler(handle_global_freeze_action_history, pattern="^gf_action_history$"),
             CommandHandler("cancel", cancel_global_freeze),
             MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
             MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training),
@@ -1018,6 +1045,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         (handle_global_freeze_confirm_cancel, r"^gf_cancel_confirm$"),
         (handle_global_freeze_action_create, r"^gf_action_create$"),
         (handle_global_freeze_action_cancel, r"^gf_action_cancel$"),
+        (handle_global_freeze_action_history, r"^gf_action_history$"),
     ):
         registrar.register(CallbackQueryHandler(_cb, pattern=_pat))
     logger.info("✅ Зарегистрирован ConversationHandler для массовой заморозки (+ резервные callback)")
