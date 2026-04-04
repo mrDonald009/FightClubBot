@@ -23,7 +23,6 @@ from .users import (
     get_athletes_by_coach,
     get_coach_by_sport_type,
     get_coach_by_telegram_id,
-    get_delegate_coach_for_admin,
     get_user_by_telegram_id,
     get_user_role,
 )
@@ -68,7 +67,6 @@ __all__ = [
     "get_athletes_by_coach",
     "get_coach_by_sport_type",
     "get_coach_by_telegram_id",
-    "get_delegate_coach_for_admin",
     "get_user_by_telegram_id",
     "get_user_role",
     "_calculate_12th_training_date",

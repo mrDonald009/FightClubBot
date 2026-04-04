@@ -23,26 +23,6 @@ def merge_coach_telegram_ids(
     return merged
 
 
-def read_delegate_coach_telegram_id_from_env() -> Optional[int]:
-    """
-    Первый id в объединённом списке тренеров (как у Config): шаблон для сценария
-    «админ добавляет спортсмена» — тот же порядок, что и при автосоздании тренеров.
-    """
-    coach_ids: List[int] = []
-    for part in os.getenv("COACH_TELEGRAM_IDS", "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            coach_ids.append(int(part))
-        except ValueError:
-            print(f"⚠️ Пропуск невалидного id в COACH_TELEGRAM_IDS: {part!r}")
-    thai_raw = os.getenv("THAI_COACH_TELEGRAM_ID", "").strip()
-    thai_id = int(thai_raw) if thai_raw else None
-    merged = merge_coach_telegram_ids(coach_ids, thai_id)
-    return merged[0] if merged else None
-
-
 class Config:
     """Упрощенная конфигурация приложения"""
 
@@ -88,9 +68,6 @@ class Config:
         self.merged_coach_telegram_ids = merge_coach_telegram_ids(
             list(self.COACH_TELEGRAM_IDS), self.THAI_COACH_TELEGRAM_ID
         )
-        self.delegate_coach_telegram_id = (
-            self.merged_coach_telegram_ids[0] if self.merged_coach_telegram_ids else None
-        )
         self.DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database/club.db")
         self.APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
         self.TRAINING_DURATION_MINUTES = int(os.getenv("TRAINING_DURATION_MINUTES", "90"))
@@ -127,13 +104,6 @@ class Config:
                 "   ℹ️  THAI_COACH_TELEGRAM_ID устарел: задайте все id в COACH_TELEGRAM_IDS "
                 "или оставьте THAI только для обратной совместимости."
             )
-        if self.delegate_coach_telegram_id is not None:
-            print(
-                f"   Шаблон для админа при добавлении спортсмена = первый в списке тренеров: "
-                f"{self.delegate_coach_telegram_id}"
-            )
-        else:
-            print("   Шаблон для админа: нет тренеров в env")
         print(f"   БД: {self.DATABASE_URL}")
         print(f"   Таймзона: {self.APP_TIMEZONE}")
         print(f"   Длительность тренировки: {self.TRAINING_DURATION_MINUTES} мин")

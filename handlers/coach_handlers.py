@@ -1,19 +1,17 @@
 import logging
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
-from database.models import Session, Coach, Admin, Athlete, Subscription, Training, Attendance, GlobalFreeze
+from database.models import Session, Coach, Athlete, Subscription, Training, Attendance, GlobalFreeze
 from database.db_utils import (
     get_user_by_telegram_id,
     get_user_role,
     create_athlete,
-    get_delegate_coach_for_admin,
 )
 import database.db_utils as db_utils_pkg
 from typing import List, Optional, Tuple, Union
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow, ACTIVATION_GRACE_AFTER_START
 from keyboards.coach_kb import get_coach_main_menu
-from core.config import read_delegate_coach_telegram_id_from_env
 from datetime import datetime, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
@@ -23,18 +21,6 @@ import html
 
 
 logger = logging.getLogger(__name__)
-
-
-def _delegate_coach_telegram_id_for_handler(context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
-    """Делегат для сценария админа: из bot_data.config или тот же разбор env, что у Config."""
-    app = getattr(context, "application", None)
-    if app and getattr(app, "bot_data", None):
-        cfg = app.bot_data.get("config")
-        if cfg is not None:
-            tid = getattr(cfg, "delegate_coach_telegram_id", None)
-            if tid is not None:
-                return tid
-    return read_delegate_coach_telegram_id_from_env()
 
 # Лимит длины текста сообщения Telegram (с запасом под суффикс обрезки)
 TELEGRAM_MESSAGE_SAFE_LEN = 3900
@@ -132,16 +118,9 @@ def decode_athlete_list_page(callback_data: str) -> Optional[Tuple[str, int]]:
 def load_athletes_for_list(session, user) -> Tuple[List[Athlete], str]:
     """
     Спортсмены для экранов «Список спортсменов» с eager-loading абонементов
-    (избегает N+1 при обращении к current_subscription).
+    (избегает N+1 при обращении к current_subscription). Только тренер — свой список.
     """
-    if isinstance(user, Admin):
-        athletes = (
-            session.query(Athlete)
-            .options(joinedload(Athlete.subscriptions))
-            .all()
-        )
-        header = "🏃‍♂️ <b>СПИСОК СПОРТСМЕНОВ</b>\n\n"
-    elif isinstance(user, Coach):
+    if isinstance(user, Coach):
         q = (
             session.query(Athlete)
             .options(joinedload(Athlete.subscriptions))
@@ -290,7 +269,7 @@ async def coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = get_user_by_telegram_id(session, user_id)
 
-        if not user or get_user_role(user) not in ['coach', 'admin']:
+        if not user or get_user_role(user) != "coach":
             print(f"❌ У ПОЛЬЗОВАТЕЛЬ {user_id} НЕТ ДОСТУПА К МЕНЮ ТРЕНЕРА")
             await update.message.reply_text("❌ У вас нет доступа к этому меню")
             return
@@ -331,73 +310,37 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_role = get_user_role(user)
         logger.debug("add_athlete_start user_id=%s role=%s", user_id, user_role)
 
-        if user_role not in ['coach', 'admin']:
+        if user_role != "coach":
             logger.info("add_athlete_start denied: wrong role user_id=%s role=%s", user_id, user_role)
+            await update.message.reply_text(
+                "❌ Добавление спортсменов доступно только тренерам. Администратор использует своё меню."
+            )
+            return ConversationHandler.END
+
+        if not isinstance(user, Coach):
             await update.message.reply_text("❌ У вас нет прав для добавления спортсменов")
             return ConversationHandler.END
 
-        # Если тренер, автоматически определяем вид спорта из его профиля
         sport_type_name = None
-        if isinstance(user, Coach):
-            if user.sport_type_rel:
-                sport_type_name = user.sport_type_rel.name
-            elif user.sport_type:
-                sport_type_name = user.sport_type
-            if sport_type_name:
-                context.user_data['sport_type'] = sport_type_name
-                context.user_data['coach_id'] = user.id
-                logger.info("add_athlete_start ok user_id=%s sport=%s", user_id, sport_type_name)
+        if user.sport_type_rel:
+            sport_type_name = user.sport_type_rel.name
+        elif user.sport_type:
+            sport_type_name = user.sport_type
+        if sport_type_name:
+            context.user_data['sport_type'] = sport_type_name
+            context.user_data['coach_id'] = user.id
+            logger.info("add_athlete_start ok user_id=%s sport=%s", user_id, sport_type_name)
 
-                await update.message.reply_text(
-                    f"👤 <b>Добавление нового спортсмена</b>\n\n"
-                    f"<b>Вид спорта:</b> {sport_type_name}\n\n"
-                    f"Введите ФИО спортсмена:",
-                    parse_mode='HTML'
-                )
-                return ATHLETE_FULL_NAME
-            await update.message.reply_text(
-                "❌ У вас не указана спортивная специализация в профиле. Обратитесь к администратору."
-            )
-            return ConversationHandler.END
-
-        if isinstance(user, Admin):
-            # Вид спорта и слоты — как у первого тренера в объединённом списке (см. COACH_TELEGRAM_IDS / merge).
-            # created_by у нового спортсмена = NULL — в «своих» у тренеров не показывается.
-            delegate_tid = _delegate_coach_telegram_id_for_handler(context)
-            delegate = get_delegate_coach_for_admin(session, delegate_tid)
-            if not delegate:
-                await update.message.reply_text(
-                    "❌ В базе нет тренеров — добавление спортсмена недоступно. "
-                    "Задайте COACH_TELEGRAM_IDS (и при необходимости COACH_DEFAULT_SPORT_TYPE) в окружении."
-                )
-                return ConversationHandler.END
-            sport_type_name = None
-            if delegate.sport_type_rel:
-                sport_type_name = delegate.sport_type_rel.name
-            elif delegate.sport_type:
-                sport_type_name = delegate.sport_type
-            if not sport_type_name:
-                await update.message.reply_text(
-                    "❌ У тренера в базе не указана спортивная специализация."
-                )
-                return ConversationHandler.END
-            context.user_data["sport_type"] = sport_type_name
-            context.user_data["coach_id"] = None
-            logger.info(
-                "add_athlete_start admin sport=%s (no created_by / not in coach lists)",
-                sport_type_name,
-            )
             await update.message.reply_text(
                 f"👤 <b>Добавление нового спортсмена</b>\n\n"
-                f"<b>Вид спорта:</b> {sport_type_name}\n"
-                f"<i>Без привязки к тренеру: в списке «своих» у тренеров не отображается, "
-                f"только в полном списке администратора.</i>\n\n"
+                f"<b>Вид спорта:</b> {sport_type_name}\n\n"
                 f"Введите ФИО спортсмена:",
-                parse_mode="HTML",
+                parse_mode='HTML'
             )
             return ATHLETE_FULL_NAME
-
-        await update.message.reply_text("❌ У вас нет прав для добавления спортсменов")
+        await update.message.reply_text(
+            "❌ У вас не указана спортивная специализация в профиле. Обратитесь к администратору."
+        )
         return ConversationHandler.END
 
     except Exception as e:
@@ -1221,7 +1164,7 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = get_user_by_telegram_id(session, user_id)
         logger.debug("athletes_list user_id=%s found=%s type=%s", user_id, bool(user), type(user).__name__ if user else None)
 
-        if not user or get_user_role(user) not in ['coach', 'admin']:
+        if not user or get_user_role(user) != 'coach':
             if update.callback_query:
                 await update.callback_query.answer("❌ У вас нет доступа")
             else:
@@ -1362,7 +1305,7 @@ async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEF
     try:
         user = get_user_by_telegram_id(session, user_id)
 
-        if not user or get_user_role(user) not in ['coach', 'admin']:
+        if not user or get_user_role(user) != 'coach':
             if update.callback_query:
                 await update.callback_query.answer("❌ У вас нет доступа")
             return
@@ -1453,7 +1396,7 @@ async def show_athletes_list_by_filter(
     try:
         user = get_user_by_telegram_id(session, user_id)
 
-        if not user or get_user_role(user) not in ['coach', 'admin']:
+        if not user or get_user_role(user) != 'coach':
             if update.callback_query:
                 await update.callback_query.answer("❌ У вас нет доступа")
             else:
@@ -1684,7 +1627,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = get_user_by_telegram_id(session, user_id)
 
-        if not user or get_user_role(user) not in ['coach', 'admin']:
+        if not user or get_user_role(user) != 'coach':
             if query:
                 await query.edit_message_text("❌ У вас нет доступа к этому меню")
             else:
@@ -1761,7 +1704,7 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         user = get_user_by_telegram_id(session, user_id)
 
-        if not user or get_user_role(user) not in ['coach', 'admin']:
+        if not user or get_user_role(user) != 'coach':
             if update.callback_query:
                 await update.callback_query.answer("❌ У вас нет доступа")
             else:
@@ -1814,22 +1757,15 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             month_end = datetime(current_year, current_month + 1, 1)
 
-        if isinstance(user, Admin):
-            trainings = session.query(Training).filter(
-                Training.training_date >= month_start,
-                Training.training_date < month_end,
-                Training.is_cancelled == False
-            ).order_by(Training.training_date.asc()).all()
-        else:
-            query = session.query(Training).filter(
-                Training.coach_id == user.id,
-                Training.training_date >= month_start,
-                Training.training_date < month_end,
-                Training.is_cancelled == False
-            )
-            if sport_type_name:
-                query = query.filter(Training.sport_type == sport_type_name)
-            trainings = query.order_by(Training.training_date.asc()).all()
+        query = session.query(Training).filter(
+            Training.coach_id == user.id,
+            Training.training_date >= month_start,
+            Training.training_date < month_end,
+            Training.is_cancelled == False
+        )
+        if sport_type_name:
+            query = query.filter(Training.sport_type == sport_type_name)
+        trainings = query.order_by(Training.training_date.asc()).all()
 
         # Группируем тренировки по датам
         trainings_by_date = {}
@@ -1998,7 +1934,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
         date_end = datetime.combine(selected_date, datetime.max.time())
 
         user = get_user_by_telegram_id(session, user_id)
-        if not user or get_user_role(user) not in ['coach', 'admin']:
+        if not user or get_user_role(user) != 'coach':
             await query.answer("❌ У вас нет доступа")
             return
 
@@ -2015,22 +1951,15 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
 
         sport_type_name = resolve_coach_sport_type_name(user)
 
-        if isinstance(user, Admin):
-            trainings = session.query(Training).filter(
-                Training.training_date >= date_start,
-                Training.training_date <= date_end,
-                Training.is_cancelled == False
-            ).order_by(Training.training_date.asc()).all()
-        else:
-            query_filter = session.query(Training).filter(
-                Training.coach_id == user.id,
-                Training.training_date >= date_start,
-                Training.training_date <= date_end,
-                Training.is_cancelled == False
-            )
-            if sport_type_name:
-                query_filter = query_filter.filter(Training.sport_type == sport_type_name)
-            trainings = query_filter.order_by(Training.training_date.asc()).all()
+        query_filter = session.query(Training).filter(
+            Training.coach_id == user.id,
+            Training.training_date >= date_start,
+            Training.training_date <= date_end,
+            Training.is_cancelled == False
+        )
+        if sport_type_name:
+            query_filter = query_filter.filter(Training.sport_type == sport_type_name)
+        trainings = query_filter.order_by(Training.training_date.asc()).all()
 
         date_str = selected_date.strftime("%d.%m.%Y")
         message = f"<b>📅 {date_str}</b>\n\n"

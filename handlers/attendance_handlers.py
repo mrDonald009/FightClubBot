@@ -58,7 +58,7 @@ async def select_training_for_attendance(update: Update, context: ContextTypes.D
     session = Session()
     try:
         user = get_user_by_telegram_id(session, query.from_user.id)
-        if not user or get_user_role(user) not in ["coach", "admin"]:
+        if not user or get_user_role(user) != "coach":
             await query.edit_message_text("❌ У вас нет доступа к этому меню")
             return
 
@@ -99,7 +99,7 @@ async def handle_attendance_athletes_page(update: Update, context: ContextTypes.
     session = Session()
     try:
         user = get_user_by_telegram_id(session, query.from_user.id)
-        if not user or get_user_role(user) not in ["coach", "admin"]:
+        if not user or get_user_role(user) != "coach":
             await query.edit_message_text("❌ У вас нет доступа к этому меню")
             return
         training = session.query(Training).filter_by(id=training_id, is_cancelled=False).first()

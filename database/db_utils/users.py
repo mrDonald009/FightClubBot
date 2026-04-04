@@ -46,21 +46,6 @@ def get_coach_by_telegram_id(session: Session, telegram_id: int) -> Optional[Coa
     return session.query(Coach).filter_by(telegram_id=telegram_id).first()
 
 
-def get_delegate_coach_for_admin(
-    session: Session, delegate_telegram_id: Optional[int] = None
-) -> Optional[Coach]:
-    """
-    Тренер-шаблон для сценария «добавить спортсмена» под админом (created_by у нового = NULL).
-    Сначала ищем по telegram_id первого тренера из конфига (объединённый список COACH + устар. THAI),
-    иначе первый тренер в БД по id.
-    """
-    if delegate_telegram_id is not None:
-        coach = session.query(Coach).filter_by(telegram_id=delegate_telegram_id).first()
-        if coach:
-            return coach
-    return session.query(Coach).order_by(Coach.id.asc()).first()
-
-
 def get_athletes_by_coach(session: Session, coach_id: int):
     """Получить список спортсменов, созданных конкретным тренером."""
     return (
