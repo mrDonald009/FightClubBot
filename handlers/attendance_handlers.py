@@ -232,7 +232,7 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback_data)])
 
         keyboard.append([
-            InlineKeyboardButton("🔙 К тренировкам", callback_data="attendance_training_list"),
+            InlineKeyboardButton("🔙 К списку слотов", callback_data="attendance_training_list"),
             InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")
         ])
 

@@ -173,7 +173,7 @@ def load_athletes_for_list(session, user) -> Tuple[List[Athlete], str]:
 MENU_BUTTONS = [
     "👥 Добавить спортсмена",
     "📋 Список спортсменов",
-    "🏋️ Начать тренировку",
+    "📅 Отметить посещения",
     "📅 Мой календарь",
     "🌍 Массовая заморозка",
 ]
@@ -1664,7 +1664,7 @@ async def cancel_global_freeze(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Шаг 1: показать тренировки на сегодня для дальнейшей отметки посещений."""
+    """Шаг 1: слоты на сегодня для отметки посещений (после окончания занятия)."""
     from services.attendance_training_flow import build_today_attendance_slots
 
     user_id = update.effective_user.id
@@ -1672,7 +1672,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query:
         await query.answer()
 
-    logger.info("🏋️ Запрос на начало тренировки от пользователя %s", user_id)
+    logger.info("📅 Запрос на отметку посещений от пользователя %s", user_id)
     session = Session()
     try:
         user = get_user_by_telegram_id(session, user_id)
@@ -1688,14 +1688,17 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         slot_rows, virtual_slots = build_today_attendance_slots(session, user, now)
         context.user_data["attendance_virtual_slots"] = virtual_slots
 
-        message = "🏋️ <b>НАЧАТЬ ТРЕНИРОВКУ</b>\n\n"
+        message = "📅 <b>ОТМЕТИТЬ ПОСЕЩЕНИЯ</b>\n\n"
+        message += (
+            "<i>Фиксировать присутствие можно после окончания слота (по расписанию).</i>\n\n"
+        )
         if slot_rows:
             message += (
-                f"📅 Сегодня запланировано тренировок: <b>{len(slot_rows)}</b>\n\n"
-                "<b>Шаг 1/2: выберите тренировку</b>\n"
+                f"Сегодня слотов: <b>{len(slot_rows)}</b>\n\n"
+                "<b>Шаг 1/2: выберите слот</b>\n"
             )
         else:
-            message += "📅 На сегодня тренировок не запланировано.\n\n"
+            message += "На сегодня слотов не найдено.\n\n"
 
         keyboard = []
         for slot in slot_rows:

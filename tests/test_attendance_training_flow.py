@@ -1,4 +1,4 @@
-"""Unit-тесты сервиса потока «Начать тренировку» (без Telegram)."""
+"""Unit-тесты сервиса потока «Отметить посещения» (без Telegram)."""
 
 from datetime import datetime
 from types import SimpleNamespace
@@ -74,7 +74,7 @@ def test_build_step2_pagination_nav_when_many_athletes():
         training, athletes, {}, page=0, page_size=ATTENDANCE_LIST_PAGE_SIZE
     )
     assert "Всего: <b>25</b>" in msg
-    # последняя строка перед «К тренировкам» — навигация
+    # последняя строка перед «К списку слотов» — навигация
     nav_found = any(
         any("attpg_100_1" in cd for _, cd in row) for row in rows[:-1]
     )

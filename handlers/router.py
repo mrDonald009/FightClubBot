@@ -126,11 +126,6 @@ async def handle_financial_stats(update, context):
     await update.message.reply_text("💰 Функция в разработке")
 
 
-async def handle_attendance(update, context):
-    """Обработчик для отметки посещения (в разработке)."""
-    await update.message.reply_text("📅 Функция в разработке")
-
-
 async def handle_settings(update, context):
     """Обработчик для настроек (в разработке)."""
     await update.message.reply_text("⚙️ Функция в разработке")
@@ -955,9 +950,12 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     logger.info("✅ Зарегистрирован обработчик: 📋 Список спортсменов")
     registrar.register(
-        MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training)
+        MessageHandler(
+            filters.Regex("^(📅 Отметить посещение|📅 Отметить посещения)$"),
+            start_training,
+        )
     )
-    logger.info("✅ Зарегистрирован обработчик: 🏋️ Начать тренировку")
+    logger.info("✅ Зарегистрирован обработчик: 📅 Отметить посещения")
     registrar.register(
         MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar)
     )
@@ -1001,7 +999,10 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
             CallbackQueryHandler(handle_global_freeze_action_history, pattern="^gf_action_history$"),
             CommandHandler("cancel", cancel_global_freeze),
             MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
-            MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training),
+            MessageHandler(
+                filters.Regex("^(📅 Отметить посещение|📅 Отметить посещения)$"),
+                start_training,
+            ),
             MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
             MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
         ],
@@ -1066,7 +1067,10 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         fallbacks=[
             CommandHandler("cancel", cancel_athlete_creation),
             MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
-            MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training),
+            MessageHandler(
+                filters.Regex("^(📅 Отметить посещение|📅 Отметить посещения)$"),
+                start_training,
+            ),
             MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
             MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
         ],
@@ -1184,9 +1188,6 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     registrar.register(
         MessageHandler(filters.Regex("^(💰 Финансовая статистика)$"), handle_financial_stats)
-    )
-    registrar.register(
-        MessageHandler(filters.Regex("^(📅 Отметить посещение)$"), handle_attendance)
     )
     registrar.register(
         MessageHandler(filters.Regex("^(⚙️ Настройки)$"), handle_settings)

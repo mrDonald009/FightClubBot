@@ -1,5 +1,5 @@
 """
-Логика потока «Начать тренировку»: слоты на сегодня, шаг 2 (список + пагинация), проверки прав тренера.
+Логика потока «Отметить посещения»: слоты на сегодня, шаг 2 (список + пагинация), проверки прав тренера.
 """
 from __future__ import annotations
 
@@ -350,7 +350,7 @@ def build_step2_message_and_keyboard_rows(
 
     keyboard_rows.append(
         [
-            ("🔙 К тренировкам", "attendance_training_list"),
+            ("🔙 К списку слотов", "attendance_training_list"),
             ("🏠 В меню", "back_to_menu_main"),
         ]
     )
