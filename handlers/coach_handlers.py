@@ -1,5 +1,4 @@
 import logging
-import os
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 from database.models import Session, Coach, Admin, Athlete, Subscription, Training, Attendance, GlobalFreeze
@@ -14,6 +13,7 @@ from typing import List, Optional, Tuple, Union
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow, ACTIVATION_GRACE_AFTER_START
 from keyboards.coach_kb import get_coach_main_menu
+from core.config import read_delegate_coach_telegram_id_from_env
 from datetime import datetime, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import joinedload
@@ -23,6 +23,18 @@ import html
 
 
 logger = logging.getLogger(__name__)
+
+
+def _delegate_coach_telegram_id_for_handler(context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
+    """Делегат для сценария админа: из bot_data.config или тот же разбор env, что у Config."""
+    app = getattr(context, "application", None)
+    if app and getattr(app, "bot_data", None):
+        cfg = app.bot_data.get("config")
+        if cfg is not None:
+            tid = getattr(cfg, "delegate_coach_telegram_id", None)
+            if tid is not None:
+                return tid
+    return read_delegate_coach_telegram_id_from_env()
 
 # Лимит длины текста сообщения Telegram (с запасом под суффикс обрезки)
 TELEGRAM_MESSAGE_SAFE_LEN = 3900
@@ -72,22 +84,15 @@ def _coach_calendar_message_header(
     *,
     current_year: int,
     current_month: int,
-    is_admin: bool,
     sport_type_name: Optional[str],
 ) -> str:
     title = _MONTH_NAMES_RU[current_month]
     lines = [
         f"📅 <b>{html.escape(title)} {current_year}</b>",
         "",
-        "<i>Обозначения: [день] — сегодня; +день — в базе есть тренировка; "
-        "(день) — день с тренировкой по расписанию.</i>",
+        "<i>[ ] — сегодня · + — в базе · ( ) — по графику зала (день недели).</i>",
     ]
-    if is_admin and not sport_type_name:
-        lines.append(
-            "<i>Режим администратора: подсветка по общему расписанию недоступна; "
-            "символ + показывает дни, где в базе уже есть тренировки.</i>"
-        )
-    elif sport_type_name:
+    if sport_type_name:
         lines.append(f"Вид спорта: {html.escape(sport_type_name)}")
     lines.append("")
     return "\n".join(lines)
@@ -356,15 +361,14 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
 
         if isinstance(user, Admin):
-            # Вид спорта и слоты — по шаблону делегата (THAI / первый тренер), но created_by у спортсмена = NULL:
-            # в списке тренера такие не показываются, только у администратора.
-            _thai = os.getenv("THAI_COACH_TELEGRAM_ID", "").strip()
-            thai_id = int(_thai) if _thai else None
-            delegate = get_delegate_coach_for_admin(session, thai_id)
+            # Вид спорта и слоты — по шаблону делегата (ADMIN_DELEGATE / THAI / первый в COACH_TELEGRAM_IDS).
+            # created_by у нового спортсмена = NULL — в «своих» у тренеров не показывается.
+            delegate_tid = _delegate_coach_telegram_id_for_handler(context)
+            delegate = get_delegate_coach_for_admin(session, delegate_tid)
             if not delegate:
                 await update.message.reply_text(
                     "❌ В базе нет тренеров — добавление спортсмена недоступно. "
-                    "Создайте тренера или задайте THAI_COACH_TELEGRAM_ID в окружении."
+                    "Задайте COACH_TELEGRAM_IDS (и при необходимости COACH_DEFAULT_SPORT_TYPE) в окружении."
                 )
                 return ConversationHandler.END
             sport_type_name = None
@@ -1847,7 +1851,6 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
         message = _coach_calendar_message_header(
             current_year=current_year,
             current_month=current_month,
-            is_admin=isinstance(user, Admin),
             sport_type_name=sport_type_name,
         )
 

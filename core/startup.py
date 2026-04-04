@@ -1,6 +1,7 @@
 """Модуль для инициализации и стартовых задач приложения."""
 import logging
 from datetime import time
+from typing import Set
 
 from telegram.ext import Application
 
@@ -33,54 +34,30 @@ def ensure_admin_user(config: Config) -> None:
         logger.error(f"❌ Ошибка при проверке администратора: {e}", exc_info=True)
 
 
-def ensure_thai_coach_if_configured(config: Config) -> None:
-    """Автосоздание тренера «Тайский бокс» только если задан THAI_COACH_TELEGRAM_ID (не ADMIN_TELEGRAM_ID)."""
-    thai_id = getattr(config, "THAI_COACH_TELEGRAM_ID", None)
-    admin_id = getattr(config, "ADMIN_TELEGRAM_ID", None)
-    if thai_id is None:
-        logger.info("Тренер по тайскому боксу: THAI_COACH_TELEGRAM_ID не задан — пропуск автосоздания")
-        return
-    if admin_id is not None and thai_id == admin_id:
-        logger.error(
-            "THAI_COACH_TELEGRAM_ID совпадает с ADMIN_TELEGRAM_ID — укажите разные id или уберите THAI_COACH_TELEGRAM_ID"
-        )
-        return
-    try:
-        with get_db_session() as session:
-            UserService.ensure_test_coach(
-                session=session,
-                telegram_id=thai_id,
-                username="coach_thai",
-                first_name="Тренер Тайский Бокс",
-                sport_type="Тайский Бокс",
-            )
-        logger.info(f"✅ Тренер «Тайский бокс» проверен/создан: {thai_id}")
-    except ValueError as e:
-        logger.warning("Тренер «Тайский бокс» не создан: %s", e)
-    except Exception as e:
-        logger.error(f"❌ Ошибка при проверке тренера по тайскому боксу: {e}", exc_info=True)
-
-
-def ensure_coaches_from_env_list(config: Config) -> None:
+def ensure_coaches_from_merged_env(config: Config) -> None:
     """
-    Автосоздание тренеров по COACH_TELEGRAM_IDS (через запятую).
-    Вид спорта — COACH_DEFAULT_SPORT_TYPE (по умолчанию MMA).
-    Совпадение с ADMIN_TELEGRAM_ID пропускается с ошибкой в лог.
+    Автосоздание всех тренеров из объединённого списка (COACH_TELEGRAM_IDS + устар.
+    THAI_COACH_TELEGRAM_ID без дубликатов). Вид спорта — COACH_DEFAULT_SPORT_TYPE.
     """
-    ids = getattr(config, "COACH_TELEGRAM_IDS", None) or []
+    ids = getattr(config, "merged_coach_telegram_ids", None) or []
     if not ids:
-        logger.info("COACH_TELEGRAM_IDS пуст — пропуск автосоздания тренеров из списка")
+        logger.info(
+            "Тренеры: в env нет id (COACH_TELEGRAM_IDS и THAI_COACH_TELEGRAM_ID пусты) — пропуск"
+        )
         return
     admin_id = getattr(config, "ADMIN_TELEGRAM_ID", None)
     sport = getattr(config, "COACH_DEFAULT_SPORT_TYPE", "MMA") or "MMA"
-    seen: set[int] = set()
+    first_name = (
+        "Тренер Тайский Бокс" if sport and "Тайский" in sport else "Тренер"
+    )
+    processed: Set[int] = set()
     for tid in ids:
-        if tid in seen:
+        if tid in processed:
             continue
-        seen.add(tid)
+        processed.add(tid)
         if admin_id is not None and tid == admin_id:
             logger.error(
-                "COACH_TELEGRAM_IDS содержит ADMIN_TELEGRAM_ID=%s — этот id пропущен (уже админ)",
+                "telegram_id=%s совпадает с ADMIN_TELEGRAM_ID — пропуск автосоздания тренера",
                 tid,
             )
             continue
@@ -90,10 +67,10 @@ def ensure_coaches_from_env_list(config: Config) -> None:
                     session=session,
                     telegram_id=tid,
                     username=f"coach_{tid}",
-                    first_name="Тренер",
+                    first_name=first_name,
                     sport_type=sport,
                 )
-            logger.info("✅ Тренер из COACH_TELEGRAM_IDS проверен/создан: %s (%s)", tid, sport)
+            logger.info("✅ Тренер проверен/создан: %s (%s)", tid, sport)
         except ValueError as e:
             logger.warning("Тренер telegram_id=%s не создан: %s", tid, e)
         except Exception as e:
@@ -136,8 +113,7 @@ def initialize_app(config: Config) -> None:
     logger.info("🔧 Выполнение инициализационных задач...")
     
     ensure_admin_user(config)
-    ensure_thai_coach_if_configured(config)
-    ensure_coaches_from_env_list(config)
+    ensure_coaches_from_merged_env(config)
 
     # Проверяем абонементы
     check_subscriptions_on_startup()

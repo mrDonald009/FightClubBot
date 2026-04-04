@@ -61,6 +61,7 @@ class ApplicationFactory:
             Настроенное приложение
         """
         application = Application.builder().token(config.BOT_TOKEN).build()
+        application.bot_data["config"] = config
         logger.info("✅ Приложение Telegram создано")
         return application
     

@@ -47,14 +47,15 @@ def get_coach_by_telegram_id(session: Session, telegram_id: int) -> Optional[Coa
 
 
 def get_delegate_coach_for_admin(
-    session: Session, thai_coach_telegram_id: Optional[int] = None
+    session: Session, delegate_telegram_id: Optional[int] = None
 ) -> Optional[Coach]:
     """
-    Тренер для привязки нового спортсмена, когда действует админ без своей строки coaches.
-    Сначала тренер с telegram_id == THAI_COACH_TELEGRAM_ID, иначе первый тренер по id.
+    Тренер-шаблон для сценария «добавить спортсмена» под админом (created_by у нового = NULL).
+    Сначала ищем по telegram_id делегата (ADMIN_DELEGATE / устар. THAI / первый в COACH_TELEGRAM_IDS),
+    иначе первый тренер в БД по id.
     """
-    if thai_coach_telegram_id is not None:
-        coach = session.query(Coach).filter_by(telegram_id=thai_coach_telegram_id).first()
+    if delegate_telegram_id is not None:
+        coach = session.query(Coach).filter_by(telegram_id=delegate_telegram_id).first()
         if coach:
             return coach
     return session.query(Coach).order_by(Coach.id.asc()).first()
