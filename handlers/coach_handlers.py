@@ -1664,8 +1664,11 @@ async def cancel_global_freeze(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Шаг 1: слоты на сегодня для отметки посещений (после окончания занятия)."""
-    from services.attendance_training_flow import build_today_attendance_slots
+    """Шаг 1: список тренировок на сегодня для отметки посещений."""
+    from services.attendance_training_flow import (
+        build_today_attendance_slots,
+        format_today_trainings_count_ru,
+    )
 
     user_id = update.effective_user.id
     query = update.callback_query
@@ -1690,15 +1693,20 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         message = "📝 <b>ОТМЕТИТЬ ПОСЕЩЕНИЯ</b>\n\n"
         message += (
-            "<i>Фиксировать присутствие можно после окончания слота (по расписанию).</i>\n\n"
+            "<i>Кто пришёл на занятие, отмечайте <b>после его окончания</b>: бот смотрит на время "
+            "тренировки и не даст поставить отметку слишком рано.</i>\n\n"
         )
         if slot_rows:
+            cnt = format_today_trainings_count_ru(len(slot_rows))
             message += (
-                f"Сегодня слотов: <b>{len(slot_rows)}</b>\n\n"
-                "<b>Шаг 1/2: выберите слот</b>\n"
+                f"Сегодня в списке: <b>{cnt}</b>.\n\n"
+                "<b>Шаг 1 из 2</b> — выберите тренировку по времени и группе:\n"
             )
         else:
-            message += "На сегодня слотов не найдено.\n\n"
+            message += (
+                "Сегодня в этом списке пока пусто.\n"
+                "Если занятие уже есть в «📅 Мой календарь», нажмите «🔄 Обновить».\n\n"
+            )
 
         keyboard = []
         for slot in slot_rows:
@@ -1736,7 +1744,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_attendance_training_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обновить экран выбора тренировки для отметки посещений."""
+    """Снова показать список тренировок на сегодня (кнопка «Обновить» или «назад»)."""
     await start_training(update, context)
 
 

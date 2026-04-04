@@ -10,6 +10,7 @@ from services.attendance_training_flow import (
     ATTENDANCE_LIST_PAGE_SIZE,
     build_step2_message_and_keyboard_rows,
     coach_training_access_error,
+    format_today_trainings_count_ru,
     parse_attendance_page_callback,
 )
 
@@ -45,7 +46,7 @@ def test_coach_training_access_error_wrong_coach():
     ):
         err = coach_training_access_error(coach, training)
         assert err is not None
-        assert "только свои" in err.lower() or "свои" in err
+        assert "ваши" in err.lower() or "тренером" in err.lower()
 
 
 def test_coach_training_access_error_sport_mismatch():
@@ -73,8 +74,8 @@ def test_build_step2_pagination_nav_when_many_athletes():
     msg, rows = build_step2_message_and_keyboard_rows(
         training, athletes, {}, page=0, page_size=ATTENDANCE_LIST_PAGE_SIZE
     )
-    assert "Всего: <b>25</b>" in msg
-    # последняя строка перед «К списку слотов» — навигация
+    assert "Спортсменов в списке: <b>25</b>" in msg
+    # последняя строка перед «К тренировкам на сегодня» — навигация
     nav_found = any(
         any("attpg_100_1" in cd for _, cd in row) for row in rows[:-1]
     )
@@ -92,5 +93,19 @@ def test_build_step2_no_nav_when_few_athletes():
     )
     athletes = [SimpleNamespace(id=1, full_name="Иванов Иван")]
     msg, rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
-    assert "Всего: <b>1</b>" in msg
+    assert "Спортсменов в списке: <b>1</b>" in msg
     assert not any("attpg_" in str(row) for row in rows[:-1])
+
+
+@pytest.mark.parametrize(
+    "n,expected_suffix",
+    [
+        (1, "1 тренировка"),
+        (2, "2 тренировки"),
+        (5, "5 тренировок"),
+        (11, "11 тренировок"),
+        (22, "22 тренировки"),
+    ],
+)
+def test_format_today_trainings_count_ru(n, expected_suffix):
+    assert format_today_trainings_count_ru(n) == expected_suffix

@@ -121,7 +121,10 @@ async def handle_attendance_athletes_page(update: Update, context: ContextTypes.
 async def handle_attendance_page_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подсказка по кнопке номера страницы."""
     query = update.callback_query
-    await query.answer("Листайте список кнопками ◀️ и ▶️", show_alert=False)
+    await query.answer(
+        "Это номер страницы. Листайте список кнопками «Пред.» и «След.».",
+        show_alert=False,
+    )
 
 
 async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -177,8 +180,8 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(
                 "📝 <b>ОТМЕТКА ПОСЕЩЕНИЯ</b>\n\n"
                 f"👤 <b>{html.escape(athlete.full_name)}</b>\n"
-                f"📅 {training.training_date.strftime('%d.%m.%Y %H:%M')}\n\n"
-                "Выберите статус посещения:",
+                f"📅 Тренировка: {training.training_date.strftime('%d.%m.%Y %H:%M')}\n\n"
+                "Был на этом занятии или нет?",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='HTML'
             )
@@ -210,7 +213,7 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
         message += f"🥊 {athlete.sport_type} | {'Детская' if athlete.age_group == 'children' else 'Взрослая'}\n"
         message += f"🎫 Абонемент #{athlete.current_subscription.id}\n"
         message += f"🏋️ Осталось тренировок: {athlete.current_subscription.trainings_remaining}\n\n"
-        message += f"<b>ВЫБЕРИТЕ ТРЕНИРОВКУ:</b>\n"
+        message += "<b>Выберите тренировку для отметки:</b>\n"
 
         keyboard = []
 
@@ -232,7 +235,7 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback_data)])
 
         keyboard.append([
-            InlineKeyboardButton("🔙 К списку слотов", callback_data="attendance_training_list"),
+            InlineKeyboardButton("🔙 К тренировкам на сегодня", callback_data="attendance_training_list"),
             InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")
         ])
 
@@ -277,7 +280,7 @@ async def handle_training_selection(update: Update, context: ContextTypes.DEFAUL
 
     await query.edit_message_text(
         "📝 <b>ОТМЕТКА ПОСЕЩЕНИЯ</b>\n\n"
-        "Выберите статус посещения:",
+        "Был спортсмен на выбранной тренировке или нет?",
         reply_markup=reply_markup,
         parse_mode='HTML'
     )
@@ -355,10 +358,11 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
         current_time = now_moscow()
         if current_time < training_end_datetime:
             await query.edit_message_text(
-                f"⏳ Тренировка еще не завершилась.\n\n"
-                f"Начало: {training.training_date.strftime('%d.%m.%Y %H:%M')}\n"
-                f"Окончание: {training_end_datetime.strftime('%d.%m.%Y %H:%M')}\n\n"
-                f"Отметка посещения возможна только после завершения тренировки."
+                "⏳ Пока рано ставить отметку.\n\n"
+                f"Начало занятия: {training.training_date.strftime('%d.%m.%Y %H:%M')}\n"
+                f"Ориентир «можно отмечать»: после {training_end_datetime.strftime('%d.%m.%Y %H:%M')}\n\n"
+                "<i>Так сделано, чтобы не отмечать людей до фактического окончания пары.</i>",
+                parse_mode="HTML",
             )
             return
 

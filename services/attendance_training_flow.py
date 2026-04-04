@@ -1,5 +1,5 @@
 """
-Логика потока «Отметить посещения»: слоты на сегодня, шаг 2 (список + пагинация), проверки прав тренера.
+Поток «Отметить посещения»: тренировки на сегодня (шаг 1), список спортсменов и отметки (шаг 2).
 """
 from __future__ import annotations
 
@@ -18,6 +18,18 @@ from utils.time_utils import now_moscow
 
 # Размер страницы списка спортсменов на шаге 2 (inline-кнопки Telegram)
 ATTENDANCE_LIST_PAGE_SIZE = 20
+
+
+def format_today_trainings_count_ru(count: int) -> str:
+    """Склонение «N тренировка/тренировки/тренировок» для текста тренеру."""
+    n = abs(int(count))
+    if n % 10 == 1 and n % 100 != 11:
+        word = "тренировка"
+    elif n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        word = "тренировки"
+    else:
+        word = "тренировок"
+    return f"{n} {word}"
 
 
 @dataclass(frozen=True)
@@ -48,10 +60,10 @@ def coach_training_access_error(user: Any, training: Training) -> Optional[str]:
     if not user or get_user_role(user) != "coach":
         return None
     if training.coach_id != user.id:
-        return "❌ Можно выбирать только свои тренировки"
+        return "❌ Здесь только ваши тренировки. Выберите занятие, где вы указаны тренером."
     coach_sport = get_coach_sport_type_name(user)
     if coach_sport and training.sport_type != coach_sport:
-        return "❌ Эта тренировка не относится к вашему виду спорта"
+        return f"❌ Это занятие по другому виду спорта ({training.sport_type}). Отметки — по вашему направлению."
     return None
 
 
@@ -61,8 +73,8 @@ def build_today_attendance_slots(
     now: datetime,
 ) -> Tuple[List[TodaySlotDisplay], Dict[str, Dict[str, Any]]]:
     """
-    Слоты на сегодня: из БД + недостающие по расписанию (виртуальные).
-    Возвращает отсортированный список для UI и словарь токенов для callback.
+    Тренировки на сегодня для шага 1: из БД + строки по расписанию, если записи ещё нет.
+    Возвращает отсортированный список для UI и словарь токенов для callback виртуальных строк.
     """
     today_start = datetime(now.year, now.month, now.day)
     today_end = today_start + timedelta(days=1)
@@ -198,7 +210,10 @@ def resolve_training_from_attendance_callback(
         token = data.replace("select_mark_training_virtual_", "")
         slot = virtual_slots.get(token)
         if not slot:
-            return None, False, "❌ Некорректные данные тренировки"
+            return None, False, (
+                "❌ Список устарел.\n\n"
+                "Нажмите «🔄 Обновить» на этом экране или снова «📝 Отметить посещения» в меню."
+            )
         sport_type = slot.get("sport_type")
         age_group = slot.get("age_group")
         hour = slot.get("hour")
@@ -210,7 +225,7 @@ def resolve_training_from_attendance_callback(
             or not isinstance(hour, int)
             or not isinstance(minute, int)
         ):
-            return None, False, "❌ Некорректные данные тренировки"
+            return None, False, "❌ Не удалось открыть тренировку. Попробуйте «🔄 Обновить» или напишите администратору."
         today = now_moscow()
         training_dt = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
         q = session.query(Training).filter_by(
@@ -238,14 +253,14 @@ def resolve_training_from_attendance_callback(
         return training, True, None
 
     if not data.startswith("select_mark_training_"):
-        return None, False, "❌ Некорректный запрос"
+        return None, False, "❌ Запрос не распознан. Откройте «📝 Отметить посещения» заново."
     try:
         training_id = int(data.replace("select_mark_training_", ""))
     except ValueError:
-        return None, False, "❌ Некорректный запрос"
+        return None, False, "❌ Запрос не распознан. Откройте «📝 Отметить посещения» заново."
     training = session.query(Training).filter_by(id=training_id, is_cancelled=False).first()
     if not training:
-        return None, False, "❌ Тренировка не найдена или отменена"
+        return None, False, "❌ Такой тренировки нет или она отменена. Обновите список кнопкой «🔄 Обновить»."
     return training, False, None
 
 
@@ -298,7 +313,7 @@ def build_step2_message_and_keyboard_rows(
     absent_count = marked_count - attended_count
     pending_count = total_count - marked_count
 
-    age_group_ru = "Детская" if training.age_group == "children" else "Взрослая"
+    age_group_ru = "детская группа" if training.age_group == "children" else "взрослая группа"
     parts = [
         "📝 <b>ОТМЕТКА ПОСЕЩЕНИЯ</b>\n\n",
     ]
@@ -306,15 +321,16 @@ def build_step2_message_and_keyboard_rows(
         parts.append(flash_html + "\n\n")
     parts.extend(
         [
-            f"📅 Тренировка: <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b>\n",
-            f"🥊 {html.escape(training.sport_type)} | {age_group_ru}\n",
-            f"👥 Всего: <b>{total_count}</b> | Отмечено: <b>{marked_count}</b> | Осталось: <b>{pending_count}</b>\n",
-            f"✅ Присутствовали: <b>{attended_count}</b> | ❌ Отсутствовали: <b>{absent_count}</b>\n\n",
-            "<b>Шаг 2/2: выберите спортсмена</b>",
+            f"📅 <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b> — "
+            f"{html.escape(training.sport_type)}, {age_group_ru}\n",
+            f"👥 Спортсменов в списке: <b>{total_count}</b> | Уже отмечено: <b>{marked_count}</b> | "
+            f"Без отметки: <b>{pending_count}</b>\n",
+            f"✅ Были: <b>{attended_count}</b> | ❌ Не были: <b>{absent_count}</b>\n\n",
+            "<b>Шаг 2 из 2</b> — нажмите на фамилию, затем «был» или «не был».",
         ]
     )
     if not athletes:
-        parts.append("\n\n📭 На эту тренировку нет активных спортсменов.")
+        parts.append("\n\n📭 На это время нет спортсменов с подходящим абонементом.")
 
     message = "".join(parts)
 
@@ -350,7 +366,7 @@ def build_step2_message_and_keyboard_rows(
 
     keyboard_rows.append(
         [
-            ("🔙 К списку слотов", "attendance_training_list"),
+            ("🔙 К тренировкам на сегодня", "attendance_training_list"),
             ("🏠 В меню", "back_to_menu_main"),
         ]
     )
