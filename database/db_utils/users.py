@@ -51,7 +51,7 @@ def get_delegate_coach_for_admin(
 ) -> Optional[Coach]:
     """
     Тренер-шаблон для сценария «добавить спортсмена» под админом (created_by у нового = NULL).
-    Сначала ищем по telegram_id делегата (ADMIN_DELEGATE / устар. THAI / первый в COACH_TELEGRAM_IDS),
+    Сначала ищем по telegram_id первого тренера из конфига (объединённый список COACH + устар. THAI),
     иначе первый тренер в БД по id.
     """
     if delegate_telegram_id is not None:

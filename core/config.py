@@ -23,26 +23,11 @@ def merge_coach_telegram_ids(
     return merged
 
 
-def resolve_delegate_coach_telegram_id(
-    admin_delegate_explicit: Optional[int],
-    thai_coach_telegram_id: Optional[int],
-    merged_coach_ids: List[int],
-) -> Optional[int]:
-    """
-    Какой тренер — шаблон при добавлении спортсмена админом.
-    Явный ADMIN_DELEGATE_COACH_TELEGRAM_ID > устар. THAI > первый в объединённом списке.
-    """
-    if admin_delegate_explicit is not None:
-        return admin_delegate_explicit
-    if thai_coach_telegram_id is not None:
-        return thai_coach_telegram_id
-    if merged_coach_ids:
-        return merged_coach_ids[0]
-    return None
-
-
 def read_delegate_coach_telegram_id_from_env() -> Optional[int]:
-    """Если нет application.bot_data['config'] (тесты): тот же алгоритм, что у Config."""
+    """
+    Первый id в объединённом списке тренеров (как у Config): шаблон для сценария
+    «админ добавляет спортсмена» — тот же порядок, что и при автосоздании тренеров.
+    """
     coach_ids: List[int] = []
     for part in os.getenv("COACH_TELEGRAM_IDS", "").split(","):
         part = part.strip()
@@ -54,10 +39,8 @@ def read_delegate_coach_telegram_id_from_env() -> Optional[int]:
             print(f"⚠️ Пропуск невалидного id в COACH_TELEGRAM_IDS: {part!r}")
     thai_raw = os.getenv("THAI_COACH_TELEGRAM_ID", "").strip()
     thai_id = int(thai_raw) if thai_raw else None
-    del_raw = os.getenv("ADMIN_DELEGATE_COACH_TELEGRAM_ID", "").strip()
-    explicit = int(del_raw) if del_raw else None
     merged = merge_coach_telegram_ids(coach_ids, thai_id)
-    return resolve_delegate_coach_telegram_id(explicit, thai_id, merged)
+    return merged[0] if merged else None
 
 
 class Config:
@@ -102,15 +85,11 @@ class Config:
         self.COACH_DEFAULT_SPORT_TYPE = (
             os.getenv("COACH_DEFAULT_SPORT_TYPE", "MMA").strip() or "MMA"
         )
-        _delegate_raw = os.getenv("ADMIN_DELEGATE_COACH_TELEGRAM_ID", "").strip()
-        self._admin_delegate_explicit = int(_delegate_raw) if _delegate_raw else None
         self.merged_coach_telegram_ids = merge_coach_telegram_ids(
             list(self.COACH_TELEGRAM_IDS), self.THAI_COACH_TELEGRAM_ID
         )
-        self.delegate_coach_telegram_id = resolve_delegate_coach_telegram_id(
-            self._admin_delegate_explicit,
-            self.THAI_COACH_TELEGRAM_ID,
-            self.merged_coach_telegram_ids,
+        self.delegate_coach_telegram_id = (
+            self.merged_coach_telegram_ids[0] if self.merged_coach_telegram_ids else None
         )
         self.DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database/club.db")
         self.APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
@@ -150,11 +129,11 @@ class Config:
             )
         if self.delegate_coach_telegram_id is not None:
             print(
-                f"   Делегат админа при добавлении спортсмена (telegram_id): "
+                f"   Шаблон для админа при добавлении спортсмена = первый в списке тренеров: "
                 f"{self.delegate_coach_telegram_id}"
             )
         else:
-            print("   Делегат админа: не задан (нет ни одного id тренера в env)")
+            print("   Шаблон для админа: нет тренеров в env")
         print(f"   БД: {self.DATABASE_URL}")
         print(f"   Таймзона: {self.APP_TIMEZONE}")
         print(f"   Длительность тренировки: {self.TRAINING_DURATION_MINUTES} мин")

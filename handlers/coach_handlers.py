@@ -361,7 +361,7 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
 
         if isinstance(user, Admin):
-            # Вид спорта и слоты — по шаблону делегата (ADMIN_DELEGATE / THAI / первый в COACH_TELEGRAM_IDS).
+            # Вид спорта и слоты — как у первого тренера в объединённом списке (см. COACH_TELEGRAM_IDS / merge).
             # created_by у нового спортсмена = NULL — в «своих» у тренеров не показывается.
             delegate_tid = _delegate_coach_telegram_id_for_handler(context)
             delegate = get_delegate_coach_for_admin(session, delegate_tid)
