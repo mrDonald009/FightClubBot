@@ -951,11 +951,13 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     logger.info("✅ Зарегистрирован обработчик: 📋 Список спортсменов")
     registrar.register(
         MessageHandler(
-            filters.Regex("^(📅 Отметить посещение|📅 Отметить посещения)$"),
+            filters.Regex(
+                "^(📅 Отметить посещение|📅 Отметить посещения|📝 Отметить посещения)$"
+            ),
             start_training,
         )
     )
-    logger.info("✅ Зарегистрирован обработчик: 📅 Отметить посещения")
+    logger.info("✅ Зарегистрирован обработчик: 📝 Отметить посещения")
     registrar.register(
         MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar)
     )
@@ -1000,7 +1002,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
             CommandHandler("cancel", cancel_global_freeze),
             MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
             MessageHandler(
-                filters.Regex("^(📅 Отметить посещение|📅 Отметить посещения)$"),
+                filters.Regex(
+                    "^(📅 Отметить посещение|📅 Отметить посещения|📝 Отметить посещения)$"
+                ),
                 start_training,
             ),
             MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
@@ -1068,7 +1072,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
             CommandHandler("cancel", cancel_athlete_creation),
             MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
             MessageHandler(
-                filters.Regex("^(📅 Отметить посещение|📅 Отметить посещения)$"),
+                filters.Regex(
+                    "^(📅 Отметить посещение|📅 Отметить посещения|📝 Отметить посещения)$"
+                ),
                 start_training,
             ),
             MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),

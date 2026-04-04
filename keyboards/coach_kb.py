@@ -6,7 +6,7 @@ def get_coach_main_menu():
     """Главное меню тренера"""
     keyboard = [
         [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
-        [KeyboardButton("📅 Отметить посещения"), KeyboardButton("📅 Мой календарь")],
+        [KeyboardButton("📝 Отметить посещения"), KeyboardButton("📅 Мой календарь")],
         [KeyboardButton("🌍 Массовая заморозка")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)

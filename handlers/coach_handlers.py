@@ -173,7 +173,7 @@ def load_athletes_for_list(session, user) -> Tuple[List[Athlete], str]:
 MENU_BUTTONS = [
     "👥 Добавить спортсмена",
     "📋 Список спортсменов",
-    "📅 Отметить посещения",
+    "📝 Отметить посещения",
     "📅 Мой календарь",
     "🌍 Массовая заморозка",
 ]
@@ -1672,7 +1672,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query:
         await query.answer()
 
-    logger.info("📅 Запрос на отметку посещений от пользователя %s", user_id)
+    logger.info("📝 Запрос на отметку посещений от пользователя %s", user_id)
     session = Session()
     try:
         user = get_user_by_telegram_id(session, user_id)
@@ -1688,7 +1688,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         slot_rows, virtual_slots = build_today_attendance_slots(session, user, now)
         context.user_data["attendance_virtual_slots"] = virtual_slots
 
-        message = "📅 <b>ОТМЕТИТЬ ПОСЕЩЕНИЯ</b>\n\n"
+        message = "📝 <b>ОТМЕТИТЬ ПОСЕЩЕНИЯ</b>\n\n"
         message += (
             "<i>Фиксировать присутствие можно после окончания слота (по расписанию).</i>\n\n"
         )
