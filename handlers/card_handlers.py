@@ -17,9 +17,10 @@ from database.db_utils import (
     parse_training_datetime_compact,
     now_moscow,
 )
-from typing import Union
+from typing import Optional, Union
 import html
 from utils.training_manager import TrainingManager
+from utils.discipline_keys import format_training_format_ru
 from utils.subscription_checker import SubscriptionChecker
 from utils.subscription_resolve import (
     active_subscriptions_all,
@@ -45,13 +46,13 @@ def get_coach_sport_type(user: Union[Coach, Admin]) -> str:
     return None
 
 
-def _format_subscription_type_ru(subscription_type: str) -> str:
-    """Отобразить тип абонемента по-русски (включая неопределенный)."""
+def _format_subscription_type_ru(subscription_type: Optional[str]) -> str:
+    """Отобразить тип абонемента по-русски (месячный / разовый; до активации может быть NULL)."""
     if subscription_type == "monthly":
         return "Месячный"
     if subscription_type == "single":
         return "Разовый"
-    return "Тип не определен"
+    return "Не указан"
 
 
 def _format_dt(dt: datetime) -> str:
@@ -840,8 +841,10 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
 
         message += f"<b>📋 ИНФОРМАЦИЯ</b>\n"
         message += f"• Вид спорта: {subscription.sport_type or '—'}\n"
-        message += f"• Группа: {age_group_display}\n"
-        
+        message += f"• Возрастная группа: {age_group_display}\n"
+        dk = getattr(subscription, "discipline_key", None)
+        message += f"• Формат занятий: {format_training_format_ru(dk)}\n"
+
         sub_type_display = _format_subscription_type_ru(subscription.subscription_type)
         message += f"• Тип абонемента: {sub_type_display}\n"
 
@@ -1061,9 +1064,20 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
             filled = int(usage_percent * progress_length / 100)
             progress_bar = "█" * filled + "░" * (progress_length - filled)
 
+            age_group_display = (
+                "Детская"
+                if athlete.age_group == "children"
+                else "Взрослая"
+                if athlete.age_group
+                else "Не указана"
+            )
+            dk = getattr(subscription, "discipline_key", None)
+
             message_text += f"<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
+            message_text += f"• Возрастная группа: {age_group_display}\n"
+            message_text += f"• Формат занятий: {format_training_format_ru(dk)}\n"
             sub_type_display = _format_subscription_type_ru(subscription.subscription_type)
-            message_text += f"• Тип: {sub_type_display}\n"
+            message_text += f"• Тип абонемента: {sub_type_display}\n"
 
             status_display = _format_subscription_status_ui(subscription)
             message_text += f"• Статус: {status_display}\n"
@@ -1232,12 +1246,14 @@ async def show_my_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYP
             trainings = f"{trainings_remaining}/{trainings_total}" if trainings_total else "—/—"
             if subscription.total_restored > 0:
                 trainings += f" (🔄 +{subscription.total_restored})"
-            sub_type = "Месячный" if subscription.subscription_type == "monthly" else "Разовый" if subscription.subscription_type == "single" else "Тип не определен"
+            sub_type = _format_subscription_type_ru(subscription.subscription_type)
+            dk = getattr(subscription, "discipline_key", None)
             end_date = _format_dt(subscription.end_date)
             freeze_note = _freeze_note(subscription)
             
             message_text += f"• Статус: {status_display}\n"
-            message_text += f"• Тип: {sub_type}\n"
+            message_text += f"• Формат занятий: {format_training_format_ru(dk)}\n"
+            message_text += f"• Тип абонемента: {sub_type}\n"
             message_text += f"• Тренировки: {trainings}\n"
             message_text += f"• Действует до: {end_date}{freeze_note}\n"
             
@@ -1383,7 +1399,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             
             # Добавляем информацию в сообщение
             message += f"<b>{idx}. Абонемент #{sub.id}</b> {status_icon}\n"
-            message += f"   Тип: {sub_type}\n"
+            message += f"   Тип абонемента: {sub_type}\n"
             message += f"   Период: {start_date_str} — {end_date_str}\n"
             
             message += f"   Статус: {status_text}\n"
@@ -1486,9 +1502,21 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
         message = f"🎫 <b>АБОНЕМЕНТ #{subscription.id}</b>\n\n"
         message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
         
+        age_group_display = (
+            "Детская"
+            if athlete.age_group == "children"
+            else "Взрослая"
+            if athlete.age_group
+            else "Не указана"
+        )
+        dk = getattr(subscription, "discipline_key", None)
+
         message += f"<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
+        message += f"• Вид спорта: {subscription.sport_type or '—'}\n"
+        message += f"• Возрастная группа: {age_group_display}\n"
+        message += f"• Формат занятий: {format_training_format_ru(dk)}\n"
         sub_type_display = _format_subscription_type_ru(subscription.subscription_type)
-        message += f"• Тип: {sub_type_display}\n"
+        message += f"• Тип абонемента: {sub_type_display}\n"
         
         # Единый статус
         status_display = _format_subscription_status_ui(subscription)

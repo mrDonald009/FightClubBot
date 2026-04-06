@@ -1,6 +1,9 @@
 """Ключи направлений абонемента: (вид спорта × формат group|individual)."""
 
+from __future__ import annotations
+
 import re
+from typing import Optional
 
 # Стабильные ключи для продуктовых направлений
 THAI_BOXING_GROUP = "thai_boxing_group"
@@ -45,3 +48,17 @@ def discipline_key_for(sport_type: str, *, format: str = "group") -> str:
 def default_group_key_for_subscription_sport(sport_type: str) -> str:
     """Для миграции и потока «только группа» без явного format."""
     return discipline_key_for(sport_type, format="group")
+
+
+def format_training_format_ru(discipline_key: Optional[str]) -> str:
+    """Человекочитаемый формат занятий по ключу направления (групповые / индивидуальные)."""
+    if not discipline_key or not str(discipline_key).strip():
+        return "—"
+    key = str(discipline_key).strip().lower()
+    if key.endswith("_individual") or "_individual" in key:
+        return "Индивидуальные"
+    if key.endswith("_group"):
+        return "Групповые"
+    if "individual" in key:
+        return "Индивидуальные"
+    return "—"
