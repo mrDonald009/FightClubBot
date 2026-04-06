@@ -14,6 +14,9 @@ from utils.time_utils import APP_TZ
 
 logger = logging.getLogger(__name__)
 
+# Вид спорта в БД для списка THAI_COACH_TELEGRAM_IDS
+THAI_COACH_SPORT_TYPE = "Тайский Бокс"
+
 
 def ensure_admin_user(config: Config) -> None:
     """Создать/проверить запись администратора по ADMIN_TELEGRAM_ID."""
@@ -36,31 +39,31 @@ def ensure_admin_user(config: Config) -> None:
 
 def ensure_coaches_from_merged_env(config: Config) -> None:
     """
-    Автосоздание всех тренеров из объединённого списка (COACH_TELEGRAM_IDS + устар.
-    THAI_COACH_TELEGRAM_ID без дубликатов). Вид спорта — COACH_DEFAULT_SPORT_TYPE.
+    Автосоздание/обновление тренеров из env.
+
+    - merged_thai_coach_telegram_ids (THAI_COACH_TELEGRAM_IDS + THAI_COACH_TELEGRAM_ID) —
+      вид спорта всегда «Тайский Бокс».
+    - MMA_COACH_TELEGRAM_IDS — всегда MMA; обрабатывается после тайского списка,
+      чтобы перезаписать вид спорта, если id ошибочно указан в обоих местах.
     """
-    ids = getattr(config, "merged_coach_telegram_ids", None) or []
-    if not ids:
+    ids = getattr(config, "merged_thai_coach_telegram_ids", None) or []
+    mma_ids = getattr(config, "MMA_COACH_TELEGRAM_IDS", None) or []
+    if not ids and not mma_ids:
         logger.info(
-            "Тренеры: в env нет id (COACH_TELEGRAM_IDS и THAI_COACH_TELEGRAM_ID пусты) — пропуск"
+            "Тренеры: тайский список и MMA_COACH_TELEGRAM_IDS пусты — пропуск"
         )
         return
+
     admin_id = getattr(config, "ADMIN_TELEGRAM_ID", None)
-    sport = getattr(config, "COACH_DEFAULT_SPORT_TYPE", "MMA") or "MMA"
-    first_name = (
-        "Тренер Тайский Бокс" if sport and "Тайский" in sport else "Тренер"
-    )
-    processed: Set[int] = set()
-    for tid in ids:
-        if tid in processed:
-            continue
-        processed.add(tid)
+    first_name_thai = "Тренер Тайский Бокс"
+
+    def _ensure_one(tid: int, sport: str, first_name: str) -> None:
         if admin_id is not None and tid == admin_id:
             logger.error(
                 "telegram_id=%s совпадает с ADMIN_TELEGRAM_ID — пропуск автосоздания тренера",
                 tid,
             )
-            continue
+            return
         try:
             with get_db_session() as session:
                 UserService.ensure_test_coach(
@@ -80,6 +83,21 @@ def ensure_coaches_from_merged_env(config: Config) -> None:
                 e,
                 exc_info=True,
             )
+
+    processed: Set[int] = set()
+    for tid in ids:
+        if tid in processed:
+            continue
+        processed.add(tid)
+        _ensure_one(tid, THAI_COACH_SPORT_TYPE, first_name_thai)
+
+    for tid in mma_ids:
+        if tid in processed:
+            logger.info(
+                "telegram_id=%s также в списке тайских тренеров — выставляем MMA",
+                tid,
+            )
+        _ensure_one(tid, "MMA", "Тренер ММА")
 
 
 def check_subscriptions_on_startup() -> int:

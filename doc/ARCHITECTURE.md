@@ -56,8 +56,8 @@
 Задаются в `.env` / окружении, читаются в `core/config.py`:
 
 - **`BOT_TOKEN`** — токен Telegram-бота.
-- **`ADMIN_TELEGRAM_ID`** — Telegram ID администратора.
-- **`THAI_COACH_TELEGRAM_ID`** — опционально; тренер по умолчанию при создании спортсмена от админа без своей строки в `coaches`.
+- **`ADMIN_TELEGRAM_ID`** — Telegram ID администратора. Не должен совпадать с id из **`MMA_COACH_TELEGRAM_IDS`** (и вообще с id тренера в этих списках), иначе для этого пользователя пропускается автосоздание тренера при старте.
+- **`THAI_COACH_TELEGRAM_IDS`**, **`MMA_COACH_TELEGRAM_IDS`** — списки telegram id тренеров для автосоздания при старте (виды спорта «Тайский Бокс» и MMA). Опционально одиночный **`THAI_COACH_TELEGRAM_ID`** (доп. к списку тайских).
 - **`DATABASE_URL`**, **`APP_TIMEZONE`**, **`TRAINING_DURATION_MINUTES`**, **`ACTIVATION_GRACE_AFTER_START_MINUTES`** — БД и правила времени тренировок/активации.
 
 Полный список см. в `core/config.py`.

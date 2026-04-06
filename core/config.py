@@ -8,9 +8,9 @@ def merge_coach_telegram_ids(
     thai_coach_telegram_id: Optional[int],
 ) -> List[int]:
     """
-    Единый порядок id тренеров для автосоздания при старте.
-    Сначала все из COACH_TELEGRAM_IDS (как в env), затем THAI_COACH_TELEGRAM_ID
-    в начало списка, если задан и ещё не встречался (обратная совместимость).
+    Порядок id тренеров тайского бокса при старте.
+    Сначала все из THAI_COACH_TELEGRAM_IDS, затем THAI_COACH_TELEGRAM_ID (один id)
+    в начало, если задан и ещё не в списке.
     """
     seen: Set[int] = set()
     merged: List[int] = []
@@ -52,21 +52,34 @@ class Config:
         self.ADMIN_TELEGRAM_ID = int(_admin_raw) if _admin_raw else None
         _thai_raw = os.getenv("THAI_COACH_TELEGRAM_ID", "").strip()
         self.THAI_COACH_TELEGRAM_ID = int(_thai_raw) if _thai_raw else None
-        _coaches_raw = os.getenv("COACH_TELEGRAM_IDS", "").strip()
-        self.COACH_TELEGRAM_IDS: list[int] = []
-        for part in _coaches_raw.split(","):
+
+        def _parse_id_list(raw: str, label: str) -> list[int]:
+            out: list[int] = []
+            for part in raw.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                try:
+                    out.append(int(part))
+                except ValueError:
+                    print(f"⚠️ Пропуск невалидного id в {label}: {part!r}")
+            return out
+
+        _thai_list_raw = os.getenv("THAI_COACH_TELEGRAM_IDS", "").strip()
+        self.THAI_COACH_TELEGRAM_IDS = _parse_id_list(_thai_list_raw, "THAI_COACH_TELEGRAM_IDS")
+
+        _mma_coaches_raw = os.getenv("MMA_COACH_TELEGRAM_IDS", "").strip()
+        self.MMA_COACH_TELEGRAM_IDS: list[int] = []
+        for part in _mma_coaches_raw.split(","):
             part = part.strip()
             if not part:
                 continue
             try:
-                self.COACH_TELEGRAM_IDS.append(int(part))
+                self.MMA_COACH_TELEGRAM_IDS.append(int(part))
             except ValueError:
-                print(f"⚠️ Пропуск невалидного id в COACH_TELEGRAM_IDS: {part!r}")
-        self.COACH_DEFAULT_SPORT_TYPE = (
-            os.getenv("COACH_DEFAULT_SPORT_TYPE", "MMA").strip() or "MMA"
-        )
-        self.merged_coach_telegram_ids = merge_coach_telegram_ids(
-            list(self.COACH_TELEGRAM_IDS), self.THAI_COACH_TELEGRAM_ID
+                print(f"⚠️ Пропуск невалидного id в MMA_COACH_TELEGRAM_IDS: {part!r}")
+        self.merged_thai_coach_telegram_ids = merge_coach_telegram_ids(
+            list(self.THAI_COACH_TELEGRAM_IDS), self.THAI_COACH_TELEGRAM_ID
         )
         self.DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///database/club.db")
         self.APP_TIMEZONE = os.getenv("APP_TIMEZONE", "Europe/Moscow")
@@ -90,19 +103,24 @@ class Config:
             print(f"   Администратор (ADMIN_TELEGRAM_ID): {self.ADMIN_TELEGRAM_ID}")
         else:
             print("   Администратор: не задан (ADMIN_TELEGRAM_ID) — автосоздание админа отключено")
-        if self.merged_coach_telegram_ids:
+        if self.merged_thai_coach_telegram_ids:
             print(
-                f"   Тренеры (автосоздание, {self.COACH_DEFAULT_SPORT_TYPE}): "
-                f"{self.merged_coach_telegram_ids}"
+                f"   Тренеры тайского бокса (Тайский Бокс): {self.merged_thai_coach_telegram_ids}"
             )
         else:
             print(
-                "   Тренеры: COACH_TELEGRAM_IDS и THAI_COACH_TELEGRAM_ID пусты — автосоздание отключено"
+                "   Тренеры тайского бокса: THAI_COACH_TELEGRAM_IDS и THAI_COACH_TELEGRAM_ID пусты"
             )
-        if self.THAI_COACH_TELEGRAM_ID is not None and self.COACH_TELEGRAM_IDS:
+        if self.MMA_COACH_TELEGRAM_IDS:
+            print(f"   Тренеры ММА (MMA_COACH_TELEGRAM_IDS): {self.MMA_COACH_TELEGRAM_IDS}")
+        if not self.merged_thai_coach_telegram_ids and not self.MMA_COACH_TELEGRAM_IDS:
             print(
-                "   ℹ️  THAI_COACH_TELEGRAM_ID устарел: задайте все id в COACH_TELEGRAM_IDS "
-                "или оставьте THAI только для обратной совместимости."
+                "   Автосоздание тренеров выключено (нет id ни в одном списке)"
+            )
+        if self.THAI_COACH_TELEGRAM_ID is not None and self.THAI_COACH_TELEGRAM_IDS:
+            print(
+                "   ℹ️  THAI_COACH_TELEGRAM_ID (один id) при отсутствии в списке добавляется в начало "
+                "тайских тренеров; все id удобнее задать в THAI_COACH_TELEGRAM_IDS."
             )
         print(f"   БД: {self.DATABASE_URL}")
         print(f"   Таймзона: {self.APP_TIMEZONE}")

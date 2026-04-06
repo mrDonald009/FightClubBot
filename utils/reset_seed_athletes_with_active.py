@@ -9,6 +9,7 @@
 
 Запуск:
   python utils/reset_seed_athletes_with_active.py --count 25
+  python utils/reset_seed_athletes_with_active.py --count 25 --coach-telegram-id 26655492 --db database/club_dev.db
 """
 
 import sys
@@ -73,6 +74,7 @@ def _random_phone_ru() -> str:
 @dataclass
 class CoachInfo:
     id: int
+    telegram_id: Optional[int]
     sport_type_id: Optional[int]
     sport_type_name: Optional[str]
     sport_type_legacy: Optional[str]
@@ -82,20 +84,42 @@ class CoachInfo:
         return (self.sport_type_name or self.sport_type_legacy or "MMA").strip()
 
 
-def _get_primary_coach(cur: sqlite3.Cursor) -> CoachInfo:
-    cur.execute(
-        """
-        SELECT c.id, c.sport_type_id, st.name as sport_type_name, c.sport_type as sport_type_legacy
-        FROM coaches c
-        LEFT JOIN sport_types st ON st.id = c.sport_type_id
-        ORDER BY c.id ASC
-        LIMIT 1
-        """
+def _get_coach(cur: sqlite3.Cursor, coach_telegram_id: Optional[int]) -> CoachInfo:
+    if coach_telegram_id is not None:
+        cur.execute(
+            """
+            SELECT c.id, c.telegram_id, c.sport_type_id, st.name as sport_type_name, c.sport_type as sport_type_legacy
+            FROM coaches c
+            LEFT JOIN sport_types st ON st.id = c.sport_type_id
+            WHERE c.telegram_id = ?
+            """,
+            (coach_telegram_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise RuntimeError(
+                f"Тренер с telegram_id={coach_telegram_id} не найден в таблице coaches."
+            )
+    else:
+        cur.execute(
+            """
+            SELECT c.id, c.telegram_id, c.sport_type_id, st.name as sport_type_name, c.sport_type as sport_type_legacy
+            FROM coaches c
+            LEFT JOIN sport_types st ON st.id = c.sport_type_id
+            ORDER BY c.id ASC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if not row:
+            raise RuntimeError("В БД нет тренеров (таблица coaches пустая). Сначала создайте тренера.")
+    return CoachInfo(
+        id=row[0],
+        telegram_id=row[1],
+        sport_type_id=row[2],
+        sport_type_name=row[3],
+        sport_type_legacy=row[4],
     )
-    row = cur.fetchone()
-    if not row:
-        raise RuntimeError("В БД нет тренеров (таблица coaches пустая). Сначала создайте тренера.")
-    return CoachInfo(id=row[0], sport_type_id=row[1], sport_type_name=row[2], sport_type_legacy=row[3])
 
 
 def _resolve_db_path(cli_db: Optional[str]) -> Path:
@@ -297,6 +321,12 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=None, help="Seed для random (для воспроизводимости)")
     parser.add_argument("--add-only", action="store_true", help="Добавить спортсменов без удаления существующих")
     parser.add_argument("--db", type=str, default=None, help="Путь к SQLite БД (например: database/club_dev.db)")
+    parser.add_argument(
+        "--coach-telegram-id",
+        type=int,
+        default=None,
+        help="Telegram ID тренера из coaches.telegram_id (иначе берётся первый тренер по coaches.id)",
+    )
     args = parser.parse_args()
 
     if args.count <= 0:
@@ -317,8 +347,11 @@ def main() -> int:
         con.execute("PRAGMA foreign_keys = ON")
         cur = con.cursor()
 
-        coach = _get_primary_coach(cur)
-        print(f"[INFO] Coach: id={coach.id}, sport_type='{coach.sport_type}', sport_type_id={coach.sport_type_id}")
+        coach = _get_coach(cur, args.coach_telegram_id)
+        print(
+            f"[INFO] Coach: id={coach.id}, telegram_id={coach.telegram_id}, "
+            f"sport_type='{coach.sport_type}', sport_type_id={coach.sport_type_id}"
+        )
 
         if not args.add_only:
             try:
