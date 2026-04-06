@@ -1,4 +1,5 @@
 """Тесты домена абонементов: массовая заморозка, деактивация, пересчёт и аудит."""
+from contextlib import contextmanager
 from datetime import datetime
 from unittest.mock import patch
 
@@ -25,6 +26,19 @@ from database.models import (
     Training,
 )
 from services.subscription_audit_service import run_subscription_audit
+
+
+@contextmanager
+def _freeze_now(fixed_dt: datetime):
+    """
+    Подмена «текущего времени» в подмодулях db_utils.
+    Патч database.db_utils.now_moscow недостаточен: migrate/remaining/global_freeze
+    делают ``from utils.time_utils import now_moscow`` и держат свою ссылку.
+    """
+    with patch("database.db_utils.migrate.now_moscow", return_value=fixed_dt), patch(
+        "database.db_utils.remaining.now_moscow", return_value=fixed_dt
+    ), patch("database.db_utils.global_freeze.now_moscow", return_value=fixed_dt):
+        yield
 
 
 def _session_with_active_global_freeze():
@@ -127,7 +141,7 @@ def test_remaining_ignores_auto_usage_during_active_global_freeze(session_with_m
         )
     )
     s.commit()
-    with patch("database.db_utils.now_moscow", return_value=datetime(2026, 3, 25, 20, 0, 0)):
+    with _freeze_now(datetime(2026, 3, 25, 20, 0, 0)):
         rem = calculate_actual_trainings_remaining(s, sub)
     assert rem == 12
 
@@ -155,7 +169,7 @@ def test_remaining_counts_usage_outside_global_freeze(session_with_monthly_subsc
         )
     )
     s.commit()
-    with patch("database.db_utils.now_moscow", return_value=datetime(2026, 3, 22, 20, 0, 0)):
+    with _freeze_now(datetime(2026, 3, 22, 20, 0, 0)):
         rem = calculate_actual_trainings_remaining(s, sub)
     assert rem == 11
 
@@ -185,7 +199,7 @@ def test_monthly_migration_removes_auto_attendance_inside_freeze_window(
     s.commit()
     assert s.query(Attendance).filter_by(subscription_id=sub.id).count() == 1
 
-    with patch("database.db_utils.now_moscow", return_value=datetime(2026, 3, 25, 10, 0, 0)):
+    with _freeze_now(datetime(2026, 3, 25, 10, 0, 0)):
         migrate_existing_subscription(s, sub.id)
 
     assert s.query(Attendance).filter_by(subscription_id=sub.id).count() == 0
@@ -278,7 +292,7 @@ def test_deactivate_global_freeze_rejects_very_old_period():
     gf.start_date = datetime(2025, 1, 1)
     gf.end_date = datetime(2025, 1, 10, 23, 59, 59)
     s.commit()
-    with patch("database.db_utils.now_moscow", return_value=datetime(2026, 4, 3, 12, 0, 0)):
+    with _freeze_now(datetime(2026, 4, 3, 12, 0, 0)):
         result = deactivate_global_freeze_and_migrate(s, gf.id)
     assert result["success"] is False
     assert "более 30 дней назад" in result["message"]
@@ -354,7 +368,7 @@ def test_global_freeze_cycle_deactivate_then_reapply_recalculates_monthly_consis
     assert len(apps) >= 1
     assert any(a.training_days_added > 0 for a in apps)
 
-    with patch("database.db_utils.now_moscow", return_value=datetime(2026, 3, 25, 10, 0, 0)):
+    with _freeze_now(datetime(2026, 3, 25, 10, 0, 0)):
         r_deact = deactivate_global_freeze_and_migrate(s, gf_id_1)
 
     assert r_deact["success"] is True
