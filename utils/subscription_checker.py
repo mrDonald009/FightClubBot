@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 from database.models import Session, Subscription, Athlete
+from utils.subscription_resolve import active_subscriptions_all
 from utils.time_utils import now_moscow
 
 logger = logging.getLogger(__name__)
@@ -101,39 +102,59 @@ class SubscriptionChecker:
 
     @staticmethod
     def check_specific_athlete(athlete_id):
-        """Проверить и обновить абонемент конкретного спортсмена"""
+        """Проверить и обновить все активные абонементы спортсмена."""
         session = Session()
         try:
             athlete = session.query(Athlete).filter_by(id=athlete_id).first()
-            if not athlete or not athlete.current_subscription:
-                return {"updated": False, "message": "Спортсмен или абонемент не найден"}
+            if not athlete:
+                return {"updated": False, "message": "Спортсмен не найден"}
 
-            subscription = athlete.current_subscription
-            old_status = subscription.is_active
+            subs = active_subscriptions_all(athlete)
+            if not subs:
+                return {"updated": False, "message": "Нет активных абонементов"}
 
-            # Проверяем дату окончания и количество тренировок
-            if subscription.is_active:
+            updated_any = False
+            messages = []
+            for subscription in subs:
+                old_status = subscription.is_active
+                if not subscription.is_active:
+                    continue
                 should_deactivate = False
                 reason = ""
-                
+
                 if subscription.end_date and subscription.end_date < now_moscow():
                     should_deactivate = True
                     reason = "истек срок действия"
-                
-                if subscription.trainings_remaining is not None and subscription.trainings_remaining <= 0:
+
+                if (
+                    subscription.trainings_remaining is not None
+                    and subscription.trainings_remaining <= 0
+                ):
                     should_deactivate = True
-                    reason = "закончились тренировки" if not reason else f"{reason} и закончились тренировки"
-                
+                    reason = (
+                        "закончились тренировки"
+                        if not reason
+                        else f"{reason} и закончились тренировки"
+                    )
+
                 if should_deactivate:
                     subscription.is_active = False
-                    session.commit()
+                    updated_any = True
+                    end_s = (
+                        subscription.end_date.strftime("%d.%m.%Y")
+                        if subscription.end_date
+                        else "—"
+                    )
+                    messages.append(f"Абонемент #{subscription.id} деактивирован ({reason}, до {end_s})")
 
-                    return {
-                        "updated": True,
-                        "message": f"Абонемент #{subscription.id} деактивирован (истек {subscription.end_date.strftime('%d.%m.%Y')})",
-                        "old_status": old_status,
-                        "new_status": subscription.is_active
-                    }
+            if updated_any:
+                session.commit()
+                return {
+                    "updated": True,
+                    "message": "; ".join(messages),
+                    "old_status": True,
+                    "new_status": False,
+                }
 
             return {"updated": False, "message": "Статус актуален"}
 

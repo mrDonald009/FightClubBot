@@ -5,7 +5,17 @@ from typing import List, Tuple
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from database.models import Session, Athlete, Training, Attendance
-from database.db_utils import get_user_by_telegram_id, get_user_role, is_training_in_global_freeze
+from database.db_utils import (
+    get_user_by_telegram_id,
+    get_user_role,
+    is_training_in_athlete_personal_freeze,
+    is_training_in_global_freeze,
+)
+from utils.subscription_resolve import (
+    active_subscriptions_all,
+    active_subscription_for_training,
+    subscription_for_coach_sport,
+)
 from utils.time_utils import now_moscow, training_end_time
 from services.attendance_training_flow import (
     build_step2_message_and_keyboard_rows,
@@ -148,16 +158,19 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         athlete = session.query(Athlete).filter_by(id=athlete_id).first()
 
-        if not athlete or not athlete.current_subscription:
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден")
+            return
+
+        if not active_subscriptions_all(athlete):
             await query.edit_message_text("❌ У спортсмена нет активного абонемента")
             return
 
         user = get_user_by_telegram_id(session, query.from_user.id)
-        if user and get_user_role(user) == "coach":
-            coach_sport = get_coach_sport_type_name(user)
-            if coach_sport and athlete.sport_type != coach_sport:
-                await query.edit_message_text("❌ Спортсмен не относится к вашему виду спорта")
-                return
+        coach_sport = get_coach_sport_type_name(user) if user and get_user_role(user) == "coach" else None
+        if coach_sport and subscription_for_coach_sport(athlete, coach_sport) is None:
+            await query.edit_message_text("❌ Нет активного абонемента по вашему виду спорта")
+            return
 
         if selected_training_id:
             training = session.query(Training).filter_by(id=selected_training_id, is_cancelled=False).first()
@@ -167,6 +180,10 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
             err_coach = coach_training_access_error(user, training)
             if err_coach:
                 await query.edit_message_text(err_coach)
+                return
+
+            if not active_subscription_for_training(athlete, training):
+                await query.edit_message_text("❌ Нет активного абонемента для этой тренировки")
                 return
 
             context.user_data['selected_training_id'] = training.id
@@ -190,9 +207,13 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
         # Рассчитываем дату неделю назад
         week_ago = now_moscow() - timedelta(days=7)
 
-        # Фильтруем тренировки по тренеру (если это тренер)
+        sport_for_slots = coach_sport or athlete.sport_type
+        if not sport_for_slots:
+            await query.edit_message_text("❌ Не задан вид спорта для отметки посещения")
+            return
+
         query_filter = session.query(Training).filter(
-            Training.sport_type == athlete.sport_type,
+            Training.sport_type == sport_for_slots,
             Training.age_group == athlete.age_group,
             Training.training_date >= week_ago,
             Training.is_cancelled == False
@@ -210,9 +231,10 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
 
         message = f"📅 <b>ОТМЕТКА ПОСЕЩЕНИЯ</b>\n\n"
         message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n"
-        message += f"🥊 {athlete.sport_type} | {'Детская' if athlete.age_group == 'children' else 'Взрослая'}\n"
-        message += f"🎫 Абонемент #{athlete.current_subscription.id}\n"
-        message += f"🏋️ Осталось тренировок: {athlete.current_subscription.trainings_remaining}\n\n"
+        sub_ui = subscription_for_coach_sport(athlete, coach_sport)
+        message += f"🥊 {sport_for_slots} | {'Детская' if athlete.age_group == 'children' else 'Взрослая'}\n"
+        message += f"🎫 Абонемент #{sub_ui.id}\n"
+        message += f"🏋️ Осталось тренировок: {sub_ui.trainings_remaining}\n\n"
         message += "<b>Выберите тренировку для отметки:</b>\n"
 
         keyboard = []
@@ -337,13 +359,11 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
                 await query.edit_message_text(err_coach)
                 return
 
-        if not athlete.current_subscription:
-            await query.edit_message_text("❌ У спортсмена нет активного абонемента")
+        subscription = active_subscription_for_training(athlete, training)
+        if not subscription:
+            await query.edit_message_text("❌ Нет активного абонемента для этой тренировки")
             return
 
-        subscription = athlete.current_subscription
-
-        # Проверяем, что абонемент активен
         if not subscription.is_active:
             await query.edit_message_text("❌ Абонемент не активен")
             return
@@ -421,6 +441,8 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
                 and subscription.frozen_from
                 and subscription.frozen_until
                 and subscription.frozen_from <= training.training_date <= subscription.frozen_until
+            ) or is_training_in_athlete_personal_freeze(
+                session, athlete_id, training.training_date
             )
             if (
                 not training_in_freeze

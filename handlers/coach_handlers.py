@@ -10,10 +10,11 @@ from database.db_utils import (
 import database.db_utils as db_utils_pkg
 from typing import List, Optional, Tuple, Union
 from utils.training_manager import TrainingManager
+from utils.subscription_resolve import subscription_for_coach_sport
 from utils.time_utils import now_moscow, ACTIVATION_GRACE_AFTER_START
 from keyboards.coach_kb import get_coach_main_menu
 from datetime import datetime, timedelta
-from sqlalchemy import func
+from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import joinedload
 import re
 import calendar
@@ -117,8 +118,8 @@ def decode_athlete_list_page(callback_data: str) -> Optional[Tuple[str, int]]:
 
 def load_athletes_for_list(session, user) -> Tuple[List[Athlete], str]:
     """
-    Спортсмены для экранов «Список спортсменов» с eager-loading абонементов
-    (избегает N+1 при обращении к current_subscription). Только тренер — свой список.
+    Спортсмены для экранов «Список спортсменов» с eager-loading `athlete.subscriptions`
+    (избегает N+1 при `subscription_for_coach_sport` / фильтрах). Только тренер — свой список.
     """
     if isinstance(user, Coach):
         q = (
@@ -132,7 +133,23 @@ def load_athletes_for_list(session, user) -> Tuple[List[Athlete], str]:
         elif user.sport_type:
             sport_type_name = user.sport_type
         if sport_type_name:
-            q = q.filter_by(sport_type=sport_type_name)
+            # Профиль спортсмена ИЛИ любой абонемент с этим видом спорта (мульти-направления).
+            has_sub_for_sport = exists().where(
+                Subscription.athlete_id == Athlete.id,
+                or_(
+                    Subscription.sport_type == sport_type_name,
+                    and_(
+                        or_(
+                            Subscription.sport_type.is_(None),
+                            Subscription.sport_type == "",
+                        ),
+                        Athlete.sport_type == sport_type_name,
+                    ),
+                ),
+            )
+            q = q.filter(
+                or_(Athlete.sport_type == sport_type_name, has_sub_for_sport)
+            )
         athletes = q.all()
         header = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
     else:
@@ -1202,10 +1219,15 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         inactive_children = 0
         inactive_adults = 0
         
+        coach_sport = resolve_coach_sport_type_name(user)
+
         for a in athletes:
-            status = SubscriptionChecker.get_subscription_status(a.current_subscription) if a.current_subscription else "no_subscription"
+            sub = subscription_for_coach_sport(a, coach_sport)
+            status = (
+                SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
+            )
             is_active = is_active_status(status)
-            
+
             if a.age_group == "children":
                 if is_active:
                     active_children += 1
@@ -1216,7 +1238,7 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     active_adults += 1
                 else:
                     inactive_adults += 1
-        
+
         active_total = active_children + active_adults
         inactive_total = inactive_children + inactive_adults
 
@@ -1321,10 +1343,15 @@ async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEF
         children_count = 0
         adults_count = 0
         
+        coach_sport = resolve_coach_sport_type_name(user)
+
         for a in athletes:
-            status = SubscriptionChecker.get_subscription_status(a.current_subscription) if a.current_subscription else "no_subscription"
+            sub = subscription_for_coach_sport(a, coach_sport)
+            status = (
+                SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
+            )
             is_active = is_active_status(status)
-            
+
             if status_type == "active" and is_active:
                 if a.age_group == "children":
                     children_count += 1
@@ -1413,8 +1440,13 @@ async def show_athletes_list_by_filter(
         def is_active_status(status: str) -> bool:
             return status in ("active", "expiring_soon")
 
+        coach_sport = resolve_coach_sport_type_name(user)
+
         def athlete_status(a: Athlete) -> str:
-            return SubscriptionChecker.get_subscription_status(a.current_subscription) if a.current_subscription else "no_subscription"
+            sub = subscription_for_coach_sport(a, coach_sport)
+            return (
+                SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
+            )
 
         # Фильтрация
         if filter_key == "active_children":
@@ -2032,29 +2064,26 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
 
                         message += f"• <b>{time_str}</b> - {sport_type_name} ({age_group_ru})\n"
 
-                        athletes_with_subscriptions = (
-                            session.query(Athlete)
-                            .options(joinedload(Athlete.subscriptions))
-                            .join(Subscription, Athlete.id == Subscription.athlete_id)
+                        sub_ath_rows = (
+                            session.query(Subscription, Athlete)
+                            .join(Athlete, Subscription.athlete_id == Athlete.id)
                             .filter(
                                 Subscription.is_active == True,
+                                Subscription.sport_type == sport_type_name,
                                 func.date(Subscription.start_date) <= selected_date,
                                 func.date(Subscription.end_date) >= selected_date,
-                                Athlete.sport_type == sport_type_name,
                                 Athlete.age_group == age_group,
                             )
                         )
 
                         if isinstance(user, Coach):
-                            athletes_with_subscriptions = athletes_with_subscriptions.filter(
-                                Athlete.created_by == user.id
-                            )
+                            sub_ath_rows = sub_ath_rows.filter(Athlete.created_by == user.id)
 
-                        athletes_list = athletes_with_subscriptions.all()
+                        pair_list = sub_ath_rows.all()
 
-                        if athletes_list:
-                            message += f"  <b>Записано спортсменов: {len(athletes_list)}</b>\n"
-                            aid_list = [a.id for a in athletes_list]
+                        if pair_list:
+                            message += f"  <b>Записано спортсменов: {len(pair_list)}</b>\n"
+                            aid_list = list({a.id for _s, a in pair_list})
                             atts = (
                                 session.query(Attendance)
                                 .join(Training, Attendance.training_id == Training.id)
@@ -2072,17 +2101,15 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                 if key not in att_by_pair:
                                     att_by_pair[key] = att
 
-                            for athlete in athletes_list[:10]:
-                                subscription = athlete.current_subscription
-                                if subscription:
-                                    attendance = att_by_pair.get((athlete.id, subscription.id))
-                                    if attendance:
-                                        status_icon = "✅" if attendance.attended else "❌"
-                                    else:
-                                        status_icon = "❌"
-                                    message += f"    {status_icon} {html.escape(athlete.full_name)}\n"
-                            if len(athletes_list) > 10:
-                                message += f"    ... и еще {len(athletes_list) - 10}\n"
+                            for subscription, athlete in pair_list[:10]:
+                                attendance = att_by_pair.get((athlete.id, subscription.id))
+                                if attendance:
+                                    status_icon = "✅" if attendance.attended else "❌"
+                                else:
+                                    status_icon = "❌"
+                                message += f"    {status_icon} {html.escape(athlete.full_name)}\n"
+                            if len(pair_list) > 10:
+                                message += f"    ... и еще {len(pair_list) - 10}\n"
                         else:
                             message += f"  Нет записанных спортсменов\n"
 

@@ -182,9 +182,13 @@ def migrate_subscription_by_athlete_name(session: Session, athlete_name: str):
     if not athlete:
         return {"success": False, "message": f"Спортсмен '{athlete_name}' не найден"}
     
-    # Получаем первый активный абонемент
-    active_subscription = athlete.current_subscription
-    if not active_subscription:
+    from utils.subscription_resolve import active_subscriptions_all
+
+    subs = active_subscriptions_all(athlete)
+    if not subs:
         return {"success": False, "message": "У спортсмена нет активного абонемента"}
-    
-    return migrate_existing_subscription(session, active_subscription.id)
+
+    last = None
+    for sub in subs:
+        last = migrate_existing_subscription(session, sub.id)
+    return last

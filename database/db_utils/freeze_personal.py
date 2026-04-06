@@ -1,8 +1,9 @@
 import logging
 from datetime import datetime, timedelta
+from typing import List, Optional
 
 from sqlalchemy.orm import Session
-from database.models import Subscription
+from database.models import Athlete, AthleteFreeze, Subscription
 from utils.training_manager import TrainingManager
 from utils.time_utils import ACTIVATION_GRACE_AFTER_START, now_moscow, training_end_time
 
@@ -138,10 +139,28 @@ def _find_freeze_end_date(selected_date: datetime, sport_type: str, age_group: s
     return training_end_time(selected_date)
 
 
+def is_training_in_athlete_personal_freeze(
+    session: Session, athlete_id: int, training_datetime: datetime
+) -> bool:
+    """True, если дата слота попадает в период персональной заморозки спортсмена (athlete_freezes)."""
+    row = (
+        session.query(AthleteFreeze.id)
+        .filter(
+            AthleteFreeze.athlete_id == athlete_id,
+            AthleteFreeze.frozen_from <= training_datetime,
+            AthleteFreeze.frozen_until >= training_datetime,
+        )
+        .first()
+    )
+    return row is not None
+
+
 def freeze_subscription(
     session: Session,
     subscription_id: int,
-    freeze_end_date: datetime
+    freeze_end_date: datetime,
+    *,
+    commit: bool = True,
 ) -> dict:
     """
     Заморозить абонемент.
@@ -290,8 +309,11 @@ def freeze_subscription(
     # frozen_training_days_total - общее количество замороженных тренировочных дней
     subscription.frozen_training_days_total = (subscription.frozen_training_days_total or 0) + training_days_count
     sync_subscription_trainings_remaining(session, subscription, reason="after_freeze")
-    session.commit()
-    
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+
     return {
         "success": True,
         "message": f"Абонемент заморожен до {effective_freeze_end.strftime('%d.%m.%Y %H:%M')}",
@@ -302,7 +324,9 @@ def freeze_subscription(
     }
 
 
-def unfreeze_subscription(session: Session, subscription_id: int) -> dict:
+def unfreeze_subscription(
+    session: Session, subscription_id: int, *, commit: bool = True
+) -> dict:
     """
     Разморозить абонемент.
     
@@ -325,6 +349,104 @@ def unfreeze_subscription(session: Session, subscription_id: int) -> dict:
     subscription.frozen_from = None
     subscription.frozen_until = None
     sync_subscription_trainings_remaining(session, subscription, reason="after_unfreeze")
-    session.commit()
-    
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+
     return {"success": True, "message": "Абонемент разморожен"}
+
+
+def freeze_athlete(
+    session: Session,
+    athlete_id: int,
+    freeze_end_date: datetime,
+    *,
+    initiated_by_coach_id: Optional[int] = None,
+    global_freeze_id: Optional[int] = None,
+    commit: bool = True,
+) -> dict:
+    """
+    Персональная заморозка спортсмена: применяет логику freeze_subscription ко всем активным абонементам
+    и создаёт запись athlete_freezes.
+    """
+    athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+    if not athlete:
+        return {"success": False, "message": "Спортсмен не найден"}
+
+    active_subs = [s for s in athlete.subscriptions if s.is_active]
+    if not active_subs:
+        return {"success": False, "message": "Нет активного абонемента"}
+
+    if any(s.is_frozen for s in active_subs):
+        return {"success": False, "message": "У спортсмена уже заморожен абонемент"}
+
+    freeze_starts: List[datetime] = []
+    freeze_ends: List[datetime] = []
+    for sub in active_subs:
+        res = freeze_subscription(
+            session, sub.id, freeze_end_date, commit=False
+        )
+        if not res["success"]:
+            session.rollback()
+            return res
+        freeze_starts.append(res["freeze_start"])
+        freeze_ends.append(res["freeze_until"])
+
+    af = AthleteFreeze(
+        athlete_id=athlete_id,
+        frozen_from=min(freeze_starts),
+        frozen_until=max(freeze_ends),
+        initiated_by_coach_id=initiated_by_coach_id,
+        global_freeze_id=global_freeze_id,
+    )
+    session.add(af)
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+
+    until = max(freeze_ends)
+    return {
+        "success": True,
+        "message": f"Заморозка до {until.strftime('%d.%m.%Y %H:%M')}",
+        "freeze_start": min(freeze_starts),
+        "freeze_until": until,
+        "subscriptions_updated": len(active_subs),
+    }
+
+
+def unfreeze_athlete(
+    session: Session, athlete_id: int, *, commit: bool = True
+) -> dict:
+    """Снять персональную заморозку: разморозить все активные замороженные абонементы и удалить athlete_freezes."""
+    athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+    if not athlete:
+        return {"success": False, "message": "Спортсмен не найден"}
+
+    frozen_subs = [s for s in athlete.subscriptions if s.is_active and s.is_frozen]
+    if not frozen_subs:
+        session.query(AthleteFreeze).filter_by(athlete_id=athlete_id).delete(
+            synchronize_session=False
+        )
+        if commit:
+            session.commit()
+        else:
+            session.flush()
+        return {"success": False, "message": "Нет замороженных абонементов"}
+
+    for sub in frozen_subs:
+        res = unfreeze_subscription(session, sub.id, commit=False)
+        if not res["success"]:
+            session.rollback()
+            return res
+
+    session.query(AthleteFreeze).filter_by(athlete_id=athlete_id).delete(
+        synchronize_session=False
+    )
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+
+    return {"success": True, "message": "Спортсмен разморожен"}

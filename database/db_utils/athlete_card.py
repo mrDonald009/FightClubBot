@@ -2,43 +2,49 @@ from datetime import timedelta
 from sqlalchemy.orm import Session
 from database.models import Athlete, Attendance, Subscription, Training
 from utils.subscription_checker import SubscriptionChecker
+from utils.subscription_resolve import (
+    active_subscriptions_all,
+    subscription_for_coach_sport,
+)
 from utils.time_utils import now_moscow
 
 from .users import get_coach_by_sport_type
 
-def get_athlete_card_info(session: Session, athlete_id: int):
-    """Получить информацию для карточки спортсмена"""
+
+def get_athlete_card_info(session: Session, athlete_id: int, preferred_sport_type: str = None):
+    """
+    Получить информацию для карточки спортсмена.
+
+    preferred_sport_type: для тренера — абонемент по его виду спорта; иначе первый активный.
+    """
     athlete = session.query(Athlete).filter_by(id=athlete_id).first()
 
     if not athlete:
         return None
 
-    # Получаем первый активный абонемент для обратной совместимости
-    subscription = athlete.current_subscription
-    
-    # Получаем тренера по виду спорта из абонемента (если есть), иначе по виду спорта спортсмена
+    current_time = now_moscow()
+    changed = False
+    for sub in active_subscriptions_all(athlete):
+        if sub.end_date and sub.end_date < current_time:
+            sub.is_active = False
+            changed = True
+    if changed:
+        session.commit()
+
+    subscription = subscription_for_coach_sport(athlete, preferred_sport_type)
+
     coach = None
     if subscription and subscription.sport_type:
         coach = get_coach_by_sport_type(session, subscription.sport_type)
     elif athlete.sport_type:
         coach = get_coach_by_sport_type(session, athlete.sport_type)
-    
-    # Если не найден, используем тренера, который добавил спортсмена
+
     if not coach:
         coach = athlete.coach
 
-    # АВТОМАТИЧЕСКАЯ ПРОВЕРКА СТАТУСА АБОНЕМЕНТА
-    if subscription and subscription.is_active and subscription.end_date:
-        current_time = now_moscow()
-        if subscription.end_date < current_time:
-            # Автоматически деактивируем истекший абонемент
-            subscription.is_active = False
-            session.commit()
-            print(f"🔄 Автоматически деактивирован абонемент #{subscription.id} для {athlete.full_name}")
-
-    # Получаем статистику посещений за последние 30 дней
-    # Используем вид спорта из абонемента, если он есть, иначе из спортсмена
-    sport_type_for_stats = subscription.sport_type if subscription and subscription.sport_type else athlete.sport_type
+    sport_type_for_stats = (
+        subscription.sport_type if subscription and subscription.sport_type else athlete.sport_type
+    )
     
     month_ago = now_moscow() - timedelta(days=30)
 

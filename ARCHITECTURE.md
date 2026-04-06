@@ -4,11 +4,13 @@
 
 Проект использует многослойную архитектуру, разработанную для легкого масштабирования и поддержки.
 
+**Доменные детали (абонементы, несколько направлений на спортсмена, заморозки):** см. `ARCHITECTURE_DESCRIPTION.md` и `doc/ARCHITECTURE.md`.
+
 ## Структура проекта
 
 ```
 FightClubBot/
-├── bot_new.py              # Точка входа приложения
+├── bot.py                  # Точка входа приложения
 ├── core/                   # Ядро приложения
 │   ├── __init__.py
 │   ├── config.py          # Конфигурация
@@ -35,6 +37,8 @@ FightClubBot/
 │   └── ...
 ├── utils/                 # Утилиты
 │   ├── subscription_checker.py
+│   ├── subscription_resolve.py  # выбор абонемента при нескольких активных
+│   ├── discipline_keys.py
 │   └── training_manager.py
 └── keyboards/             # Клавиатуры Telegram
     └── coach_kb.py
@@ -43,7 +47,7 @@ FightClubBot/
 ## Слои архитектуры
 
 ### 1. Точка входа (Entry Point)
-**Файл:** `bot_new.py`
+**Файл:** `bot.py`
 
 Минимальный файл, который:
 - Настраивает логирование

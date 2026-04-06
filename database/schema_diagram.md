@@ -1,6 +1,6 @@
 # Схема базы данных FightClubBot
 
-Диаграмма связей таблиц. Можно открыть в VS Code (расширение Mermaid), на GitHub или на [mermaid.live](https://mermaid.live).
+Диаграмма связей таблиц (ориентир под несколько абонементов на спортсмена: `discipline_key`, `uq_subscriptions_athlete_discipline`). Можно открыть в VS Code (расширение Mermaid), на GitHub или на [mermaid.live](https://mermaid.live).
 
 ```mermaid
 erDiagram
@@ -59,6 +59,8 @@ erDiagram
     subscriptions {
         int id PK
         int athlete_id FK
+        string discipline_key UK_compound
+        int responsible_coach_id FK
         int sport_type_id FK
         string sport_type
         string subscription_type
@@ -74,6 +76,26 @@ erDiagram
         datetime frozen_until
         int frozen_days_total
         int frozen_training_days_total
+        datetime created_at
+    }
+
+    athlete_freezes {
+        int id PK
+        int athlete_id FK
+        datetime frozen_from
+        datetime frozen_until
+        int initiated_by_coach_id FK
+        int global_freeze_id FK
+        datetime created_at
+    }
+
+    global_freezes {
+        int id PK
+        string title
+        datetime start_date
+        datetime end_date
+        bool is_active
+        int created_by
         datetime created_at
     }
 
@@ -114,7 +136,11 @@ erDiagram
     sport_types ||--o{ subscriptions : "sport_type_id"
     coaches ||--o{ athletes : "created_by"
     coaches ||--o{ trainings : "coach_id"
+    coaches ||--o{ subscriptions : "responsible_coach_id"
     athletes ||--o{ subscriptions : "athlete_id"
+    athletes ||--o{ athlete_freezes : "athlete_id"
+    coaches ||--o{ athlete_freezes : "initiated_by_coach_id"
+    global_freezes ||--o{ athlete_freezes : "global_freeze_id"
     athletes ||--o{ attendances : "athlete_id"
     athletes ||--o{ restoration_requests : "athlete_id"
     subscriptions ||--o{ attendances : "subscription_id"

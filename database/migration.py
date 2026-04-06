@@ -21,6 +21,8 @@ sys.path.append(str(project_root))
 
 import sqlite3
 
+from utils.discipline_keys import default_group_key_for_subscription_sport
+
 
 def migrate_database():
     """Миграция базы данных для добавления новых полей"""
@@ -192,6 +194,83 @@ def migrate_database():
         """)
         print("✅ Нормализованы trainings_total/trainings_remaining")
 
+        # Мульти-абонементы: направление (discipline_key) и ответственный тренер
+        cursor.execute("PRAGMA table_info(subscriptions)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if "discipline_key" not in columns:
+            print("🔧 Добавляю discipline_key в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN discipline_key VARCHAR(64)")
+            print("✅ discipline_key добавлен")
+
+        if "responsible_coach_id" not in columns:
+            print("🔧 Добавляю responsible_coach_id в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN responsible_coach_id INTEGER")
+            print("✅ responsible_coach_id добавлен")
+
+        cursor.execute(
+            """
+            SELECT s.id, s.sport_type, a.sport_type
+            FROM subscriptions s
+            LEFT JOIN athletes a ON a.id = s.athlete_id
+            """
+        )
+        for sid, st_sub, st_ath in cursor.fetchall():
+            cursor.execute("SELECT discipline_key FROM subscriptions WHERE id = ?", (sid,))
+            current = cursor.fetchone()[0]
+            if current is None or current == "":
+                st = (st_sub or st_ath or "").strip()
+                dk = default_group_key_for_subscription_sport(st or "unknown")
+                cursor.execute(
+                    "UPDATE subscriptions SET discipline_key = ? WHERE id = ?",
+                    (dk, sid),
+                )
+        print("✅ Заполнен discipline_key (где был пустой)")
+
+        while True:
+            cursor.execute(
+                """
+                SELECT athlete_id, discipline_key, COUNT(*) AS cnt
+                FROM subscriptions
+                GROUP BY athlete_id, discipline_key
+                HAVING cnt > 1
+                LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            if not row:
+                break
+            aid, dk, _cnt = row
+            cursor.execute(
+                """
+                SELECT id FROM subscriptions
+                WHERE athlete_id = ? AND discipline_key = ?
+                ORDER BY id
+                """,
+                (aid, dk),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            for sid in ids[1:]:
+                suffix = f"_{sid}"
+                base = (dk or "legacy")[: max(0, 64 - len(suffix))]
+                new_dk = f"{base}{suffix}"
+                cursor.execute(
+                    "UPDATE subscriptions SET discipline_key = ? WHERE id = ?",
+                    (new_dk, sid),
+                )
+        print("✅ Устранены дубликаты (athlete_id, discipline_key) при необходимости")
+
+        cursor.execute(
+            """
+            UPDATE subscriptions
+            SET responsible_coach_id = (
+                SELECT created_by FROM athletes WHERE athletes.id = subscriptions.athlete_id
+            )
+            WHERE responsible_coach_id IS NULL
+            """
+        )
+        print("✅ Заполнен responsible_coach_id из athletes.created_by (где был NULL)")
+
         # Проверяем таблицу attendances
         cursor.execute("PRAGMA table_info(attendances)")
         columns = [row[1] for row in cursor.fetchall()]
@@ -255,25 +334,49 @@ def migrate_database():
         """)
         print("✅ Таблица global_freeze_applications создана")
 
+        # Персональная заморозка спортсмена (все направления)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS athlete_freezes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                athlete_id INTEGER NOT NULL,
+                frozen_from DATETIME NOT NULL,
+                frozen_until DATETIME NOT NULL,
+                initiated_by_coach_id INTEGER,
+                global_freeze_id INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS ix_athlete_freezes_athlete_range
+            ON athlete_freezes (athlete_id, frozen_from, frozen_until)
+        """)
+        print("✅ Таблица athlete_freezes и индекс созданы")
+
         # --- СТРУКТУРНЫЕ ОГРАНИЧЕНИЯ (SQLite UNIQUE INDEX) ---
-        # Правило домена: у одного спортсмена (athlete_id) один абонемент.
-        # В SQLite добавляем это через UNIQUE INDEX.
+        # Раньше: один абонемент на спортсмена (uq_subscriptions_athlete_id).
+        # Теперь: уникальная пара (athlete_id, discipline_key).
+
+        cursor.execute("DROP INDEX IF EXISTS uq_subscriptions_athlete_id")
 
         cursor.execute("""
-            SELECT athlete_id, COUNT(*) as cnt
+            SELECT athlete_id, discipline_key, COUNT(*) as cnt
             FROM subscriptions
-            GROUP BY athlete_id
+            WHERE discipline_key IS NOT NULL AND discipline_key != ''
+            GROUP BY athlete_id, discipline_key
             HAVING COUNT(*) > 1
         """)
-        duplicates = cursor.fetchall()
-        if duplicates:
-            print(f"⚠️ Найдены дубли subscriptions по athlete_id. UNIQUE athlete_id не включаем. Пример: {duplicates[0]}")
+        pair_dups = cursor.fetchall()
+        if pair_dups:
+            print(
+                f"⚠️ Остаются дубли (athlete_id, discipline_key). "
+                f"UNIQUE не создан. Пример: {pair_dups[0]}"
+            )
         else:
             cursor.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_id
-                ON subscriptions (athlete_id)
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_discipline
+                ON subscriptions (athlete_id, discipline_key)
             """)
-            print("✅ UNIQUE: uq_subscriptions_athlete_id создана")
+            print("✅ UNIQUE: uq_subscriptions_athlete_discipline создана")
 
         # Защита от дублей посещений: один athlete не должен иметь более одной записи на одну training.
         cursor.execute("""

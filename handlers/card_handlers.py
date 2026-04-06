@@ -21,6 +21,11 @@ from typing import Union
 import html
 from utils.training_manager import TrainingManager
 from utils.subscription_checker import SubscriptionChecker
+from utils.subscription_resolve import (
+    active_subscriptions_all,
+    active_subscription_for_training,
+    subscription_for_coach_sport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +126,6 @@ async def _finalize_subscription_activation(
     else:
         await query.edit_message_text("❌ Сначала выберите тип абонемента.")
         return
-
-    for old_sub in [s for s in athlete.subscriptions if s.is_active and s.id != subscription.id]:
-        old_sub.is_active = False
 
     subscription.is_active = True
     subscription.start_date = start_date
@@ -552,11 +554,8 @@ async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Спортсмен не найден")
             return
         
-        # Связь 1:1 - у спортсмена только один активный абонемент
-        subscription = athlete.current_subscription
-        
-        # Получаем полную информацию для карточки
-        card_info = get_athlete_card_info(session, athlete_id)
+        coach_sport = get_coach_sport_type(user) if isinstance(user, Coach) else None
+        card_info = get_athlete_card_info(session, athlete_id, preferred_sport_type=coach_sport)
         if not card_info:
             if query:
                 await query.edit_message_text("❌ Ошибка при загрузке карточки")
@@ -679,17 +678,18 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             athlete_id = subscription.athlete_id
             athlete = subscription.athlete
         else:
-            # Получаем информацию о спортсмене
-            card_info = get_athlete_card_info(session, athlete_id)
+            coach_sport_hint = get_coach_sport_type(user) if isinstance(user, Coach) else None
+            card_info = get_athlete_card_info(
+                session, athlete_id, preferred_sport_type=coach_sport_hint
+            )
             if not card_info:
                 await query.edit_message_text("❌ Спортсмен не найден")
                 return
             athlete = card_info['athlete']
             subscription = card_info['subscription']
-            
-            # Важно: у нового спортсмена абонемент часто НЕактивный, а current_subscription возвращает только активный.
-            # Поэтому при открытии "🎫 Абонемент" мы должны показать последний абонемент даже если он неактивен,
-            # иначе пользователь попадает на экран "АБОНЕМЕНТЫ" (список), что не нужно для нового спортсмена.
+
+            # Если для выбранного контекста (вид спорта тренера / первый активный) абонемента нет —
+            # подбираем последний по дате, в т.ч. неактивный, чтобы не уводить сразу на список.
             if not subscription:
                 all_subs = session.query(Subscription).filter_by(athlete_id=athlete_id).all()
                 if all_subs:
@@ -891,15 +891,24 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
                 InlineKeyboardButton("✅ Активировать", callback_data=f"activate_sub_{subscription.id}")
             ])
         
-        # Кнопки заморозки/разморозки (только для активных абонементов)
+        # Заморозка/разморозка — на уровне спортсмена (все активные абонементы)
+        any_active_frozen = any(
+            s.is_active and s.is_frozen for s in athlete.subscriptions
+        )
         if subscription.is_active:
-            if subscription.is_frozen:
+            if any_active_frozen:
                 keyboard.append([
-                    InlineKeyboardButton("❄️ Разморозить", callback_data=f"unfreeze_sub_{subscription.id}")
+                    InlineKeyboardButton(
+                        "❄️ Разморозить",
+                        callback_data=f"unfreeze_athlete_{athlete.id}_{subscription.id}",
+                    )
                 ])
             else:
                 keyboard.append([
-                    InlineKeyboardButton("❄️ Заморозить", callback_data=f"freeze_sub_{subscription.id}")
+                    InlineKeyboardButton(
+                        "❄️ Заморозить",
+                        callback_data=f"freeze_athlete_{athlete.id}_{subscription.id}",
+                    )
                 ])
 
         # При схеме 1 спортсмен = 1 абонемент кнопка "История абонемента" не нужна
@@ -991,25 +1000,21 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
                 await message.reply_text(error_msg)
             return
         
-        # Получаем информацию об абонементе
-        subscription = athlete.current_subscription
-        
-        # Автоматически списываем тренировки по расписанию для активного абонемента
-        if subscription and subscription.is_active:
-            from database.db_utils import auto_deduct_daily_trainings, migrate_existing_subscription
-            # Применяем миграцию к существующим абонементам (если нужно)
-            migrate_existing_subscription(session, subscription.id)
-            # Автоматически списываем тренировки за сегодня
+        from database.db_utils import auto_deduct_daily_trainings, migrate_existing_subscription
+
+        active_subs = sorted(active_subscriptions_all(athlete), key=lambda s: s.id)
+        for sub in active_subs:
+            migrate_existing_subscription(session, sub.id)
+        if active_subs:
             auto_deduct_daily_trainings(session)
-            # Обновляем subscription из БД
-            session.refresh(subscription)
-        
-        # Формируем сообщение
+            for sub in active_subs:
+                session.refresh(sub)
+
         message_text = f"🎫 <b>МОЙ АБОНЕМЕНТ</b>\n\n"
         message_text += f"👤 <b>{html.escape(athlete.full_name)}</b>\n"
         message_text += f"🥊 {athlete.sport_type or 'Не указан'}\n\n"
-        
-        if not subscription:
+
+        if not active_subs:
             message_text += f"❌ У вас нет активного абонемента.\n\n"
             message_text += f"Обратитесь к тренеру для оформления абонемента."
             
@@ -1023,85 +1028,94 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
             elif message:
                 await message.reply_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
             return
-        
-        # Получаем статистику использованных/неиспользованных тренировок
-        used_trainings = session.query(Attendance).filter_by(
-            subscription_id=subscription.id,
-            attended=True
-        ).count()
-        
-        unused_trainings = session.query(Attendance).filter_by(
-            subscription_id=subscription.id,
-            attended=False
-        ).count()
-        
-        # Расчет прогресса использования
-        total_deducted = used_trainings + unused_trainings
-        trainings_total = subscription.trainings_total or 0
-        usage_percent = round((total_deducted / trainings_total) * 100, 1) if trainings_total > 0 else 0
-        
-        # Создаем визуальный прогресс-бар
-        progress_length = 15
-        filled = int(usage_percent * progress_length / 100)
-        progress_bar = "█" * filled + "░" * (progress_length - filled)
-        
-        message_text += f"<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
-        sub_type_display = _format_subscription_type_ru(subscription.subscription_type)
-        message_text += f"• Тип: {sub_type_display}\n"
-        
-        # Единый статус
-        status_display = _format_subscription_status_ui(subscription)
-        message_text += f"• Статус: {status_display}\n"
-        
-        # Улучшенное отображение дат действия
-        start_date_str = _format_dt(subscription.start_date)
-        message_text += f"• Дата начала: {start_date_str}\n"
-        
-        if subscription.end_date:
-            end_date_str = _format_dt(subscription.end_date)
-            message_text += f"• Дата окончания: {end_date_str}{_freeze_note(subscription)}\n"
-            
-            # Осталось тренировок (пересчитываем на лету для актуальности)
-            if subscription.trainings_total is None:
-                message_text += f"• Осталось тренировок: —\n"
-            else:
-                actual_remaining = calculate_actual_trainings_remaining(session, subscription)
-                if actual_remaining is not None:
-                    message_text += f"• Осталось тренировок: {actual_remaining}/{subscription.trainings_total}\n"
-                    if sync_subscription_trainings_remaining(session, subscription):
-                        session.commit()
+
+        if len(active_subs) > 1:
+            message_text += f"<b>Активных направлений: {len(active_subs)}</b>\n\n"
+
+        for si, subscription in enumerate(active_subs, 1):
+            if len(active_subs) > 1:
+                sport_lbl = html.escape(
+                    subscription.sport_type or athlete.sport_type or "—"
+                )
+                message_text += f"<b>━━ {si}. {sport_lbl}</b> (#{subscription.id})\n"
+
+            used_trainings = session.query(Attendance).filter_by(
+                subscription_id=subscription.id,
+                attended=True,
+            ).count()
+
+            unused_trainings = session.query(Attendance).filter_by(
+                subscription_id=subscription.id,
+                attended=False,
+            ).count()
+
+            total_deducted = used_trainings + unused_trainings
+            trainings_total = subscription.trainings_total or 0
+            usage_percent = (
+                round((total_deducted / trainings_total) * 100, 1)
+                if trainings_total > 0
+                else 0
+            )
+
+            progress_length = 15
+            filled = int(usage_percent * progress_length / 100)
+            progress_bar = "█" * filled + "░" * (progress_length - filled)
+
+            message_text += f"<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
+            sub_type_display = _format_subscription_type_ru(subscription.subscription_type)
+            message_text += f"• Тип: {sub_type_display}\n"
+
+            status_display = _format_subscription_status_ui(subscription)
+            message_text += f"• Статус: {status_display}\n"
+
+            start_date_str = _format_dt(subscription.start_date)
+            message_text += f"• Дата начала: {start_date_str}\n"
+
+            if subscription.end_date:
+                end_date_str = _format_dt(subscription.end_date)
+                message_text += f"• Дата окончания: {end_date_str}{_freeze_note(subscription)}\n"
+
+                if subscription.trainings_total is None:
+                    message_text += f"• Осталось тренировок: —\n"
                 else:
-                    message_text += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
-        else:
-            message_text += f"• Дата окончания: —\n"
-            message_text += f"• Осталось тренировок: —\n"
-        # Дата создания абонемента
-        if subscription.created_at:
-            created_str = subscription.created_at.strftime('%d.%m.%Y %H:%M')
-            message_text += f"• Создан: {created_str}\n"
-        
-        message_text += f"\n<b>🏋️ ТРЕНИРОВКИ</b>\n"
-        trainings_total = subscription.trainings_total or 0
-        trainings_remaining = subscription.trainings_remaining or 0
-        if trainings_total is not None:
-            message_text += f"• Всего: {trainings_total}\n"
-            message_text += f"• Использовано: {used_trainings}\n"
-            message_text += f"• Осталось: {trainings_remaining}\n"
-        else:
-            message_text += f"• Всего: —\n"
-            message_text += f"• Использовано: {used_trainings}\n"
-            message_text += f"• Осталось: —\n"
-        
-        if subscription.total_restored > 0:
-            message_text += f"• Восстановлено: {subscription.total_restored}\n"
-        
-        if (subscription.frozen_training_days_total or 0) > 0:
-            message_text += f"• Заморожено тренировочных дней: {subscription.frozen_training_days_total}\n"
-        
-        # Прогресс-бар использования
-        message_text += f"\n<b>📊 ИСПОЛЬЗОВАНИЕ</b>\n"
-        message_text += f"{progress_bar} {usage_percent}%\n"
-        
+                    actual_remaining = calculate_actual_trainings_remaining(
+                        session, subscription
+                    )
+                    if actual_remaining is not None:
+                        message_text += f"• Осталось тренировок: {actual_remaining}/{subscription.trainings_total}\n"
+                        if sync_subscription_trainings_remaining(session, subscription):
+                            session.commit()
+                    else:
+                        message_text += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
+            else:
+                message_text += f"• Дата окончания: —\n"
+                message_text += f"• Осталось тренировок: —\n"
+            if subscription.created_at:
+                created_str = subscription.created_at.strftime("%d.%m.%Y %H:%M")
+                message_text += f"• Создан: {created_str}\n"
+
+            message_text += f"\n<b>🏋️ ТРЕНИРОВКИ</b>\n"
+            trainings_remaining = subscription.trainings_remaining or 0
+            if trainings_total is not None:
+                message_text += f"• Всего: {trainings_total}\n"
+                message_text += f"• Использовано: {used_trainings}\n"
+                message_text += f"• Осталось: {trainings_remaining}\n"
+            else:
+                message_text += f"• Всего: —\n"
+                message_text += f"• Использовано: {used_trainings}\n"
+                message_text += f"• Осталось: —\n"
+
+            if subscription.total_restored > 0:
+                message_text += f"• Восстановлено: {subscription.total_restored}\n"
+
+            if (subscription.frozen_training_days_total or 0) > 0:
+                message_text += f"• Заморожено тренировочных дней: {subscription.frozen_training_days_total}\n"
+
+            message_text += f"\n<b>📊 ИСПОЛЬЗОВАНИЕ</b>\n"
+            message_text += f"{progress_bar} {usage_percent}%\n"
+            if len(active_subs) > 1 and si < len(active_subs):
+                message_text += "\n"
+
         # Создаем инлайн клавиатуру
         keyboard = [
             [InlineKeyboardButton("📜 История абонемента", callback_data=f"subscription_history_athlete_{athlete.id}")],
@@ -1318,12 +1332,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             await query.edit_message_text("❌ У вас нет доступа")
             return
         
-        # Получаем абонемент спортсмена (связь один-к-одному)
-        # Также ищем старые деактивированные абонементы через прямой запрос
-        from services.subscription_service import SubscriptionService
-        current_subscription = athlete.subscription
-        
-        # Ищем все абонементы этого спортсмена (включая деактивированные) через прямой запрос
+        # Все абонементы спортсмена (включая неактивные)
         all_subscriptions = session.query(Subscription).filter_by(athlete_id=athlete_id).all()
         subscriptions = sorted(all_subscriptions, key=lambda s: s.created_at or datetime.min, reverse=True)
         
@@ -1711,23 +1720,30 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     if not sport_type_for_sub:
                         sport_type_for_sub = athlete.sport_type
                 
-                # Связь 1:1 - деактивируем все старые активные абонементы
-                active_subs = [s for s in athlete.subscriptions if s.is_active]
-                for old_sub in active_subs:
-                    old_sub.is_active = False
+                from utils.discipline_keys import discipline_key_for
+                from services.subscription_service import SubscriptionService
 
-                # По бизнес-логике: у спортсмена всегда один абонемент (row).
-                # Поэтому здесь мы НЕ создаем новый Subscription, а обновляем существующий.
-                subscription = session.query(Subscription).filter_by(athlete_id=athlete_id).first()
-                if not subscription:
-                    # Fallback на случай неконсистентных данных: создаем, но в штатной логике так быть не должно.
-                    from services.subscription_service import SubscriptionService
-                    subscription = SubscriptionService.create_subscription(
-                        session=session,
-                        athlete_id=athlete_id,
-                        subscription_type=subscription_type,
-                        sport_type=sport_type_for_sub,
+                dk = discipline_key_for(sport_type_for_sub or "", format="group")
+                existing_same = (
+                    session.query(Subscription)
+                    .filter_by(athlete_id=athlete_id, discipline_key=dk)
+                    .first()
+                )
+                if existing_same and existing_same.is_active:
+                    await query.edit_message_text(
+                        "❌ У спортсмена уже есть активный абонемент в этом направлении.\n"
+                        "Откройте существующий абонемент или завершите его."
                     )
+                    return
+
+                subscription = SubscriptionService.create_subscription(
+                    session=session,
+                    athlete_id=athlete_id,
+                    subscription_type=subscription_type,
+                    sport_type=sport_type_for_sub,
+                    discipline_key=dk,
+                    responsible_coach_id=user.id if isinstance(user, Coach) else None,
+                )
 
                 subscription.subscription_type = subscription_type
                 if subscription_type == "monthly":
@@ -2128,12 +2144,12 @@ async def show_restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Вы не можете восстанавливать тренировки для этого спортсмена")
             return
         
-        subscription = athlete.current_subscription
+        coach_sport = get_coach_sport_type(user) if isinstance(user, Coach) else None
+        subscription = subscription_for_coach_sport(athlete, coach_sport)
         if not subscription:
-            await query.edit_message_text("❌ У спортсмена нет активного абонемента")
+            await query.edit_message_text("❌ Нет активного абонемента для восстановления в этом направлении")
             return
-        
-        # Получаем пропущенные тренировки (неиспользованные, не восстановленные)
+
         missed_attendances = session.query(Attendance).filter(
             Attendance.athlete_id == athlete_id,
             Attendance.subscription_id == subscription.id,
@@ -2312,8 +2328,10 @@ async def select_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         
         if len(active_subs) == 1:
-            # Если только один абонемент, просто показываем карточку
-            await show_athlete_card(update, context)
+            only = active_subs[0]
+            await show_subscription_card(
+                update, context, override_query_data=f"subscription_{only.id}"
+            )
             return
         
         message = f"🔄 <b>ВЫБОР АБОНЕМЕНТА</b>\n\n"
@@ -2444,12 +2462,17 @@ async def show_edit_athlete_menu(update: Update, context: ContextTypes.DEFAULT_T
         session.close()
 
 
+_FREEZE_CAL_RE = re.compile(r"^freeze_cal_(\d+)_(\d+)_(\d{4})_(\d{1,2})$")
+_FREEZE_DATE_RE = re.compile(r"^freeze_date_(\d+)_(\d+)_(\d{4})_(\d{1,2})_(\d{1,2})$")
+
+
 def _build_freeze_calendar(
-    subscription_id: int,
+    athlete_id: int,
+    back_subscription_id: int,
     sport_type: str,
     age_group: str,
     year: int,
-    month: int
+    month: int,
 ) -> InlineKeyboardMarkup:
     """
     Календарь выбора даты окончания заморозки.
@@ -2495,7 +2518,11 @@ def _build_freeze_calendar(
             else:
                 btn_text = f"{day:2d}"
 
-            cb = f"freeze_date_{subscription_id}_{year}_{month}_{day}" if enabled else "freeze_ignore"
+            cb = (
+                f"freeze_date_{athlete_id}_{back_subscription_id}_{year}_{month}_{day}"
+                if enabled
+                else "freeze_ignore"
+            )
             row.append(InlineKeyboardButton(btn_text, callback_data=cb))
 
         keyboard.append(row)
@@ -2511,20 +2538,29 @@ def _build_freeze_calendar(
         next_year += 1
 
     keyboard.append([
-        InlineKeyboardButton("◀️ Предыдущий", callback_data=f"freeze_cal_{subscription_id}_{prev_year}_{prev_month}"),
-        InlineKeyboardButton("Следующий ▶️", callback_data=f"freeze_cal_{subscription_id}_{next_year}_{next_month}"),
+        InlineKeyboardButton(
+            "◀️ Предыдущий",
+            callback_data=f"freeze_cal_{athlete_id}_{back_subscription_id}_{prev_year}_{prev_month}",
+        ),
+        InlineKeyboardButton(
+            "Следующий ▶️",
+            callback_data=f"freeze_cal_{athlete_id}_{back_subscription_id}_{next_year}_{next_month}",
+        ),
     ])
 
     # Кнопка "Сегодня"
     now = now_moscow().date()
     if month != now.month or year != now.year:
         keyboard.append([
-            InlineKeyboardButton("📅 Сегодня", callback_data=f"freeze_cal_{subscription_id}_{now.year}_{now.month}")
+            InlineKeyboardButton(
+                "📅 Сегодня",
+                callback_data=f"freeze_cal_{athlete_id}_{back_subscription_id}_{now.year}_{now.month}",
+            )
         ])
 
     # Навигация/выход
     keyboard.append([
-        InlineKeyboardButton("🔙 Назад", callback_data=f"subscription_{subscription_id}"),
+        InlineKeyboardButton("🔙 Назад", callback_data=f"subscription_{back_subscription_id}"),
         InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main"),
     ])
 
@@ -2532,11 +2568,17 @@ def _build_freeze_calendar(
 
 
 async def handle_freeze_subscription_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начало процесса заморозки абонемента - показываем календарь"""
+    """Начало заморозки спортсмена (все активные абонементы) — календарь."""
     query = update.callback_query
     await query.answer()
 
-    subscription_id = int(query.data.replace("freeze_sub_", ""))
+    # freeze_athlete_{athlete_id}_{back_subscription_id}
+    m = re.match(r"^freeze_athlete_(\d+)_(\d+)$", query.data or "")
+    if not m:
+        await query.edit_message_text("❌ Некорректные данные")
+        return
+    athlete_id = int(m.group(1))
+    back_subscription_id = int(m.group(2))
 
     session = Session()
     try:
@@ -2545,33 +2587,41 @@ async def handle_freeze_subscription_start(update: Update, context: ContextTypes
             await query.edit_message_text("❌ У вас нет доступа")
             return
 
-        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
-        if not subscription:
-            await query.edit_message_text("❌ Абонемент не найден")
+        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден")
             return
 
-        athlete = subscription.athlete
         if isinstance(user, Coach) and athlete.created_by != user.id:
-            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
+            await query.edit_message_text("❌ Вы не можете изменять этого спортсмена")
             return
 
-        if not subscription.is_active:
-            await query.edit_message_text("❌ Можно заморозить только активный абонемент")
+        active_subs = [s for s in athlete.subscriptions if s.is_active]
+        if not active_subs:
+            await query.edit_message_text("❌ Нет активного абонемента")
             return
 
-        if subscription.is_frozen:
-            await query.edit_message_text("❌ Абонемент уже заморожен")
+        if any(s.is_frozen for s in active_subs):
+            await query.edit_message_text("❌ У спортсмена уже есть заморозка")
             return
 
-        sport_type = subscription.sport_type or athlete.sport_type
+        back_sub = session.query(Subscription).filter_by(id=back_subscription_id).first()
+        if not back_sub or back_sub.athlete_id != athlete_id:
+            back_subscription_id = min(s.id for s in active_subs)
+
+        ref_sub = session.query(Subscription).filter_by(id=back_subscription_id).first()
+        sport_type = (ref_sub.sport_type if ref_sub else None) or athlete.sport_type
         age_group = athlete.age_group
 
         now = now_moscow()
-        reply_markup = _build_freeze_calendar(subscription_id, sport_type, age_group, now.year, now.month)
+        reply_markup = _build_freeze_calendar(
+            athlete_id, back_subscription_id, sport_type, age_group, now.year, now.month
+        )
 
         await query.edit_message_text(
             f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
-            f"❄️ <b>ЗАМОРОЗКА АБОНЕМЕНТА</b>\n\n"
+            f"❄️ <b>ЗАМОРОЗКА СПОРТСМЕНА</b>\n\n"
+            f"Будут заморожены <b>все активные абонементы</b>.\n"
             f"Выберите дату <b>окончания заморозки</b> (тренировочный день):",
             reply_markup=reply_markup,
             parse_mode="HTML"
@@ -2588,11 +2638,13 @@ async def handle_freeze_calendar_nav(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     await query.answer()
 
-    # freeze_cal_{subscription_id}_{YYYY}_{MM}
-    parts = query.data.split("_")
-    subscription_id = int(parts[2])
-    year = int(parts[3])
-    month = int(parts[4])
+    m = _FREEZE_CAL_RE.match(query.data or "")
+    if not m:
+        return
+    athlete_id = int(m.group(1))
+    back_subscription_id = int(m.group(2))
+    year = int(m.group(3))
+    month = int(m.group(4))
 
     session = Session()
     try:
@@ -2601,16 +2653,18 @@ async def handle_freeze_calendar_nav(update: Update, context: ContextTypes.DEFAU
             await query.edit_message_text("❌ У вас нет доступа")
             return
 
-        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
-        if not subscription:
-            await query.edit_message_text("❌ Абонемент не найден")
+        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден")
             return
 
-        athlete = subscription.athlete
-        sport_type = subscription.sport_type or athlete.sport_type
+        ref_sub = session.query(Subscription).filter_by(id=back_subscription_id).first()
+        sport_type = (ref_sub.sport_type if ref_sub else None) or athlete.sport_type
         age_group = athlete.age_group
 
-        reply_markup = _build_freeze_calendar(subscription_id, sport_type, age_group, year, month)
+        reply_markup = _build_freeze_calendar(
+            athlete_id, back_subscription_id, sport_type, age_group, year, month
+        )
         await query.edit_message_reply_markup(reply_markup=reply_markup)
     finally:
         session.close()
@@ -2621,12 +2675,14 @@ async def handle_freeze_date_pick(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
 
-    # freeze_date_{subscription_id}_{YYYY}_{MM}_{DD}
-    parts = query.data.split("_")
-    subscription_id = int(parts[2])
-    year = int(parts[3])
-    month = int(parts[4])
-    day = int(parts[5])
+    m = _FREEZE_DATE_RE.match(query.data or "")
+    if not m:
+        return
+    athlete_id = int(m.group(1))
+    back_subscription_id = int(m.group(2))
+    year = int(m.group(3))
+    month = int(m.group(4))
+    day = int(m.group(5))
 
     session = Session()
     try:
@@ -2635,29 +2691,34 @@ async def handle_freeze_date_pick(update: Update, context: ContextTypes.DEFAULT_
             await query.edit_message_text("❌ У вас нет доступа")
             return
 
-        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
-        if not subscription:
-            await query.edit_message_text("❌ Абонемент не найден")
+        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден")
             return
 
-        athlete = subscription.athlete
         if isinstance(user, Coach) and athlete.created_by != user.id:
-            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
+            await query.edit_message_text("❌ Вы не можете изменять этого спортсмена")
             return
 
-        # Дата, выбранная тренером (без времени)
         selected_date = datetime(year, month, day, 0, 0, 0)
 
-        # Замораживаем абонемент
-        from database.db_utils import freeze_subscription
-        result = freeze_subscription(session, subscription_id, selected_date)
+        from database.db_utils import freeze_athlete
+
+        coach_db_id = user.id if isinstance(user, Coach) else None
+        result = freeze_athlete(
+            session,
+            athlete_id,
+            selected_date,
+            initiated_by_coach_id=coach_db_id,
+        )
 
         if not result["success"]:
             await query.edit_message_text(f"❌ {result['message']}")
             return
 
-        # Показываем карточку абонемента
-        await show_subscription_card(update, context, override_query_data=f"subscription_{subscription.id}")
+        await show_subscription_card(
+            update, context, override_query_data=f"subscription_{back_subscription_id}"
+        )
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ ЗАМОРОЗКЕ: {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка при заморозке абонемента")
@@ -2672,11 +2733,16 @@ async def handle_freeze_ignore(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def handle_unfreeze_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Разморозить абонемент"""
+    """Разморозить спортсмена (все активные абонементы)."""
     query = update.callback_query
     await query.answer()
 
-    subscription_id = int(query.data.replace("unfreeze_sub_", ""))
+    m = re.match(r"^unfreeze_athlete_(\d+)_(\d+)$", query.data or "")
+    if not m:
+        await query.edit_message_text("❌ Некорректные данные")
+        return
+    athlete_id = int(m.group(1))
+    back_subscription_id = int(m.group(2))
 
     session = Session()
     try:
@@ -2685,28 +2751,28 @@ async def handle_unfreeze_subscription(update: Update, context: ContextTypes.DEF
             await query.edit_message_text("❌ У вас нет доступа")
             return
 
-        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
-        if not subscription:
-            await query.edit_message_text("❌ Абонемент не найден")
+        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+        if not athlete:
+            await query.edit_message_text("❌ Спортсмен не найден")
             return
 
-        athlete = subscription.athlete
         if isinstance(user, Coach) and athlete.created_by != user.id:
-            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
+            await query.edit_message_text("❌ Вы не можете изменять этого спортсмена")
             return
 
-        # Размораживаем абонемент
-        from database.db_utils import unfreeze_subscription
-        result = unfreeze_subscription(session, subscription_id)
+        from database.db_utils import unfreeze_athlete
+
+        result = unfreeze_athlete(session, athlete_id)
 
         if not result["success"]:
             await query.edit_message_text(f"❌ {result['message']}")
             return
 
-        await query.answer("✅ Абонемент разморожен", show_alert=True)
+        await query.answer("✅ Спортсмен разморожен", show_alert=True)
 
-        # Показываем карточку абонемента
-        await show_subscription_card(update, context, override_query_data=f"subscription_{subscription.id}")
+        await show_subscription_card(
+            update, context, override_query_data=f"subscription_{back_subscription_id}"
+        )
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ РАЗМОРОЗКЕ: {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка при разморозке абонемента")

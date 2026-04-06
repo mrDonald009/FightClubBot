@@ -36,7 +36,10 @@ from .freeze_personal import (
     _count_training_days_between,
     _find_freeze_end_date,
     _find_freeze_start_date,
+    freeze_athlete,
     freeze_subscription,
+    is_training_in_athlete_personal_freeze,
+    unfreeze_athlete,
     unfreeze_subscription,
 )
 from .global_freeze import (
@@ -77,7 +80,10 @@ __all__ = [
     "_count_training_days_between",
     "_find_freeze_end_date",
     "_find_freeze_start_date",
+    "freeze_athlete",
     "freeze_subscription",
+    "is_training_in_athlete_personal_freeze",
+    "unfreeze_athlete",
     "unfreeze_subscription",
     "apply_global_freeze",
     "deactivate_global_freeze_and_migrate",

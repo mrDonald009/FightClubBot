@@ -63,6 +63,7 @@ def session_with_monthly_subscription():
     s, a, _ = _session_with_active_global_freeze()
     sub = Subscription(
         athlete_id=a.id,
+        discipline_key="thai_boxing_group",
         sport_type="Тайский Бокс",
         subscription_type="monthly",
         start_date=datetime(2026, 3, 21, 12, 30),
@@ -84,6 +85,7 @@ def session_migrate_start_inside_global_freeze():
     s, a, c = _session_with_active_global_freeze()
     sub = Subscription(
         athlete_id=a.id,
+        discipline_key="thai_boxing_group",
         sport_type="Тайский Бокс",
         subscription_type="monthly",
         start_date=datetime(2026, 3, 24, 18, 0),
@@ -307,6 +309,7 @@ def _session_with_monthly_sub_and_without_any_gf():
     s.flush()
     sub = Subscription(
         athlete_id=a.id,
+        discipline_key="thai_boxing_group",
         sport_type="Тайский Бокс",
         subscription_type="monthly",
         start_date=datetime(2026, 3, 21, 12, 30),
@@ -401,6 +404,7 @@ def test_deactivate_global_freeze_checks_non_monthly_subscriptions_too():
     s.flush()
     single = Subscription(
         athlete_id=athlete.id,
+        discipline_key="thai_boxing_group",
         sport_type="Тайский Бокс",
         subscription_type="single",
         start_date=datetime(2026, 3, 24, 18, 0),

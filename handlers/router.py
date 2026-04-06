@@ -1249,9 +1249,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(handle_activation_shift_cancel, pattern=r"^act_shift_cancel_\d+$")
     )
 
-    # Обработчики для заморозки абонемента
+    # Обработчики для заморозки спортсмена (все активные абонементы)
     registrar.register(
-        CallbackQueryHandler(handle_freeze_subscription_start, pattern="^freeze_sub_")
+        CallbackQueryHandler(handle_freeze_subscription_start, pattern=r"^freeze_athlete_\d+_\d+$")
     )
     registrar.register(
         CallbackQueryHandler(handle_freeze_calendar_nav, pattern="^freeze_cal_")
@@ -1263,7 +1263,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(handle_freeze_ignore, pattern="^freeze_ignore$")
     )
     registrar.register(
-        CallbackQueryHandler(handle_unfreeze_subscription, pattern="^unfreeze_sub_")
+        CallbackQueryHandler(handle_unfreeze_subscription, pattern=r"^unfreeze_athlete_\d+_\d+$")
     )
 
     logger.info("✅ Все обработчики зарегистрированы")

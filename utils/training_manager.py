@@ -79,12 +79,19 @@ class TrainingManager:
         """Рассчитать пропущенные тренировки для спортсмена"""
         session = Session()
         try:
+            from utils.subscription_resolve import active_subscription_for_sport
+
             athlete = session.query(Athlete).filter_by(id=athlete_id).first()
-            if not athlete or not athlete.current_subscription:
+            subscription = (
+                active_subscription_for_sport(athlete, athlete.sport_type)
+                if athlete
+                else None
+            )
+            if not athlete or not subscription:
                 return {"missed": 0, "total_passed": 0, "details": []}
 
-            subscription = athlete.current_subscription
-            schedule = TrainingManager.TRAINING_SCHEDULE.get(athlete.sport_type, {}).get(athlete.age_group)
+            sport_key = subscription.sport_type or athlete.sport_type
+            schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_key, {}).get(athlete.age_group)
             if not schedule:
                 return {"missed": 0, "total_passed": 0, "details": []}
 
@@ -120,7 +127,7 @@ class TrainingManager:
 
                     # Проверяем, была ли эта тренировка
                     training = session.query(Training).filter_by(
-                        sport_type=athlete.sport_type,
+                        sport_type=sport_key,
                         age_group=athlete.age_group,
                         training_date=training_start_datetime,
                         is_cancelled=False
@@ -172,11 +179,18 @@ class TrainingManager:
         """Автоматическое списание тренировок по расписанию"""
         session = Session()
         try:
+            from utils.subscription_resolve import active_subscription_for_sport
+
             athlete = session.query(Athlete).filter_by(id=athlete_id).first()
-            if not athlete or not athlete.current_subscription:
+            subscription = (
+                active_subscription_for_sport(athlete, athlete.sport_type)
+                if athlete
+                else None
+            )
+            if not athlete or not subscription:
                 return {"success": False, "message": "Спортсмен или абонемент не найден"}
 
-            subscription = athlete.current_subscription
+            sport_key = subscription.sport_type or athlete.sport_type
 
             # Проверяем статус абонемента
             status = SubscriptionChecker.get_subscription_status(subscription)
@@ -203,7 +217,7 @@ class TrainingManager:
 
                 # Находим или создаем тренировку
                 training = session.query(Training).filter_by(
-                    sport_type=athlete.sport_type,
+                    sport_type=sport_key,
                     age_group=athlete.age_group,
                     training_date=training_date,
                     is_cancelled=False
@@ -214,7 +228,7 @@ class TrainingManager:
                     coach_id = athlete.created_by if athlete.created_by else None
                     
                     training = Training(
-                        sport_type=athlete.sport_type,
+                        sport_type=sport_key,
                         age_group=athlete.age_group,
                         training_date=training_date,
                         is_cancelled=False,

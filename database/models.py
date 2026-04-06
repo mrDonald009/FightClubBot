@@ -106,7 +106,13 @@ class Athlete(Base):
         foreign_keys="Subscription.athlete_id",
         back_populates="athlete",
         uselist=True,
-        lazy="select"
+        lazy="select",
+    )
+    athlete_freezes = relationship(
+        "AthleteFreeze",
+        foreign_keys="AthleteFreeze.athlete_id",
+        back_populates="athlete",
+        lazy="select",
     )
     
     # Обратная совместимость - возвращает первый активный абонемент
@@ -133,6 +139,7 @@ class Subscription(Base):
     __table_args__ = (
         Index('ix_subscriptions_active_end', 'is_active', 'end_date'),
         Index('ix_subscriptions_athlete_active', 'athlete_id', 'is_active'),
+        UniqueConstraint('athlete_id', 'discipline_key', name='uq_subscriptions_athlete_discipline'),
         CheckConstraint(
             "subscription_type IS NULL OR subscription_type IN ('monthly', 'single')",
             name='ck_subscriptions_type'
@@ -153,9 +160,10 @@ class Subscription(Base):
     )
 
     id = Column(Integer, primary_key=True)
-    # По бизнес-логике: у одного спортсмена один абонемент.
-    # История/несколько строк не храним (в этом приложении абонемент обновляется).
-    athlete_id = Column(Integer, ForeignKey('athletes.id'), nullable=False, unique=True)
+    # Несколько абонементов на одного спортсмена — разные discipline_key (вид спорта × формат).
+    athlete_id = Column(Integer, ForeignKey('athletes.id'), nullable=False)
+    discipline_key = Column(String(64), nullable=False)  # например thai_boxing_group
+    responsible_coach_id = Column(Integer, ForeignKey('coaches.id'), nullable=True)
     sport_type_id = Column(Integer, ForeignKey('sport_types.id'), nullable=True)  # Связь с таблицей видов спорта
     sport_type = Column(String(50))  # Вид спорта для абонемента (для обратной совместимости)
     subscription_type = Column(String(20))  # monthly, single
@@ -185,8 +193,8 @@ class Subscription(Base):
         "Athlete",
         foreign_keys=[athlete_id],
         back_populates="subscriptions",
-        uselist=False
     )
+    responsible_coach = relationship("Coach", foreign_keys=[responsible_coach_id])
     
     sport_type_rel = relationship("SportType", foreign_keys=[sport_type_id])  # Связь с таблицей видов спорта
 
@@ -271,6 +279,26 @@ class RestorationRequest(Base):
     # Связи
     athlete = relationship("Athlete")
     subscription = relationship("Subscription")
+
+
+class AthleteFreeze(Base):
+    """Персональная заморозка спортсмена целиком (все направления/абонементы)."""
+    __tablename__ = 'athlete_freezes'
+    __table_args__ = (
+        Index('ix_athlete_freezes_athlete_range', 'athlete_id', 'frozen_from', 'frozen_until'),
+        {'extend_existing': True},
+    )
+
+    id = Column(Integer, primary_key=True)
+    athlete_id = Column(Integer, ForeignKey('athletes.id'), nullable=False)
+    frozen_from = Column(DateTime, nullable=False)
+    frozen_until = Column(DateTime, nullable=False)
+    initiated_by_coach_id = Column(Integer, ForeignKey('coaches.id'), nullable=True)
+    global_freeze_id = Column(Integer, ForeignKey('global_freezes.id'), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    athlete = relationship("Athlete", back_populates="athlete_freezes")
+    initiated_by_coach = relationship("Coach", foreign_keys=[initiated_by_coach_id])
 
 
 class GlobalFreeze(Base):
