@@ -153,6 +153,42 @@ def _backup_db(db_path: Path) -> Path:
     return backup_path
 
 
+def _subscription_column_names(cur: sqlite3.Cursor) -> set:
+    cur.execute("PRAGMA table_info(subscriptions)")
+    return {row[1] for row in cur.fetchall()}
+
+
+def _ensure_subscriptions_columns_for_seed(cur: sqlite3.Cursor) -> None:
+    """
+    Старая SQLite без discipline_key / заморозок и т.д. — добавляем колонки как в database/migration.py,
+    чтобы INSERT сида не падал (путь к БД может быть club_dev.db, не только club.db).
+    """
+    cols = _subscription_column_names(cur)
+    alters: List[Tuple[str, str]] = [
+        ("sport_type_id", "ALTER TABLE subscriptions ADD COLUMN sport_type_id INTEGER"),
+        ("total_restored", "ALTER TABLE subscriptions ADD COLUMN total_restored INTEGER DEFAULT 0"),
+        ("restored_this_month", "ALTER TABLE subscriptions ADD COLUMN restored_this_month INTEGER DEFAULT 0"),
+        ("is_frozen", "ALTER TABLE subscriptions ADD COLUMN is_frozen BOOLEAN DEFAULT FALSE"),
+        ("frozen_from", "ALTER TABLE subscriptions ADD COLUMN frozen_from DATETIME"),
+        ("frozen_until", "ALTER TABLE subscriptions ADD COLUMN frozen_until DATETIME"),
+        ("frozen_count", "ALTER TABLE subscriptions ADD COLUMN frozen_count INTEGER DEFAULT 0"),
+        ("frozen_days_total", "ALTER TABLE subscriptions ADD COLUMN frozen_days_total INTEGER DEFAULT 0"),
+        ("frozen_training_days_total", "ALTER TABLE subscriptions ADD COLUMN frozen_training_days_total INTEGER DEFAULT 0"),
+        ("created_at", "ALTER TABLE subscriptions ADD COLUMN created_at DATETIME"),
+        ("sport_type", "ALTER TABLE subscriptions ADD COLUMN sport_type VARCHAR(50)"),
+        ("discipline_key", "ALTER TABLE subscriptions ADD COLUMN discipline_key VARCHAR(64)"),
+        ("responsible_coach_id", "ALTER TABLE subscriptions ADD COLUMN responsible_coach_id INTEGER"),
+    ]
+    added = False
+    for name, stmt in alters:
+        if name not in cols:
+            cur.execute(stmt)
+            cols.add(name)
+            added = True
+    if added:
+        print("[INFO] В таблицу subscriptions добавлены недостающие колонки (совместимость со старой БД)")
+
+
 def _table_exists(cur: sqlite3.Cursor, name: str) -> bool:
     cur.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
@@ -457,6 +493,10 @@ def main() -> int:
     try:
         con.execute("PRAGMA foreign_keys = ON")
         cur = con.cursor()
+
+        if _table_exists(cur, "subscriptions"):
+            _ensure_subscriptions_columns_for_seed(cur)
+            con.commit()
 
         if not args.add_only:
             print(f"[INFO] Перед сидом: {_operational_data_counts_line(cur)}")
