@@ -9,7 +9,10 @@ from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
     resolve_subscription_activation_price_rubles,
 )
-from database.db_utils.subscription_tariffs import tariff_preview_monthly_single_for_sport
+from database.db_utils.subscription_tariffs import (
+    tariff_preview_for_sport,
+    tariff_preview_monthly_single_for_sport,
+)
 from database.models import (
     Athlete,
     Base,
@@ -54,8 +57,17 @@ def test_tariff_preview_monthly_single():
             is_active=True,
         )
     )
+    s.add(
+        SubscriptionTariff(
+            sport_type_name="MMA",
+            tariff_kind="individual_training",
+            amount_rubles=3000,
+            is_active=True,
+        )
+    )
     s.commit()
     assert tariff_preview_monthly_single_for_sport(s, "MMA") == (12000, 800)
+    assert tariff_preview_for_sport(s, "MMA") == (12000, 800, 3000)
     s.close()
 
 
@@ -96,6 +108,7 @@ def test_record_payment_from_db_tariff():
     s.close()
     assert len(rows) == 1
     assert rows[0].amount_rubles == 7000
+    assert rows[0].payment_kind == "subscription_monthly"
 
 
 def test_resolve_price_ignores_tariff_without_explicit_sport():
@@ -173,6 +186,7 @@ def test_record_payment_on_activation():
     assert rows[0].amount_rubles == 5000
     assert rows[0].paid_at == paid
     assert rows[0].recorded_by_telegram_id == 999
+    assert rows[0].payment_kind == "subscription_monthly"
 
 
 def test_no_record_when_no_tariff_in_db():

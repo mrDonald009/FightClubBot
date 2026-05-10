@@ -54,8 +54,10 @@ def _seed_default_subscription_tariffs(cursor) -> None:
     defaults = [
         ("MMA", "subscription_monthly", 6500),
         ("MMA", "subscription_single", 550),
+        ("MMA", "individual_training", 3000),
         ("Тайский Бокс", "subscription_monthly", 6500),
         ("Тайский Бокс", "subscription_single", 550),
+        ("Тайский Бокс", "individual_training", 3000),
     ]
     for sport, kind, amount in defaults:
         cursor.execute(
@@ -503,6 +505,31 @@ def migrate_database():
         )
         if cursor.fetchone():
             _seed_default_subscription_tariffs(cursor)
+
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='subscription_payments'"
+        )
+        if cursor.fetchone():
+            cursor.execute("PRAGMA table_info(subscription_payments)")
+            pay_cols = [row[1] for row in cursor.fetchall()]
+            if "payment_kind" not in pay_cols:
+                print("🔧 Добавляю payment_kind в subscription_payments...")
+                cursor.execute(
+                    "ALTER TABLE subscription_payments ADD COLUMN payment_kind VARCHAR(40)"
+                )
+                cursor.execute(
+                    """
+                    UPDATE subscription_payments SET payment_kind = (
+                        SELECT CASE
+                            WHEN s.subscription_type = 'monthly' THEN 'subscription_monthly'
+                            WHEN s.subscription_type = 'single' THEN 'subscription_single'
+                            ELSE 'individual_training'
+                        END
+                        FROM subscriptions s WHERE s.id = subscription_payments.subscription_id
+                    ) WHERE payment_kind IS NULL
+                    """
+                )
+                print("✅ payment_kind добавлен и заполнен по типу абонемента")
 
         # Проверяем таблицу trainings
         cursor.execute("PRAGMA table_info(trainings)")

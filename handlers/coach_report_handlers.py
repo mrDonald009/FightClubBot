@@ -18,7 +18,7 @@ from database.db_utils.coach_report import (
     coach_sport_type_name,
     month_range,
 )
-from database.db_utils.subscription_tariffs import tariff_preview_monthly_single_for_sport
+from database.db_utils.subscription_tariffs import tariff_preview_for_sport
 from database.models import Coach
 from utils.time_utils import now_moscow
 
@@ -83,7 +83,7 @@ def _report_header_lines(rep, sport_label: Optional[str]) -> List[str]:
         f"<i>Период: {period_h}</i>",
     ]
     if sport_label:
-        lines.append(f"<i>Направление: {html.escape(sport_label)}</i>")
+        lines.append(f"<i>Вид спорта: {html.escape(sport_label)}</i>")
     return lines
 
 
@@ -94,6 +94,7 @@ def _format_section_html(
     *,
     coach_tariff_monthly_rub: Optional[int] = None,
     coach_tariff_single_rub: Optional[int] = None,
+    coach_tariff_individual_rub: Optional[int] = None,
 ) -> str:
     head = _report_header_lines(rep, sport_label)
     body: List[str] = []
@@ -106,40 +107,35 @@ def _format_section_html(
             f"• Новых спортсменов за месяц: <b>{rep.new_athletes_in_period}</b>",
         ]
     elif section == "rev":
-        monthly_h = (
-            "не задано"
-            if coach_tariff_monthly_rub is None
-            else html.escape(_format_rubles(coach_tariff_monthly_rub))
-        )
-        single_h = (
-            "не задано"
-            if coach_tariff_single_rub is None
-            else html.escape(_format_rubles(coach_tariff_single_rub))
-        )
+        def _price_h(v: Optional[int]) -> str:
+            return "не задано" if v is None else html.escape(_format_rubles(v))
+
+        monthly_h = _price_h(coach_tariff_monthly_rub)
+        single_h = _price_h(coach_tariff_single_rub)
+        ind_h = _price_h(coach_tariff_individual_rub)
         body = [
             "",
             "<b>Выручка</b>",
-            "<i>Сумма за месяц — только оплаты, которые в этом месяце «привязаны» к дате "
-            "(обычно это месяц первой тренировки после оплаты). Если абонементы есть, а сумма 0 — "
-            f"посмотрите месяц старта или раздел «Показатели» (активных сейчас: <b>{rep.active_at_month_end}</b>).</i>",
             "",
             f"• Сумма за месяц: <b>{html.escape(_format_rubles(rep.revenue_rubles))}</b>",
-            f"• Оплат в списке: <b>{rep.payment_records_in_period}</b>",
+            f"• Месячный абонемент — оплат: <b>{rep.payment_count_monthly}</b>",
+            f"• Разовый абонемент — оплат: <b>{rep.payment_count_single}</b>",
+            f"• Индивидуальная тренировка — оплат: <b>{rep.payment_count_individual}</b>",
             "",
-            f"• Ваши цены: абонемент на месяц — <b>{monthly_h}</b>; разовое — <b>{single_h}</b>",
-            "",
-            "<i>При активации абонемента сумма подставляется из прайса клуба. Если чего-то не хватает — "
-            "напишите администратору.</i>",
+            "• <b>Ваши цены:</b>",
+            f"Месячный абонемент — {monthly_h};",
+            f"Разовый абонемент — {single_h};",
+            f"Индивидуальная тренировка — {ind_h};",
         ]
         if rep.revenue_rubles == 0 and rep.payment_records_in_period == 0:
             if rep.subscription_starts_in_period == 0:
-                tail = " Выберите месяц, когда была первая тренировка по новому абонементу, или уточните оплату у администратора."
+                tail = " Выберите месяц первой тренировки по новому абонементу или уточните у администратора."
                 if rep.active_at_month_end > 0:
-                    tail += " Нули при активных абонементах — нормально: оплата могла попасть в другой месяц."
+                    tail += " Нули при активных абонементах бывают, если оплата в другом месяце."
                 body.extend(
                     [
                         "",
-                        "<i>В этом месяце не было новых стартов и не попало ни одной оплаты в отчёт." + tail + "</i>",
+                        "<i>В этом месяце не было стартов и оплат в отчёте." + tail + "</i>",
                     ]
                 )
             elif rep.estimated_revenue_if_current_env_rub > 0:
@@ -149,16 +145,15 @@ def _format_section_html(
                 body.extend(
                     [
                         "",
-                        "<i>По текущим ценам за старты в этом месяце вышло бы примерно <b>" + est_h + "</b>, "
-                        "а в отчёте оплат нет — возможно, абонемент активировали до обновления прайса или "
-                        "нужно внести оплату вручную. Уточните у администратора.</i>",
+                        "<i>По прайсу за старты в месяце вышло бы примерно <b>" + est_h + "</b>, "
+                        "а оплат нет — возможно, старый прайс или внесите оплату через администратора.</i>",
                     ]
                 )
             else:
                 body.extend(
                     [
                         "",
-                        "<i>В месяце были старты, но для них не заданы цены в прайсе — автоматическая оплата "
+                        "<i>В месяце были старты, но в прайсе нет цен для их типов — автоматическая оплата "
                         "не создалась. Напишите администратору.</i>",
                     ]
                 )
@@ -367,8 +362,9 @@ async def coach_statistics_callback(update: Update, context: ContextTypes.DEFAUL
                 sport_label = coach_sport_type_name(coach)
                 monthly_prev: Optional[int] = None
                 single_prev: Optional[int] = None
+                ind_prev: Optional[int] = None
                 if sec == "rev":
-                    monthly_prev, single_prev = tariff_preview_monthly_single_for_sport(
+                    monthly_prev, single_prev, ind_prev = tariff_preview_for_sport(
                         session, sport_label
                     )
                 text = _format_section_html(
@@ -377,6 +373,7 @@ async def coach_statistics_callback(update: Update, context: ContextTypes.DEFAUL
                     sec,
                     coach_tariff_monthly_rub=monthly_prev,
                     coach_tariff_single_rub=single_prev,
+                    coach_tariff_individual_rub=ind_prev,
                 )
                 if len(text) > 4000:
                     text = text[:3900] + "\n\n<i>… обрезано (лимит Telegram).</i>"

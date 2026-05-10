@@ -135,6 +135,9 @@ def test_report_roster_attendance_active_and_subscription_starts():
     assert rep.new_subscription_rows_in_period == 1
     assert rep.revenue_rubles == 0
     assert rep.payment_records_in_period == 0
+    assert rep.payment_count_monthly == 0
+    assert rep.payment_count_single == 0
+    assert rep.payment_count_individual == 0
     assert rep.estimated_revenue_if_current_env_rub == 0
 
 
@@ -193,6 +196,9 @@ def test_report_excludes_other_sport_training():
     assert rep.athletes_absent_distinct == 0
     assert rep.revenue_rubles == 0
     assert rep.payment_records_in_period == 0
+    assert rep.payment_count_monthly == 0
+    assert rep.payment_count_single == 0
+    assert rep.payment_count_individual == 0
     assert rep.estimated_revenue_if_current_env_rub == 0
 
 
@@ -238,6 +244,9 @@ def test_report_estimated_revenue_from_starts_when_tariff_in_db():
     assert rep.subscription_starts_in_period == 1
     assert rep.revenue_rubles == 0
     assert rep.payment_records_in_period == 0
+    assert rep.payment_count_monthly == 0
+    assert rep.payment_count_single == 0
+    assert rep.payment_count_individual == 0
     assert rep.estimated_revenue_if_current_env_rub == 12000
 
 
@@ -280,6 +289,10 @@ def test_report_estimated_uses_db_tariff():
     s.close()
 
     assert rep.subscription_starts_in_period == 1
+    assert rep.payment_records_in_period == 0
+    assert rep.payment_count_monthly == 0
+    assert rep.payment_count_single == 0
+    assert rep.payment_count_individual == 0
     assert rep.estimated_revenue_if_current_env_rub == 8800
 
 
@@ -301,6 +314,7 @@ def test_report_revenue_by_paid_at():
             athlete_id=a.id,
             discipline_key="mma_pay",
             sport_type="MMA",
+            subscription_type="monthly",
             is_active=True,
             start_date=datetime(2025, 8, 1),
             end_date=datetime(2026, 9, 1),
@@ -331,6 +345,9 @@ def test_report_revenue_by_paid_at():
 
     assert rep.revenue_rubles == 5000
     assert rep.payment_records_in_period == 1
+    assert rep.payment_count_monthly == 1
+    assert rep.payment_count_single == 0
+    assert rep.payment_count_individual == 0
     assert rep.estimated_revenue_if_current_env_rub == 0
 
 
@@ -387,4 +404,7 @@ def test_report_excludes_cancelled_training_attendance():
     assert rep.athletes_present_distinct == 0
     assert rep.revenue_rubles == 0
     assert rep.payment_records_in_period == 0
+    assert rep.payment_count_monthly == 0
+    assert rep.payment_count_single == 0
+    assert rep.payment_count_individual == 0
     assert rep.estimated_revenue_if_current_env_rub == 0

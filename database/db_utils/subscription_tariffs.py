@@ -60,18 +60,30 @@ def find_active_tariff_amount_rubles(
     return None
 
 
-def tariff_preview_monthly_single_for_sport(
+def tariff_preview_for_sport(
     session: OrmSession,
     sport_type_name: Optional[str],
-) -> Tuple[Optional[int], Optional[int]]:
-    """Активные суммы из БД для направления тренера: (месячный, разовый)."""
+) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Активные суммы из БД: (месячный абонемент, разовый, индивидуальная тренировка)."""
     sport = (sport_type_name or "").strip()
     if not sport:
-        return None, None
+        return None, None, None
     m = find_active_tariff_amount_rubles(
         session, sport_type_name=sport, tariff_kind=TARIFF_KIND_SUBSCRIPTION_MONTHLY
     )
     s = find_active_tariff_amount_rubles(
         session, sport_type_name=sport, tariff_kind=TARIFF_KIND_SUBSCRIPTION_SINGLE
     )
+    ind = find_active_tariff_amount_rubles(
+        session, sport_type_name=sport, tariff_kind=TARIFF_KIND_INDIVIDUAL_TRAINING
+    )
+    return m, s, ind
+
+
+def tariff_preview_monthly_single_for_sport(
+    session: OrmSession,
+    sport_type_name: Optional[str],
+) -> Tuple[Optional[int], Optional[int]]:
+    """Обратная совместимость: только (месячный, разовый)."""
+    m, s, _ = tariff_preview_for_sport(session, sport_type_name)
     return m, s

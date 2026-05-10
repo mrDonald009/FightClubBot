@@ -257,6 +257,8 @@ class SubscriptionPayment(Base):
     subscription_id = Column(Integer, ForeignKey("subscriptions.id"), nullable=False)
     amount_rubles = Column(Integer, nullable=False)
     paid_at = Column(DateTime, nullable=False)
+    # subscription_monthly | subscription_single | individual_training (как в subscription_tariffs.tariff_kind)
+    payment_kind = Column(String(40), nullable=True)
     note = Column(Text, nullable=True)
     recorded_by_telegram_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

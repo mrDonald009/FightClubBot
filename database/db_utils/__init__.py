@@ -67,6 +67,7 @@ from .subscription_tariffs import (
     TARIFF_KIND_SUBSCRIPTION_SINGLE,
     find_active_tariff_amount_rubles,
     tariff_kind_for_subscription_type,
+    tariff_preview_for_sport,
     tariff_preview_monthly_single_for_sport,
 )
 
@@ -123,5 +124,6 @@ __all__ = [
     "TARIFF_KIND_SUBSCRIPTION_SINGLE",
     "find_active_tariff_amount_rubles",
     "tariff_kind_for_subscription_type",
+    "tariff_preview_for_sport",
     "tariff_preview_monthly_single_for_sport",
 ]

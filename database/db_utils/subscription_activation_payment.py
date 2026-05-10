@@ -52,11 +52,13 @@ def record_payment_on_subscription_activation(
     amount = resolve_subscription_activation_price_rubles(session, subscription)
     if amount is None:
         return
+    kind = tariff_kind_for_subscription_type(subscription.subscription_type)
     session.add(
         SubscriptionPayment(
             subscription_id=subscription.id,
             amount_rubles=amount,
             paid_at=paid_at,
+            payment_kind=kind,
             note="Активация абонемента",
             recorded_by_telegram_id=recorded_by_telegram_id,
         )

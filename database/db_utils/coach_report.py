@@ -15,6 +15,11 @@ from sqlalchemy.orm import Session as OrmSession
 from database.db_utils.subscription_activation_payment import (
     resolve_subscription_activation_price_rubles,
 )
+from database.db_utils.subscription_tariffs import (
+    TARIFF_KIND_INDIVIDUAL_TRAINING,
+    TARIFF_KIND_SUBSCRIPTION_MONTHLY,
+    TARIFF_KIND_SUBSCRIPTION_SINGLE,
+)
 from database.models import (
     Athlete,
     Attendance,
@@ -88,7 +93,10 @@ class CoachPeriodReport:
     new_subscription_rows_in_period: int
     revenue_rubles: int
     payment_records_in_period: int
-    # Справочно: сумма «как если бы» по текущим subscription_tariffs для каждого старта в периоде.
+    payment_count_monthly: int
+    payment_count_single: int
+    payment_count_individual: int
+    # Справочно: сумма по текущим тарифам для каждого старта в периоде.
     estimated_revenue_if_current_env_rub: int
 
 
@@ -129,6 +137,9 @@ def build_coach_period_report(
     rev, pay_n = _revenue_in_period(
         session, athlete_ids, coach_sport, period_start, period_end_excl
     )
+    n_m, n_s, n_i = _payment_counts_by_kind(
+        session, athlete_ids, coach_sport, period_start, period_end_excl
+    )
     est_rev = _estimated_revenue_from_subscription_starts(
         session, athlete_ids, coach_sport, period_start, period_end_excl
     )
@@ -147,6 +158,9 @@ def build_coach_period_report(
         new_subscription_rows_in_period=sub_rows,
         revenue_rubles=rev,
         payment_records_in_period=pay_n,
+        payment_count_monthly=n_m,
+        payment_count_single=n_s,
+        payment_count_individual=n_i,
         estimated_revenue_if_current_env_rub=est_rev,
     )
 
@@ -368,6 +382,64 @@ def _revenue_in_period(
     return int(total.scalar() or 0), int(nq.scalar() or 0)
 
 
+def _payment_counts_by_kind(
+    session: OrmSession,
+    athlete_ids: List[int],
+    coach_sport: Optional[str],
+    period_start: datetime,
+    period_end_excl: datetime,
+) -> Tuple[int, int, int]:
+    """Число оплат за период: месячный абонемент, разовый, индивидуальная тренировка (по payment_kind или типу абонемента)."""
+    if not athlete_ids:
+        return 0, 0, 0
+
+    def base():
+        q = (
+            session.query(SubscriptionPayment)
+            .join(Subscription, Subscription.id == SubscriptionPayment.subscription_id)
+            .join(Athlete, Athlete.id == Subscription.athlete_id)
+            .filter(
+                Subscription.athlete_id.in_(athlete_ids),
+                SubscriptionPayment.paid_at >= period_start,
+                SubscriptionPayment.paid_at < period_end_excl,
+            )
+        )
+        if coach_sport:
+            q = q.filter(_subscription_sport_match_sql(coach_sport))
+        return q
+
+    monthly_f = or_(
+        SubscriptionPayment.payment_kind == TARIFF_KIND_SUBSCRIPTION_MONTHLY,
+        and_(
+            SubscriptionPayment.payment_kind.is_(None),
+            or_(
+                Subscription.subscription_type == "monthly",
+                Subscription.subscription_type.is_(None),
+            ),
+        ),
+    )
+    single_f = or_(
+        SubscriptionPayment.payment_kind == TARIFF_KIND_SUBSCRIPTION_SINGLE,
+        and_(
+            SubscriptionPayment.payment_kind.is_(None),
+            Subscription.subscription_type == "single",
+        ),
+    )
+    indiv_f = or_(
+        SubscriptionPayment.payment_kind == TARIFF_KIND_INDIVIDUAL_TRAINING,
+        and_(
+            SubscriptionPayment.payment_kind.is_(None),
+            Subscription.subscription_type.isnot(None),
+            ~Subscription.subscription_type.in_(["monthly", "single"]),
+        ),
+    )
+
+    n_m = base().filter(monthly_f).count()
+    n_s = base().filter(single_f).count()
+    n_i = base().filter(indiv_f).count()
+    return int(n_m), int(n_s), int(n_i)
+
+
 def _estimated_revenue_from_subscription_starts(
     session: OrmSession,
     athlete_ids: List[int],
@@ -376,8 +448,8 @@ def _estimated_revenue_from_subscription_starts(
     period_end_excl: datetime,
 ) -> int:
     """
-    Сумма по стартам абонемента в периоде при текущих тарифах (subscription_tariffs, затем env —
-    как resolve_subscription_activation_price_rubles при активации). Не заменяет факт из subscription_payments.
+    Сумма по стартам абонемента в периоде при текущих тарифах в БД
+    (как resolve_subscription_activation_price_rubles при активации). Не заменяет факт из оплат.
     """
     if not athlete_ids:
         return 0
