@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import Session as OrmSession
 
+from database.db_utils.subscription_activation_payment import activation_price_rubles
 from database.models import (
     Athlete,
     Attendance,
@@ -85,6 +86,8 @@ class CoachPeriodReport:
     new_subscription_rows_in_period: int
     revenue_rubles: int
     payment_records_in_period: int
+    # Справочно: сумма «как если бы» по текущим SUBSCRIPTION_PRICE_* из env для каждого старта в периоде.
+    estimated_revenue_if_current_env_rub: int
 
 
 def build_coach_period_report(
@@ -124,6 +127,9 @@ def build_coach_period_report(
     rev, pay_n = _revenue_in_period(
         session, athlete_ids, coach_sport, period_start, period_end_excl
     )
+    est_rev = _estimated_revenue_from_subscription_starts(
+        session, athlete_ids, coach_sport, period_start, period_end_excl
+    )
 
     return CoachPeriodReport(
         year=year,
@@ -139,6 +145,7 @@ def build_coach_period_report(
         new_subscription_rows_in_period=sub_rows,
         revenue_rubles=rev,
         payment_records_in_period=pay_n,
+        estimated_revenue_if_current_env_rub=est_rev,
     )
 
 
@@ -357,3 +364,36 @@ def _revenue_in_period(
     if coach_sport:
         nq = nq.filter(_subscription_sport_match_sql(coach_sport))
     return int(total.scalar() or 0), int(nq.scalar() or 0)
+
+
+def _estimated_revenue_from_subscription_starts(
+    session: OrmSession,
+    athlete_ids: List[int],
+    coach_sport: Optional[str],
+    period_start: datetime,
+    period_end_excl: datetime,
+) -> int:
+    """
+    Сумма по стартам абонемента в периоде, если для каждого типа взять текущий тариф из env
+    (тот же activation_price_rubles, что при активации). Не заменяет факт из subscription_payments.
+    """
+    if not athlete_ids:
+        return 0
+    q = (
+        session.query(Subscription)
+        .join(Athlete, Athlete.id == Subscription.athlete_id)
+        .filter(
+            Subscription.athlete_id.in_(athlete_ids),
+            Subscription.start_date.isnot(None),
+            Subscription.start_date >= period_start,
+            Subscription.start_date < period_end_excl,
+        )
+    )
+    if coach_sport:
+        q = q.filter(_subscription_sport_match_sql(coach_sport))
+    total = 0
+    for sub in q:
+        p = activation_price_rubles(sub.subscription_type)
+        if p is not None:
+            total += p
+    return total

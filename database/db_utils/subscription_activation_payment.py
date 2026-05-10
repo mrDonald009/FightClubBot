@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 from sqlalchemy.orm import Session as OrmSession
 
@@ -30,6 +30,11 @@ def activation_price_rubles(subscription_type: Optional[str]) -> Optional[int]:
     if n <= 0:
         return None
     return n
+
+
+def tariff_prices_from_env() -> Tuple[Optional[int], Optional[int]]:
+    """Текущие тарифы из окружения процесса: (месячный, разовый). None — не задано или неверно."""
+    return activation_price_rubles("monthly"), activation_price_rubles("single")
 
 
 def record_payment_on_subscription_activation(

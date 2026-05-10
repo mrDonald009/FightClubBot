@@ -18,6 +18,7 @@ from database.db_utils.coach_report import (
     coach_sport_type_name,
     month_range,
 )
+from database.db_utils.subscription_activation_payment import tariff_prices_from_env
 from database.models import Coach
 from utils.time_utils import now_moscow
 
@@ -98,16 +99,62 @@ def _format_section_html(rep, sport_label: Optional[str], section: str) -> str:
             f"• Новых спортсменов за период: <b>{rep.new_athletes_in_period}</b>",
         ]
     elif section == "rev":
+        monthly_t, single_t = tariff_prices_from_env()
+        monthly_h = (
+            "не задано"
+            if monthly_t is None
+            else html.escape(_format_rubles(monthly_t))
+        )
+        single_h = (
+            "не задано"
+            if single_t is None
+            else html.escape(_format_rubles(single_t))
+        )
         body = [
             "",
             "<b>Выручка</b> (таблица оплат, дата учёта — <code>paid_at</code>):",
             f"• За период: <b>{html.escape(_format_rubles(rep.revenue_rubles))}</b>",
             f"• Платёжных записей: <b>{rep.payment_records_in_period}</b>",
             "",
+            f"• Тарифы, которые <b>сейчас видит процесс</b> (как при активации): "
+            f"месячный — <b>{monthly_h}</b>; разовый — <b>{single_h}</b>",
+            "",
             "<i>При активации абонемента сумма может создаваться автоматически, если в .env заданы "
-            "<code>SUBSCRIPTION_PRICE_MONTHLY_RUB</code> и/или <code>SUBSCRIPTION_PRICE_SINGLE_RUB</code>. "
+            "<code>SUBSCRIPTION_PRICE_MONTHLY_RUB</code> и/или <code>SUBSCRIPTION_PRICE_SINGLE_RUB</code> "
+            "(в том же файле, что подхватывает запуск бота, например <code>EnvironmentFile</code> у systemd). "
             "Дополнительно можно заносить строки в <code>subscription_payments</code> вручную.</i>",
         ]
+        if rep.revenue_rubles == 0 and rep.payment_records_in_period == 0:
+            if rep.subscription_starts_in_period == 0:
+                body.extend(
+                    [
+                        "",
+                        "<i>В выбранном месяце нет стартов абонемента по дате начала и нет оплат с "
+                        "<code>paid_at</code> в этом месяце — нули ожидаемы. Откройте месяц, когда была "
+                        "первая тренировка после активации, или занесите оплату вручную.</i>",
+                    ]
+                )
+            elif rep.estimated_revenue_if_current_env_rub > 0:
+                est_h = html.escape(
+                    _format_rubles(rep.estimated_revenue_if_current_env_rub)
+                )
+                body.extend(
+                    [
+                        "",
+                        "<i>Справочно: при текущих тарифах из .env старты абонемента в этом месяце "
+                        f"соответствуют примерно <b>{est_h}</b>, а в таблице оплат записей нет — "
+                        "автозапись не сработала в момент активации (другой env, не рестартовали бота, "
+                        "старый деплой) или оплату нужно внести вручную.</i>",
+                    ]
+                )
+            else:
+                body.extend(
+                    [
+                        "",
+                        "<i>В месяце есть старты абонемента, но тарифы в env для их типов не заданы "
+                        "или равны 0 — автоматическая строка оплаты не создавалась.</i>",
+                    ]
+                )
     elif section == "att":
         body = [
             "",

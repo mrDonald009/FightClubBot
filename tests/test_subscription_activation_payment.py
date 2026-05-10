@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from database.db_utils.subscription_activation_payment import (
     activation_price_rubles,
     record_payment_on_subscription_activation,
+    tariff_prices_from_env,
 )
 from database.models import Athlete, Base, Coach, SportType, Subscription, SubscriptionPayment
 
@@ -33,6 +34,7 @@ def test_activation_price_from_env(monkeypatch):
     assert activation_price_rubles("monthly") == 12000
     assert activation_price_rubles("single") == 800
     assert activation_price_rubles(None) is None
+    assert tariff_prices_from_env() == (12000, 800)
 
 
 def test_record_payment_on_activation(monkeypatch):

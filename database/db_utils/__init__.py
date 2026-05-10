@@ -60,6 +60,7 @@ from .coach_report import build_coach_period_report, coach_roster_athlete_ids, m
 from .subscription_activation_payment import (
     activation_price_rubles,
     record_payment_on_subscription_activation,
+    tariff_prices_from_env,
 )
 
 __all__ = [
@@ -110,4 +111,5 @@ __all__ = [
     "month_range",
     "activation_price_rubles",
     "record_payment_on_subscription_activation",
+    "tariff_prices_from_env",
 ]

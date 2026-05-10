@@ -134,6 +134,7 @@ def test_report_roster_attendance_active_and_subscription_starts():
     assert rep.new_subscription_rows_in_period == 1
     assert rep.revenue_rubles == 0
     assert rep.payment_records_in_period == 0
+    assert rep.estimated_revenue_if_current_env_rub == 0
 
 
 def test_report_excludes_other_sport_training():
@@ -191,6 +192,45 @@ def test_report_excludes_other_sport_training():
     assert rep.athletes_absent_distinct == 0
     assert rep.revenue_rubles == 0
     assert rep.payment_records_in_period == 0
+    assert rep.estimated_revenue_if_current_env_rub == 0
+
+
+def test_report_estimated_revenue_from_starts_when_env_set(monkeypatch):
+    monkeypatch.setenv("SUBSCRIPTION_PRICE_MONTHLY_RUB", "12000")
+    monkeypatch.delenv("SUBSCRIPTION_PRICE_SINGLE_RUB", raising=False)
+    s, coach = _coach_mma_session()
+    y, m = 2026, 1
+
+    a = Athlete(
+        full_name="Стартянварь",
+        sport_type="MMA",
+        age_group="adults",
+        created_by=coach.id,
+        created_at=datetime(2025, 12, 1),
+    )
+    s.add(a)
+    s.flush()
+    s.add(
+        Subscription(
+            athlete_id=a.id,
+            discipline_key="mma_jan",
+            sport_type="MMA",
+            subscription_type="monthly",
+            is_active=True,
+            start_date=datetime(2026, 1, 10, 19, 0, 0),
+            end_date=datetime(2027, 1, 10, 19, 0, 0),
+            created_at=datetime(2025, 12, 15),
+        )
+    )
+    s.commit()
+
+    rep = build_coach_period_report(s, coach, y, m)
+    s.close()
+
+    assert rep.subscription_starts_in_period == 1
+    assert rep.revenue_rubles == 0
+    assert rep.payment_records_in_period == 0
+    assert rep.estimated_revenue_if_current_env_rub == 12000
 
 
 def test_report_revenue_by_paid_at():
@@ -241,6 +281,7 @@ def test_report_revenue_by_paid_at():
 
     assert rep.revenue_rubles == 5000
     assert rep.payment_records_in_period == 1
+    assert rep.estimated_revenue_if_current_env_rub == 0
 
 
 def test_report_excludes_cancelled_training_attendance():
@@ -296,3 +337,4 @@ def test_report_excludes_cancelled_training_attendance():
     assert rep.athletes_present_distinct == 0
     assert rep.revenue_rubles == 0
     assert rep.payment_records_in_period == 0
+    assert rep.estimated_revenue_if_current_env_rub == 0
