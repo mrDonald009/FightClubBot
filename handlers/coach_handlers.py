@@ -2264,7 +2264,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     (getattr(training, "training_format", None) or "").strip().lower()
                     == TRAINING_FORMAT_INDIVIDUAL
                 )
-                slot_suffix = " — <i>индивидуально</i>" if is_individual_slot else ""
+                slot_suffix = " — Индивидуальная" if is_individual_slot else " — Групповая"
                 message += (
                     f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
                 )
