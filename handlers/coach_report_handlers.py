@@ -1,11 +1,11 @@
-"""Статистика тренера за календарный месяц: KPI, выручка, посещаемость, абонементы."""
+"""Статистика тренера: выбор года и месяца, затем раздел (KPI, выручка, …)."""
 from __future__ import annotations
 
 import html
 import logging
 import re
 from datetime import timedelta
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from sqlalchemy.orm import joinedload
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -39,7 +39,25 @@ _MONTH_NAMES_NOM = (
     "Декабрь",
 )
 
+_MONTH_SHORT = (
+    "",
+    "Янв",
+    "Фев",
+    "Мар",
+    "Апр",
+    "Май",
+    "Июн",
+    "Июл",
+    "Авг",
+    "Сен",
+    "Окт",
+    "Ноя",
+    "Дек",
+)
+
 _NUM_SEP = "\u202f"  # узкий пробел для тысяч
+
+_MIN_YEAR = 2018
 
 
 def _format_rubles(n: int) -> str:
@@ -56,7 +74,7 @@ def _period_range_human(year: int, month: int) -> str:
     )
 
 
-def _format_report_html(rep, sport_label: Optional[str]) -> str:
+def _report_header_lines(rep, sport_label: Optional[str]) -> List[str]:
     title_m = _MONTH_NAMES_NOM[rep.month]
     period_h = html.escape(_period_range_human(rep.year, rep.month))
     lines = [
@@ -65,99 +83,130 @@ def _format_report_html(rep, sport_label: Optional[str]) -> str:
     ]
     if sport_label:
         lines.append(f"<i>Направление: {html.escape(sport_label)}</i>")
-    lines += [
-        "",
-        "<b>KPI</b>",
-        f"• В вашей базе (по направлению): <b>{rep.roster_total}</b>",
-        f"• Активных абонементов на конец месяца: <b>{rep.active_at_month_end}</b>",
-        f"• Новых спортсменов за период: <b>{rep.new_athletes_in_period}</b>",
-        "",
-        "<b>Выручка</b> (таблица оплат, дата учёта — <code>paid_at</code>):",
-        f"• За период: <b>{html.escape(_format_rubles(rep.revenue_rubles))}</b>",
-        f"• Платёжных записей: <b>{rep.payment_records_in_period}</b>",
-        "",
-        "<b>Посещаемость</b> (тренировки не отменены; ваш вид спорта):",
-        f"• Отметок «был»: <b>{rep.attendance_present}</b> "
-        f"(уникальных спортсменов: <b>{rep.athletes_present_distinct}</b>)",
-        f"• Отметок «не был»: <b>{rep.attendance_absent}</b> "
-        f"(уникальных спортсменов: <b>{rep.athletes_absent_distinct}</b>)",
-        "",
-        "<b>Абонементы</b>:",
-        f"• Старт действия в периоде (по дате начала): <b>{rep.subscription_starts_in_period}</b>",
-        f"• Новых записей абонемента (по дате создания строки): <b>{rep.new_subscription_rows_in_period}</b>",
-        "",
-        "<i>При активации абонемента сумма может создаваться автоматически, если в .env заданы "
-        "<code>SUBSCRIPTION_PRICE_MONTHLY_RUB</code> и/или <code>SUBSCRIPTION_PRICE_SINGLE_RUB</code>. "
-        "Дополнительно можно заносить строки в <code>subscription_payments</code> вручную.</i>",
-    ]
-    return "\n".join(lines)
+    return lines
 
 
-def _pick_months_for_buttons() -> Tuple[Tuple[int, int], Tuple[int, int]]:
-    now = now_moscow()
-    y, m = now.year, now.month
-    if m == 1:
-        py, pm = y - 1, 12
-    else:
-        py, pm = y, m - 1
-    return (y, m), (py, pm)
-
-
-def _rolling_past_months(now, count: int = 12) -> List[Tuple[int, int, str]]:
-    """Список (год, месяц, короткая подпись) от текущего месяца назад."""
-    y, m = now.year, now.month
-    out: List[Tuple[int, int, str]] = []
-    for _ in range(count):
-        out.append((y, m, f"{m:02d}/{str(y)[2:]}"))
-        if m == 1:
-            y, m = y - 1, 12
-        else:
-            m -= 1
-    return out
-
-
-def coach_report_month_keyboard() -> InlineKeyboardMarkup:
-    """Текущий / прошлый + последние 12 месяцев (кнопки MM/YY)."""
-    now = now_moscow()
-    (cy, cm), (py, pm) = _pick_months_for_buttons()
-    rows = [
-        [
-            InlineKeyboardButton(f"Текущий ({cm:02d}.{cy})", callback_data="cprpt_cur"),
-            InlineKeyboardButton(f"Прошлый ({pm:02d}.{py})", callback_data="cprpt_prev"),
+def _format_section_html(rep, sport_label: Optional[str], section: str) -> str:
+    head = _report_header_lines(rep, sport_label)
+    body: List[str] = []
+    if section == "kpi":
+        body = [
+            "",
+            "<b>KPI</b>",
+            f"• В вашей базе (по направлению): <b>{rep.roster_total}</b>",
+            f"• Активных абонементов на конец месяца: <b>{rep.active_at_month_end}</b>",
+            f"• Новых спортсменов за период: <b>{rep.new_athletes_in_period}</b>",
         ]
-    ]
-    chunk: List[InlineKeyboardButton] = []
-    for y, m, label in _rolling_past_months(now, 12):
-        chunk.append(InlineKeyboardButton(label, callback_data=f"cprpt_{y}_{m}"))
-        if len(chunk) == 3:
-            rows.append(chunk)
-            chunk = []
-    if chunk:
+    elif section == "rev":
+        body = [
+            "",
+            "<b>Выручка</b> (таблица оплат, дата учёта — <code>paid_at</code>):",
+            f"• За период: <b>{html.escape(_format_rubles(rep.revenue_rubles))}</b>",
+            f"• Платёжных записей: <b>{rep.payment_records_in_period}</b>",
+            "",
+            "<i>При активации абонемента сумма может создаваться автоматически, если в .env заданы "
+            "<code>SUBSCRIPTION_PRICE_MONTHLY_RUB</code> и/или <code>SUBSCRIPTION_PRICE_SINGLE_RUB</code>. "
+            "Дополнительно можно заносить строки в <code>subscription_payments</code> вручную.</i>",
+        ]
+    elif section == "att":
+        body = [
+            "",
+            "<b>Посещаемость</b> (тренировки не отменены; ваш вид спорта):",
+            f"• Отметок «был»: <b>{rep.attendance_present}</b> "
+            f"(уникальных спортсменов: <b>{rep.athletes_present_distinct}</b>)",
+            f"• Отметок «не был»: <b>{rep.attendance_absent}</b> "
+            f"(уникальных спортсменов: <b>{rep.athletes_absent_distinct}</b>)",
+        ]
+    elif section == "sub":
+        body = [
+            "",
+            "<b>Абонементы</b>:",
+            f"• Старт действия в периоде (по дате начала): <b>{rep.subscription_starts_in_period}</b>",
+            f"• Новых записей абонемента (по дате создания строки): <b>{rep.new_subscription_rows_in_period}</b>",
+        ]
+    else:
+        body = ["", "❌ Неизвестный раздел"]
+    return "\n".join(head + body)
+
+
+def _clamp_year(y: int) -> int:
+    now = now_moscow()
+    return max(_MIN_YEAR, min(y, now.year))
+
+
+def statistics_year_month_keyboard(year: int) -> InlineKeyboardMarkup:
+    """Сетка месяцев + навигация по году (как в «Мой календарь»)."""
+    year = _clamp_year(year)
+    rows: List[List[InlineKeyboardButton]] = []
+    for r in range(4):
+        chunk: List[InlineKeyboardButton] = []
+        for c in range(3):
+            m = r * 3 + c + 1
+            chunk.append(
+                InlineKeyboardButton(
+                    _MONTH_SHORT[m],
+                    callback_data=f"cstm_{year}_{m:02d}",
+                )
+            )
         rows.append(chunk)
+    now = now_moscow()
+    nav: List[InlineKeyboardButton] = []
+    if year > _MIN_YEAR:
+        nav.append(
+            InlineKeyboardButton("◀️ Предыдущий", callback_data=f"cstyp_{year}")
+        )
+    if year < now.year:
+        nav.append(
+            InlineKeyboardButton("Следующий ▶️", callback_data=f"cstyn_{year}")
+        )
+    if nav:
+        rows.append(nav)
+    rows.append(
+        [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")]
+    )
     return InlineKeyboardMarkup(rows)
 
 
-def _parse_report_callback(data: str) -> Optional[Tuple[int, int]]:
-    if data == "cprpt_cur":
-        n = now_moscow()
-        return n.year, n.month
-    if data == "cprpt_prev":
-        n = now_moscow()
-        y, m = n.year, n.month
-        if m == 1:
-            return y - 1, 12
-        return y, m - 1
-    m = re.match(r"^cprpt_(\d{4})_(\d{1,2})$", (data or "").strip())
-    if not m:
-        return None
-    year, month = int(m.group(1)), int(m.group(2))
-    if month < 1 or month > 12 or year < 2000 or year > 2100:
-        return None
-    return year, month
+def statistics_year_month_message_html(year: int) -> str:
+    year = _clamp_year(year)
+    return (
+        f"📊 <b>Статистика</b>\n\n"
+        f"Год: <b>{html.escape(str(year))}</b>\n"
+        f"Выберите <b>месяц</b> (навигация по годам — кнопки внизу, как в «Мой календарь»):"
+    )
+
+
+def statistics_section_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
+    y, m = year, month
+
+    def sec(code: str, label: str) -> InlineKeyboardButton:
+        return InlineKeyboardButton(label, callback_data=f"csts_{y}_{m:02d}_{code}")
+
+    return InlineKeyboardMarkup(
+        [
+            [sec("kpi", "KPI"), sec("rev", "Выручка")],
+            [sec("att", "Посещаемость"), sec("sub", "Абонементы")],
+            [
+                InlineKeyboardButton(
+                    "◀️ К выбору месяца",
+                    callback_data=f"csty_{y}",
+                )
+            ],
+            [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")],
+        ]
+    )
+
+
+def statistics_section_message_html(year: int, month: int) -> str:
+    title_m = _MONTH_NAMES_NOM[month]
+    return (
+        f"📊 <b>Статистика: {html.escape(title_m)} {year}</b>\n\n"
+        f"Выберите <b>раздел</b>:"
+    )
 
 
 async def coach_report_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кнопка меню: выбор месяца для отчёта."""
+    """Кнопка меню «Статистика»: выбор года и месяца."""
     user_id = update.effective_user.id
     try:
         with get_db_session() as session:
@@ -170,24 +219,20 @@ async def coach_report_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("❌ Ошибка при проверке доступа")
         return
 
+    y = _clamp_year(now_moscow().year)
     await update.message.reply_text(
-        "📊 Выберите месяц для <b>статистики</b> по вашим спортсменам, посещениям и оплатам:",
-        reply_markup=coach_report_month_keyboard(),
+        statistics_year_month_message_html(y),
+        reply_markup=statistics_year_month_keyboard(y),
         parse_mode="HTML",
     )
 
 
-async def coach_report_period_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def coach_statistics_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Все callback вида csty_ / cstyp_ / cstyn_ / cstm_ / csts_."""
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
     data = (query.data or "").strip()
-
-    parsed = _parse_report_callback(data)
-    if parsed is None:
-        await query.edit_message_text("❌ Неизвестный период")
-        return
-    year, month = parsed
 
     try:
         with get_db_session() as session:
@@ -204,17 +249,81 @@ async def coach_report_period_callback(update: Update, context: ContextTypes.DEF
             if not coach:
                 await query.edit_message_text("❌ Профиль тренера не найден")
                 return
-            rep = build_coach_period_report(session, coach, year, month)
-            sport_label = coach_sport_type_name(coach)
+
+            # --- выбор года / месяца ---
+            m_y = re.match(r"^csty_(\d{4})$", data)
+            if m_y:
+                y = _clamp_year(int(m_y.group(1)))
+                await query.edit_message_text(
+                    statistics_year_month_message_html(y),
+                    reply_markup=statistics_year_month_keyboard(y),
+                    parse_mode="HTML",
+                )
+                return
+
+            m_yp = re.match(r"^cstyp_(\d{4})$", data)
+            if m_yp:
+                y = _clamp_year(int(m_yp.group(1)) - 1)
+                await query.edit_message_text(
+                    statistics_year_month_message_html(y),
+                    reply_markup=statistics_year_month_keyboard(y),
+                    parse_mode="HTML",
+                )
+                return
+
+            m_yn = re.match(r"^cstyn_(\d{4})$", data)
+            if m_yn:
+                y = _clamp_year(int(m_yn.group(1)) + 1)
+                await query.edit_message_text(
+                    statistics_year_month_message_html(y),
+                    reply_markup=statistics_year_month_keyboard(y),
+                    parse_mode="HTML",
+                )
+                return
+
+            m_m = re.match(r"^cstm_(\d{4})_(\d{2})$", data)
+            if m_m:
+                year, month = int(m_m.group(1)), int(m_m.group(2))
+                if month < 1 or month > 12:
+                    await query.edit_message_text("❌ Неверный месяц")
+                    return
+                year = _clamp_year(year)
+                if year == now_moscow().year and month > now_moscow().month:
+                    await query.answer("Нельзя выбрать будущий месяц", show_alert=True)
+                    return
+                await query.edit_message_text(
+                    statistics_section_message_html(year, month),
+                    reply_markup=statistics_section_keyboard(year, month),
+                    parse_mode="HTML",
+                )
+                return
+
+            m_s = re.match(r"^csts_(\d{4})_(\d{2})_(kpi|rev|att|sub)$", data)
+            if m_s:
+                year, month = int(m_s.group(1)), int(m_s.group(2))
+                sec = m_s.group(3)
+                if month < 1 or month > 12:
+                    await query.edit_message_text("❌ Неверный месяц")
+                    return
+                year = _clamp_year(year)
+                if year == now_moscow().year and month > now_moscow().month:
+                    await query.answer("Нельзя выбрать будущий месяц", show_alert=True)
+                    return
+                rep = build_coach_period_report(session, coach, year, month)
+                sport_label = coach_sport_type_name(coach)
+                text = _format_section_html(rep, sport_label, sec)
+                if len(text) > 4000:
+                    text = text[:3900] + "\n\n<i>… обрезано (лимит Telegram).</i>"
+                await query.edit_message_text(
+                    text,
+                    parse_mode="HTML",
+                    reply_markup=statistics_section_keyboard(year, month),
+                )
+                return
+
     except Exception as e:
-        logger.error("coach_report_period_callback: %s", e, exc_info=True)
-        await query.edit_message_text("❌ Ошибка при формировании отчёта")
+        logger.error("coach_statistics_callback: %s", e, exc_info=True)
+        await query.edit_message_text("❌ Ошибка при формировании статистики")
         return
 
-    text = _format_report_html(rep, sport_label)
-    if len(text) > 4000:
-        text = text[:3900] + "\n\n<i>… обрезано (лимит Telegram).</i>"
-
-    await query.edit_message_text(
-        text, parse_mode="HTML", reply_markup=coach_report_month_keyboard()
-    )
+    await query.edit_message_text("❌ Неизвестная команда")

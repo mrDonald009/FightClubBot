@@ -99,7 +99,7 @@ from handlers.attendance_handlers import (
     handle_training_selection,
     execute_mark_attendance,
 )
-from handlers.coach_report_handlers import coach_report_entry, coach_report_period_callback
+from handlers.coach_report_handlers import coach_report_entry, coach_statistics_callback
 
 logger = logging.getLogger(__name__)
 
@@ -1175,7 +1175,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(execute_mark_attendance, pattern="^(mark_present|mark_absent)$")
     )
     registrar.register(
-        CallbackQueryHandler(coach_report_period_callback, pattern=r"^cprpt_")
+        CallbackQueryHandler(coach_statistics_callback, pattern=r"^cst")
     )
 
     # Команды быстрого доступа
