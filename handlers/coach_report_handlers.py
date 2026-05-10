@@ -1,4 +1,4 @@
-"""Статистика тренера: выбор года и месяца, затем раздел (KPI, выручка, …)."""
+"""Статистика тренера: выбор года и месяца, затем разделы (показатели, выручка, …)."""
 from __future__ import annotations
 
 import html
@@ -100,56 +100,46 @@ def _format_section_html(
     if section == "kpi":
         body = [
             "",
-            "<b>KPI</b>",
-            f"• В вашей базе (по направлению): <b>{rep.roster_total}</b>",
+            "<b>Показатели</b>",
+            f"• Спортсменов по направлению: <b>{rep.roster_total}</b>",
             f"• Активных абонементов на конец месяца: <b>{rep.active_at_month_end}</b>",
-            f"• Новых спортсменов за период: <b>{rep.new_athletes_in_period}</b>",
+            f"• Новых спортсменов за месяц: <b>{rep.new_athletes_in_period}</b>",
         ]
     elif section == "rev":
         monthly_h = (
-            "нет активной записи"
+            "не задано"
             if coach_tariff_monthly_rub is None
             else html.escape(_format_rubles(coach_tariff_monthly_rub))
         )
         single_h = (
-            "нет активной записи"
+            "не задано"
             if coach_tariff_single_rub is None
             else html.escape(_format_rubles(coach_tariff_single_rub))
         )
         body = [
             "",
-            "<b>Выручка</b> (таблица оплат, дата учёта — <code>paid_at</code>):",
-            "<i>Здесь не «деньги за активных в месяце», а только строки "
-            "<code>subscription_payments</code>, у которых <code>paid_at</code> попал в выбранный месяц. "
-            "Оплата при активации обычно одна и относится к месяцу старта; в следующих месяцах абонемент "
-            "может быть активен, а сумма за период — 0 ₽. Сколько абонементов активно на конец месяца — "
-            f"в разделе KPI (<b>{rep.active_at_month_end}</b>).</i>",
+            "<b>Выручка</b>",
+            "<i>Сумма за месяц — только оплаты, которые в этом месяце «привязаны» к дате "
+            "(обычно это месяц первой тренировки после оплаты). Если абонементы есть, а сумма 0 — "
+            f"посмотрите месяц старта или раздел «Показатели» (активных сейчас: <b>{rep.active_at_month_end}</b>).</i>",
             "",
-            f"• За период: <b>{html.escape(_format_rubles(rep.revenue_rubles))}</b>",
-            f"• Платёжных записей: <b>{rep.payment_records_in_period}</b>",
+            f"• Сумма за месяц: <b>{html.escape(_format_rubles(rep.revenue_rubles))}</b>",
+            f"• Оплат в списке: <b>{rep.payment_records_in_period}</b>",
             "",
-            f"• Тарифы для вашего направления в <code>subscription_tariffs</code>: "
-            f"месячный — <b>{monthly_h}</b>; разовый — <b>{single_h}</b>",
+            f"• Ваши цены: абонемент на месяц — <b>{monthly_h}</b>; разовое — <b>{single_h}</b>",
             "",
-            "<i>При активации строка оплаты создаётся только если для вида спорта абонемента есть "
-            "активная сумма в <code>subscription_tariffs</code>. Строки в "
-            "<code>subscription_payments</code> можно добавлять вручную.</i>",
+            "<i>При активации абонемента сумма подставляется из прайса клуба. Если чего-то не хватает — "
+            "напишите администратору.</i>",
         ]
         if rep.revenue_rubles == 0 and rep.payment_records_in_period == 0:
             if rep.subscription_starts_in_period == 0:
-                tail = (
-                    " Откройте месяц первой тренировки после активации (там обычно "
-                    "<code>paid_at</code>), или занесите оплату вручную."
-                )
+                tail = " Выберите месяц, когда была первая тренировка по новому абонементу, или уточните оплату у администратора."
                 if rep.active_at_month_end > 0:
-                    tail += (
-                        " Активные абонементы в KPI при этом возможны — это не ошибка."
-                    )
+                    tail += " Нули при активных абонементах — нормально: оплата могла попасть в другой месяц."
                 body.extend(
                     [
                         "",
-                        "<i>В выбранном месяце нет стартов по дате начала и нет оплат с "
-                        "<code>paid_at</code> в этом месяце — нули в сумме ожидаемы." + tail + "</i>",
+                        "<i>В этом месяце не было новых стартов и не попало ни одной оплаты в отчёт." + tail + "</i>",
                     ]
                 )
             elif rep.estimated_revenue_if_current_env_rub > 0:
@@ -159,35 +149,34 @@ def _format_section_html(
                 body.extend(
                     [
                         "",
-                        "<i>Справочно: по текущим строкам <code>subscription_tariffs</code> старты в месяце дают "
-                        f"примерно <b>{est_h}</b>, а в таблице оплат "
-                        "записей нет — автозапись не сработала в момент активации (старый код, не было тарифа "
-                        "или суммы) или оплату нужно внести вручную.</i>",
+                        "<i>По текущим ценам за старты в этом месяце вышло бы примерно <b>" + est_h + "</b>, "
+                        "а в отчёте оплат нет — возможно, абонемент активировали до обновления прайса или "
+                        "нужно внести оплату вручную. Уточните у администратора.</i>",
                     ]
                 )
             else:
                 body.extend(
                     [
                         "",
-                        "<i>В месяце есть старты, но для их видов спорта и типов абонемента нет подходящих "
-                        "активных сумм в <code>subscription_tariffs</code> — автострока оплаты не создавалась.</i>",
+                        "<i>В месяце были старты, но для них не заданы цены в прайсе — автоматическая оплата "
+                        "не создалась. Напишите администратору.</i>",
                     ]
                 )
     elif section == "att":
         body = [
             "",
-            "<b>Посещаемость</b> (тренировки не отменены; ваш вид спорта):",
-            f"• Отметок «был»: <b>{rep.attendance_present}</b> "
-            f"(уникальных спортсменов: <b>{rep.athletes_present_distinct}</b>)",
-            f"• Отметок «не был»: <b>{rep.attendance_absent}</b> "
-            f"(уникальных спортсменов: <b>{rep.athletes_absent_distinct}</b>)",
+            "<b>Посещаемость</b> <i>(отменённые тренировки не считаются)</i>",
+            f"• «Был»: <b>{rep.attendance_present}</b> "
+            f"(разных людей: <b>{rep.athletes_present_distinct}</b>)",
+            f"• «Не был»: <b>{rep.attendance_absent}</b> "
+            f"(разных людей: <b>{rep.athletes_absent_distinct}</b>)",
         ]
     elif section == "sub":
         body = [
             "",
-            "<b>Абонементы</b>:",
-            f"• Старт действия в периоде (по дате начала): <b>{rep.subscription_starts_in_period}</b>",
-            f"• Новых записей абонемента (по дате создания строки): <b>{rep.new_subscription_rows_in_period}</b>",
+            "<b>Абонементы</b>",
+            f"• Начали действовать в этом месяце: <b>{rep.subscription_starts_in_period}</b>",
+            f"• Оформлено новых абонементов (по дате записи): <b>{rep.new_subscription_rows_in_period}</b>",
         ]
     else:
         body = ["", "❌ Неизвестный раздел"]
@@ -249,7 +238,7 @@ def statistics_section_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup(
         [
-            [sec("kpi", "KPI"), sec("rev", "Выручка")],
+            [sec("kpi", "Показатели"), sec("rev", "Выручка")],
             [sec("att", "Посещаемость"), sec("sub", "Абонементы")],
             [
                 InlineKeyboardButton(
