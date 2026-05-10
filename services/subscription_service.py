@@ -80,7 +80,7 @@ class SubscriptionService:
         Args:
             session: Сессия базы данных
             athlete_id: ID спортсмена
-            subscription_type: Тип абонемента (monthly, single) или None (будет определен при активации)
+            subscription_type: Тип абонемента (monthly, single, individual) или None
             sport_type: Вид спорта для абонемента (если None, берется из спортсмена)
             discipline_key: Явный ключ направления; иначе из sport_type и subscription_format
             subscription_format: group или individual (для вычисления discipline_key)
@@ -96,7 +96,11 @@ class SubscriptionService:
         athlete = AthleteService.get_athlete_or_raise(session, athlete_id)
         
         # Валидация типа абонемента (если указан)
-        if subscription_type is not None and subscription_type not in ['monthly', 'single']:
+        if subscription_type is not None and subscription_type not in [
+            "monthly",
+            "single",
+            "individual",
+        ]:
             raise ValidationError(f"Неизвестный тип абонемента: {subscription_type}")
         
         # Если sport_type не указан, берем из спортсмена

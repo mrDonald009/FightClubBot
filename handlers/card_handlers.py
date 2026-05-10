@@ -1,6 +1,6 @@
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import calendar as py_calendar
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
@@ -15,11 +15,17 @@ from database.db_utils import (
     calculate_actual_trainings_remaining as db_calculate_actual_trainings_remaining,
     sync_subscription_trainings_remaining,
     is_training_in_global_freeze,
+    find_next_non_frozen_calendar_date,
     find_next_non_frozen_training_date,
     training_datetime_compact,
     parse_training_datetime_compact,
     now_moscow,
     training_end_time,
+)
+from database.db_utils.training_slots import (
+    TRAINING_FORMAT_INDIVIDUAL,
+    individual_slot_conflicts,
+    iter_allowed_individual_starts,
 )
 from typing import List, Optional, Union
 
@@ -63,6 +69,8 @@ def _format_subscription_type_ru(subscription_type: Optional[str]) -> str:
         return "Месячный"
     if subscription_type == "single":
         return "Разовый"
+    if subscription_type == "individual":
+        return "Индивидуальный"
     return "Не указан"
 
 
@@ -133,7 +141,7 @@ async def _finalize_subscription_activation(
 
     if subscription.subscription_type == "monthly":
         end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
-    elif subscription.subscription_type == "single":
+    elif subscription.subscription_type in ("single", "individual"):
         end_date = training_end_time(start_date)
     else:
         await query.edit_message_text("❌ Сначала выберите тип абонемента.")
@@ -166,6 +174,18 @@ async def _finalize_subscription_activation(
         elif coach_id and not getattr(training, "coach_id", None):
             training.coach_id = coach_id
             session.flush()
+    elif subscription.subscription_type == "individual":
+        coach_id = subscription.responsible_coach_id or athlete.created_by
+        training = Training(
+            sport_type=sport_type,
+            age_group=age_group,
+            training_date=start_date,
+            is_cancelled=False,
+            coach_id=coach_id,
+            training_format=TRAINING_FORMAT_INDIVIDUAL,
+        )
+        session.add(training)
+        session.flush()
 
     sync_subscription_trainings_remaining(session, subscription)
     record_payment_on_subscription_activation(
@@ -272,6 +292,118 @@ def _build_activation_calendar(
     return InlineKeyboardMarkup(keyboard)
 
 
+def _build_activation_calendar_individual(
+    subscription_id: int,
+    year: int,
+    month: int,
+) -> InlineKeyboardMarkup:
+    """Календарь для индивидуального абонемента: любой будущий календарный день (не только дни группы)."""
+    today = now_moscow().date()
+    cal = py_calendar.monthcalendar(year, month)
+    keyboard = []
+    day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    keyboard.append([InlineKeyboardButton(f"{d}.", callback_data="act_ignore") for d in day_names])
+    weeks_to_show = cal[:5]
+    while len(weeks_to_show) < 5:
+        weeks_to_show.append([0, 0, 0, 0, 0, 0, 0])
+    for week in weeks_to_show:
+        row = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(" ", callback_data="act_ignore"))
+                continue
+            date_obj = datetime(year, month, day).date()
+            enabled = date_obj >= today
+            if date_obj == today:
+                btn_text = f"[{day:2d}]"
+            elif enabled:
+                btn_text = f"({day:2d})"
+            else:
+                btn_text = f"{day:2d}"
+            cb = f"act_date_{subscription_id}_{year}_{month}_{day}" if enabled else "act_ignore"
+            row.append(InlineKeyboardButton(btn_text, callback_data=cb))
+        keyboard.append(row)
+    prev_year, prev_month = year, month - 1
+    next_year, next_month = year, month + 1
+    if prev_month == 0:
+        prev_month = 12
+        prev_year -= 1
+    if next_month == 13:
+        next_month = 1
+        next_year += 1
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                "◀️ Предыдущий",
+                callback_data=f"act_cal_{subscription_id}_{prev_year}_{prev_month}",
+            ),
+            InlineKeyboardButton(
+                "Следующий ▶️",
+                callback_data=f"act_cal_{subscription_id}_{next_year}_{next_month}",
+            ),
+        ]
+    )
+    nowd = now_moscow().date()
+    if month != nowd.month or year != nowd.year:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "📅 Сегодня",
+                    callback_data=f"act_cal_{subscription_id}_{nowd.year}_{nowd.month}",
+                )
+            ]
+        )
+    keyboard.append(
+        [
+            InlineKeyboardButton("🔙 Назад", callback_data=f"subscription_{subscription_id}"),
+            InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main"),
+        ]
+    )
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _build_individual_time_keyboard(
+    session,
+    subscription_id: int,
+    coach_id: int,
+    sport_type: str,
+    year: int,
+    month: int,
+    day: int,
+) -> Optional[InlineKeyboardMarkup]:
+    """Свободные старты индивидуальной тренировки в выбранный день (шаг 30 мин)."""
+    d = date(year, month, day)
+    starts = iter_allowed_individual_starts(
+        session,
+        coach_id,
+        sport_type,
+        d,
+        now_cutoff=now_moscow(),
+    )
+    if not starts:
+        return None
+    rows = []
+    row = []
+    for st in starts:
+        label = st.strftime("%H:%M")
+        cb = f"act_time_{subscription_id}_{training_datetime_compact(st)}"
+        row.append(InlineKeyboardButton(label, callback_data=cb))
+        if len(row) >= 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "🔙 К дате",
+                callback_data=f"act_cal_{subscription_id}_{year}_{month}",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
 async def handle_activation_calendar_nav(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Навигация по календарю выбора даты активации."""
     query = update.callback_query
@@ -303,7 +435,12 @@ async def handle_activation_calendar_nav(update: Update, context: ContextTypes.D
         sport_type = subscription.sport_type or athlete.sport_type
         age_group = athlete.age_group
 
-        reply_markup = _build_activation_calendar(subscription_id, sport_type, age_group, year, month)
+        if subscription.subscription_type == "individual":
+            reply_markup = _build_activation_calendar_individual(subscription_id, year, month)
+        else:
+            reply_markup = _build_activation_calendar(
+                subscription_id, sport_type, age_group, year, month
+            )
         await query.edit_message_reply_markup(reply_markup=reply_markup)
     finally:
         session.close()
@@ -341,21 +478,90 @@ async def handle_activation_date_pick(update: Update, context: ContextTypes.DEFA
         sport_type = subscription.sport_type or athlete.sport_type
         age_group = athlete.age_group
 
-        schedule = _get_schedule(sport_type, age_group)
-        if not schedule:
-            await query.edit_message_text("❌ Расписание для этой группы не найдено. Обратитесь к администратору.")
+        if subscription.subscription_type not in ("monthly", "single", "individual"):
+            await query.edit_message_text("❌ Сначала выберите тип абонемента.")
             return
 
-        # Дата, выбранная тренером (без времени)
         coach_selected_date = datetime(year, month, day, 0, 0, 0)
-        
+
+        if subscription.subscription_type == "individual":
+            coach_id = subscription.responsible_coach_id or athlete.created_by
+            if not coach_id:
+                await query.edit_message_text(
+                    "❌ Для индивидуального абонемента не указан тренер (ответственный / создавший спортсмена)."
+                )
+                return
+            noon = datetime(year, month, day, 12, 0, 0)
+            if is_training_in_global_freeze(session, noon):
+                shifted = find_next_non_frozen_calendar_date(session, noon.date())
+                sh_noon = datetime(shifted.year, shifted.month, shifted.day, 12, 0, 0)
+                freeze = (
+                    session.query(GlobalFreeze)
+                    .filter(
+                        GlobalFreeze.is_active == True,
+                        GlobalFreeze.start_date <= noon,
+                        GlobalFreeze.end_date >= noon,
+                    )
+                    .order_by(GlobalFreeze.end_date.desc())
+                    .first()
+                )
+                confirm_cb = f"act_ishift_{subscription_id}_{training_datetime_compact(sh_noon)}"
+                cancel_cb = f"act_shift_cancel_{subscription_id}"
+                keyboard = InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                "✅ Подтвердить сдвиг дня", callback_data=confirm_cb
+                            ),
+                            InlineKeyboardButton(
+                                "❌ Выбрать другую дату", callback_data=cancel_cb
+                            ),
+                        ]
+                    ]
+                )
+                freeze_label = (
+                    f"{freeze.start_date.strftime('%d.%m.%Y')} — {freeze.end_date.strftime('%d.%m.%Y')}"
+                    if freeze
+                    else "активной массовой заморозки"
+                )
+                await query.edit_message_text(
+                    "⚠️ Выбранный день попадает в период массовой заморозки.\n\n"
+                    f"Период заморозки: <b>{freeze_label}</b>\n"
+                    f"Предлагаемый день: <b>{shifted.strftime('%d.%m.%Y')}</b>\n\n"
+                    "Подтвердить и выбрать время тренировки?",
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                return
+            time_kb = _build_individual_time_keyboard(
+                session, subscription_id, coach_id, sport_type, year, month, day
+            )
+            if not time_kb:
+                await query.edit_message_text(
+                    "❌ В этот день нет свободного слота без пересечения с занятиями тренера. "
+                    "Выберите другую дату.",
+                    reply_markup=_build_activation_calendar_individual(
+                        subscription_id, year, month
+                    ),
+                )
+                return
+            await query.edit_message_text(
+                "⏰ Выберите <b>время начала</b> индивидуальной тренировки (длительность 1,5 ч):",
+                parse_mode="HTML",
+                reply_markup=time_kb,
+            )
+            return
+
+        schedule = _get_schedule(sport_type, age_group)
+        if not schedule:
+            await query.edit_message_text(
+                "❌ Расписание для этой группы не найдено. Обратитесь к администратору."
+            )
+            return
+
         from database.db_utils import _find_nearest_training_date
 
         start_date = _find_nearest_training_date(coach_selected_date, sport_type, age_group)
-
-        if subscription.subscription_type not in ("monthly", "single"):
-            await query.edit_message_text("❌ Сначала выберите тип абонемента.")
-            return
 
         if is_training_in_global_freeze(session, start_date):
             freeze = (
@@ -409,6 +615,139 @@ async def handle_activation_date_pick(update: Update, context: ContextTypes.DEFA
         session.close()
 
 
+async def handle_activation_individual_shift_confirm(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Подтверждение сдвига календарного дня для индивидуальной активации → выбор времени."""
+    query = update.callback_query
+    await query.answer()
+    m = re.match(r"^act_ishift_(\d+)_(\d{12})$", (query.data or "").strip())
+    if not m:
+        await query.edit_message_text("❌ Некорректная кнопка.")
+        return
+    subscription_id = int(m.group(1))
+    shifted_noon = parse_training_datetime_compact(m.group(2))
+    if not shifted_noon:
+        await query.edit_message_text("❌ Некорректная дата в кнопке.")
+        return
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        if not user or get_user_role(user) not in ["coach", "admin"]:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+        if not subscription:
+            await query.edit_message_text("❌ Абонемент не найден")
+            return
+        athlete = subscription.athlete
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
+            return
+        if subscription.subscription_type != "individual":
+            await query.edit_message_text("❌ Некорректный тип абонемента.")
+            return
+        if is_training_in_global_freeze(session, shifted_noon):
+            await query.edit_message_text(
+                "❌ Период заморозки изменился. Вернитесь к календарю и выберите дату снова."
+            )
+            return
+        sport_type = subscription.sport_type or athlete.sport_type
+        coach_id = subscription.responsible_coach_id or athlete.created_by
+        if not coach_id:
+            await query.edit_message_text("❌ Не указан тренер для индивидуального абонемента.")
+            return
+        time_kb = _build_individual_time_keyboard(
+            session,
+            subscription_id,
+            coach_id,
+            sport_type,
+            shifted_noon.year,
+            shifted_noon.month,
+            shifted_noon.day,
+        )
+        if not time_kb:
+            await query.edit_message_text(
+                "❌ В этот день нет свободного слота. Выберите другую дату.",
+                reply_markup=_build_activation_calendar_individual(
+                    subscription_id, shifted_noon.year, shifted_noon.month
+                ),
+            )
+            return
+        await query.edit_message_text(
+            "⏰ Выберите <b>время начала</b> индивидуальной тренировки (длительность 1,5 ч):",
+            parse_mode="HTML",
+            reply_markup=time_kb,
+        )
+    except Exception as e:
+        logger.error("❌ ОШИБКА act_ishift: %s", e, exc_info=True)
+        await query.edit_message_text("❌ Ошибка при активации абонемента")
+    finally:
+        session.close()
+
+
+async def handle_activation_time_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выбор времени начала индивидуальной тренировки при активации."""
+    query = update.callback_query
+    await query.answer()
+    m = re.match(r"^act_time_(\d+)_(\d{12})$", (query.data or "").strip())
+    if not m:
+        await query.edit_message_text("❌ Некорректная кнопка.")
+        return
+    subscription_id = int(m.group(1))
+    start_date = parse_training_datetime_compact(m.group(2))
+    if not start_date:
+        await query.edit_message_text("❌ Некорректное время в кнопке.")
+        return
+    session = Session()
+    try:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        if not user or get_user_role(user) not in ["coach", "admin"]:
+            await query.edit_message_text("❌ У вас нет доступа")
+            return
+        subscription = session.query(Subscription).filter_by(id=subscription_id).first()
+        if not subscription or subscription.subscription_type != "individual":
+            await query.edit_message_text("❌ Абонемент не найден или тип не индивидуальный.")
+            return
+        athlete = subscription.athlete
+        if isinstance(user, Coach) and athlete.created_by != user.id:
+            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
+            return
+        sport_type = subscription.sport_type or athlete.sport_type
+        coach_id = subscription.responsible_coach_id or athlete.created_by
+        if not coach_id:
+            await query.edit_message_text("❌ Не указан тренер.")
+            return
+        if is_training_in_global_freeze(session, start_date):
+            await query.edit_message_text(
+                "❌ Выбранное время попадает в массовую заморозку. Выберите другое время."
+            )
+            return
+        if individual_slot_conflicts(session, coach_id, sport_type, start_date):
+            await query.edit_message_text(
+                "❌ Слот занят или пересекается с групповой/индивидуальной тренировкой. "
+                "Выберите другое время.",
+                reply_markup=_build_individual_time_keyboard(
+                    session,
+                    subscription_id,
+                    coach_id,
+                    sport_type,
+                    start_date.year,
+                    start_date.month,
+                    start_date.day,
+                ),
+            )
+            return
+        await _finalize_subscription_activation(
+            update, context, query, session, subscription, athlete, start_date
+        )
+    except Exception as e:
+        logger.error("❌ ОШИБКА act_time: %s", e, exc_info=True)
+        await query.edit_message_text("❌ Ошибка при активации абонемента")
+    finally:
+        session.close()
+
+
 async def handle_activation_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Игнор-кнопка для календаря (пустые клетки/дни недели)."""
     query = update.callback_query
@@ -441,6 +780,12 @@ async def handle_activation_shift_confirm(update: Update, context: ContextTypes.
         subscription = session.query(Subscription).filter_by(id=subscription_id).first()
         if not subscription:
             await query.edit_message_text("❌ Абонемент не найден")
+            return
+
+        if subscription.subscription_type == "individual":
+            await query.edit_message_text(
+                "❌ Для индивидуального абонемента выберите дату и время в календаре активации."
+            )
             return
 
         athlete = subscription.athlete
@@ -497,15 +842,20 @@ async def handle_activation_shift_cancel(update: Update, context: ContextTypes.D
             await query.answer()
             now = now_moscow()
             sport_type = subscription.sport_type or athlete.sport_type
-            schedule = _get_schedule(sport_type, athlete.age_group)
-            if not schedule:
-                await query.edit_message_text(
-                    "❌ Расписание для этой группы не найдено. Обратитесь к администратору."
+            if subscription.subscription_type == "individual":
+                reply_markup = _build_activation_calendar_individual(
+                    subscription.id, now.year, now.month
                 )
-                return
-            reply_markup = _build_activation_calendar(
-                subscription.id, sport_type, athlete.age_group, now.year, now.month
-            )
+            else:
+                schedule = _get_schedule(sport_type, athlete.age_group)
+                if not schedule:
+                    await query.edit_message_text(
+                        "❌ Расписание для этой группы не найдено. Обратитесь к администратору."
+                    )
+                    return
+                reply_markup = _build_activation_calendar(
+                    subscription.id, sport_type, athlete.age_group, now.year, now.month
+                )
             sub_type_ru = _format_subscription_type_ru(subscription.subscription_type)
             await query.edit_message_text(
                 f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
@@ -1671,6 +2021,12 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     InlineKeyboardButton("Месячный", callback_data=f"activate_sub_type_{athlete_id}_monthly"),
                     InlineKeyboardButton("Разовый", callback_data=f"activate_sub_type_{athlete_id}_single"),
                 ],
+                [
+                    InlineKeyboardButton(
+                        "Индивидуальный",
+                        callback_data=f"activate_sub_type_{athlete_id}_individual",
+                    )
+                ],
                 [InlineKeyboardButton("🔙 Назад", callback_data=f"subscription_athlete_{athlete_id}")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1696,7 +2052,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 # Активация существующего абонемента с выбором типа
                 parts = callback_data.replace("type_existing_", "").split("_")
                 subscription_id = int(parts[0])
-                subscription_type = parts[1]  # monthly или single
+                subscription_type = parts[1]  # monthly / single / individual
                 logger.info(f"[activate_sub] existing_subscription_id={subscription_id} chosen_type={subscription_type}")
                 
                 subscription = session.query(Subscription).filter_by(id=subscription_id).first()
@@ -1710,13 +2066,25 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     return
                 
                 # Устанавливаем тип абонемента и рассчитываем количество тренировок
+                from utils.discipline_keys import discipline_key_for
+
                 subscription.subscription_type = subscription_type
+                st = (subscription.sport_type or athlete.sport_type or "").strip()
                 if subscription_type == "monthly":
                     subscription.trainings_total = 12
                     subscription.trainings_remaining = 12
+                    subscription.discipline_key = discipline_key_for(st, format="group")
                 elif subscription_type == "single":
                     subscription.trainings_total = 1
                     subscription.trainings_remaining = 1
+                    subscription.discipline_key = discipline_key_for(st, format="group")
+                elif subscription_type == "individual":
+                    subscription.trainings_total = 1
+                    subscription.trainings_remaining = 1
+                    subscription.discipline_key = discipline_key_for(st, format="individual")
+                else:
+                    await query.edit_message_text("❌ Неверный тип абонемента")
+                    return
 
                 # До выбора даты НЕ активируем и НЕ ставим даты
                 subscription.is_active = False
@@ -1729,9 +2097,16 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 # Показываем календарь выбора даты первой тренировки (дата = дата активации)
                 now = now_moscow()
                 sport_type = subscription.sport_type or athlete.sport_type
-                reply_markup = _build_activation_calendar(subscription.id, sport_type, athlete.age_group, now.year, now.month)
+                if subscription_type == "individual":
+                    reply_markup = _build_activation_calendar_individual(
+                        subscription.id, now.year, now.month
+                    )
+                else:
+                    reply_markup = _build_activation_calendar(
+                        subscription.id, sport_type, athlete.age_group, now.year, now.month
+                    )
 
-                subscription_type_ru = "Месячный" if subscription_type == "monthly" else "Разовый"
+                subscription_type_ru = _format_subscription_type_ru(subscription_type)
                 await query.edit_message_text(
                     f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
                     f"🎫 <b>АКТИВАЦИЯ АБОНЕМЕНТА</b>\n\n"
@@ -1746,7 +2121,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 # Создание нового абонемента с выбором типа
                 parts = callback_data.replace("type_", "").split("_")
                 athlete_id = int(parts[0])
-                subscription_type = parts[1]  # monthly или single
+                subscription_type = parts[1]  # monthly / single / individual
                 logger.info(f"[activate_sub] athlete_id={athlete_id} chosen_type={subscription_type}")
                 
                 athlete = session.query(Athlete).filter_by(id=athlete_id).first()
@@ -1768,7 +2143,8 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 from utils.discipline_keys import discipline_key_for
                 from services.subscription_service import SubscriptionService
 
-                dk = discipline_key_for(sport_type_for_sub or "", format="group")
+                sub_fmt = "individual" if subscription_type == "individual" else "group"
+                dk = discipline_key_for(sport_type_for_sub or "", format=sub_fmt)
                 existing_same = (
                     session.query(Subscription)
                     .filter_by(athlete_id=athlete_id, discipline_key=dk)
@@ -1787,6 +2163,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     subscription_type=subscription_type,
                     sport_type=sport_type_for_sub,
                     discipline_key=dk,
+                    subscription_format=sub_fmt,
                     responsible_coach_id=user.id if isinstance(user, Coach) else None,
                 )
 
@@ -1797,8 +2174,10 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 elif subscription_type == "single":
                     subscription.trainings_total = 1
                     subscription.trainings_remaining = 1
+                elif subscription_type == "individual":
+                    subscription.trainings_total = 1
+                    subscription.trainings_remaining = 1
                 else:
-                    # На всякий случай (по текущему UI ожидаем только monthly/single)
                     await query.edit_message_text("❌ Неверный тип абонемента")
                     return
 
@@ -1820,9 +2199,17 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 context.user_data.pop('new_subscription_sport_type', None)
 
                 now = now_moscow()
-                reply_markup = _build_activation_calendar(subscription.id, subscription.sport_type or athlete.sport_type, athlete.age_group, now.year, now.month)
+                st = subscription.sport_type or athlete.sport_type
+                if subscription_type == "individual":
+                    reply_markup = _build_activation_calendar_individual(
+                        subscription.id, now.year, now.month
+                    )
+                else:
+                    reply_markup = _build_activation_calendar(
+                        subscription.id, st, athlete.age_group, now.year, now.month
+                    )
 
-                subscription_type_ru = "Месячный" if subscription_type == "monthly" else "Разовый"
+                subscription_type_ru = _format_subscription_type_ru(subscription_type)
                 await query.edit_message_text(
                     f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
                     f"🎫 <b>АКТИВАЦИЯ АБОНЕМЕНТА</b>\n\n"
@@ -1854,6 +2241,8 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 current_type_display = "Месячный"
             elif current_type == "single":
                 current_type_display = "Разовый"
+            elif current_type == "individual":
+                current_type_display = "Индивидуальный"
             else:
                 current_type_display = "Не определен"
 
@@ -1861,6 +2250,12 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 [
                     InlineKeyboardButton("Месячный", callback_data=f"activate_sub_type_existing_{subscription.id}_monthly"),
                     InlineKeyboardButton("Разовый", callback_data=f"activate_sub_type_existing_{subscription.id}_single"),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "Индивидуальный",
+                        callback_data=f"activate_sub_type_existing_{subscription.id}_individual",
+                    )
                 ],
                 [InlineKeyboardButton("🔙 Назад", callback_data=f"subscription_{subscription.id}")]
             ]
@@ -1877,6 +2272,13 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             return
         
         # Если тип уже определен, активируем абонемент (первая тренировка — ближайший слот от «сейчас»)
+        if subscription.subscription_type == "individual":
+            await query.edit_message_text(
+                "ℹ️ Для индивидуального абонемента выберите дату и время в календаре активации "
+                "(кнопка «Активировать» у неактивной записи)."
+            )
+            return
+
         from database.db_utils import _find_nearest_training_date
 
         sport_type = subscription.sport_type or athlete.sport_type

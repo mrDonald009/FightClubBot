@@ -66,7 +66,7 @@ def run_subscription_audit(session: Session) -> Dict:
             add_issue("missing_athlete", "critical", "У абонемента отсутствует связанный спортсмен")
             continue
 
-        if sub.subscription_type not in (None, "monthly", "single"):
+        if sub.subscription_type not in (None, "monthly", "single", "individual"):
             add_issue("bad_type", "critical", f"Недопустимый тип: {sub.subscription_type}")
 
         if sub.start_date and sub.end_date and sub.start_date > sub.end_date:
@@ -101,7 +101,7 @@ def run_subscription_audit(session: Session) -> Dict:
                 f"{sub.trainings_remaining}>{sub.trainings_total}",
             )
 
-        if sub.subscription_type == "single" and sub.trainings_total != 1:
+        if sub.subscription_type in ("single", "individual") and sub.trainings_total != 1:
             add_issue("single_total_not_1", "warning", f"trainings_total={sub.trainings_total}")
 
         if sub.is_frozen and (not sub.frozen_from or not sub.frozen_until):

@@ -36,6 +36,7 @@ from handlers.coach_handlers import (
     add_athlete_subscription,
     handle_add_athlete_calendar_nav,
     handle_add_athlete_calendar_date_pick,
+    handle_add_athlete_individual_time_pick,
     handle_add_athlete_calendar_ignore,
     handle_add_athlete_shift_confirm,
     handle_add_athlete_shift_cancel,
@@ -74,6 +75,8 @@ from handlers.card_handlers import (
     handle_activate_subscription,
     handle_activation_calendar_nav,
     handle_activation_date_pick,
+    handle_activation_individual_shift_confirm,
+    handle_activation_time_pick,
     handle_activation_ignore,
     handle_activation_shift_confirm,
     handle_activation_shift_cancel,
@@ -1065,6 +1068,10 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
             ATHLETE_TRAINING_DATE: [
                 CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_"),
                 CallbackQueryHandler(handle_add_athlete_calendar_nav, pattern="^addath_cal_"),
+                CallbackQueryHandler(
+                    handle_add_athlete_individual_time_pick,
+                    pattern=r"^addath_it_\d{12}$",
+                ),
                 CallbackQueryHandler(handle_add_athlete_calendar_date_pick, pattern="^addath_date_"),
                 CallbackQueryHandler(handle_add_athlete_calendar_ignore, pattern="^addath_ignore$"),
                 CallbackQueryHandler(
@@ -1251,6 +1258,15 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     # Календарь выбора даты активации (после выбора типа)
     registrar.register(CallbackQueryHandler(handle_activation_calendar_nav, pattern="^act_cal_"))
     registrar.register(CallbackQueryHandler(handle_activation_date_pick, pattern="^act_date_"))
+    registrar.register(
+        CallbackQueryHandler(
+            handle_activation_individual_shift_confirm,
+            pattern=r"^act_ishift_\d+_\d{12}$",
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_activation_time_pick, pattern=r"^act_time_\d+_\d{12}$")
+    )
     registrar.register(CallbackQueryHandler(handle_activation_ignore, pattern="^act_ignore$"))
     registrar.register(
         CallbackQueryHandler(handle_activation_shift_confirm, pattern=r"^act_shift_confirm_\d+_\d{12}$")

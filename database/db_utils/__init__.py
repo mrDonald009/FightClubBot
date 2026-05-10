@@ -45,6 +45,7 @@ from .freeze_personal import (
 from .global_freeze import (
     apply_global_freeze,
     deactivate_global_freeze_and_migrate,
+    find_next_non_frozen_calendar_date,
     find_next_non_frozen_training_date,
     is_training_in_global_freeze,
     list_active_global_freezes_overlapping_range,
@@ -102,6 +103,7 @@ __all__ = [
     "unfreeze_subscription",
     "apply_global_freeze",
     "deactivate_global_freeze_and_migrate",
+    "find_next_non_frozen_calendar_date",
     "find_next_non_frozen_training_date",
     "is_training_in_global_freeze",
     "list_active_global_freezes_overlapping_range",

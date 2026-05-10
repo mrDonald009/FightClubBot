@@ -8,6 +8,11 @@ from database.db_utils import (
     create_athlete,
 )
 import database.db_utils as db_utils_pkg
+from database.db_utils.training_slots import (
+    TRAINING_FORMAT_INDIVIDUAL,
+    individual_slot_conflicts,
+    iter_allowed_individual_starts,
+)
 from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
 )
@@ -17,7 +22,7 @@ from utils.subscription_resolve import subscription_for_coach_sport
 from utils.attendance_display import attendance_icon_for_slot
 from utils.time_utils import now_moscow, ACTIVATION_GRACE_AFTER_START
 from keyboards.coach_kb import get_coach_main_menu
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import joinedload
 import re
@@ -642,7 +647,10 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['age_group'] = age_group
     logger.debug("add_athlete_age_group user_id=%s group=%s -> subscription", user_id, age_group)
 
-    keyboard = [[KeyboardButton("Месячный"), KeyboardButton("Разовый")]]
+    keyboard = [
+        [KeyboardButton("Месячный"), KeyboardButton("Разовый")],
+        [KeyboardButton("Индивидуальный")],
+    ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
         "🎫 Выберите тип абонемента:",
@@ -804,6 +812,109 @@ def create_add_athlete_training_calendar(sport_type, age_group, month=None, year
     return InlineKeyboardMarkup(keyboard)
 
 
+def create_add_athlete_individual_calendar(month=None, year=None):
+    """Календарь первой даты для индивидуального абонемента (любой будущий день)."""
+    now = now_moscow()
+    today = now.date()
+    current_month = month or now.month
+    current_year = year or now.year
+    cal = calendar.monthcalendar(current_year, current_month)
+    keyboard = []
+    day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    keyboard.append([InlineKeyboardButton(f"{d}.", callback_data="addath_ignore") for d in day_names])
+    weeks_to_show = cal[:5]
+    while len(weeks_to_show) < 5:
+        weeks_to_show.append([0, 0, 0, 0, 0, 0, 0])
+    for week in weeks_to_show:
+        row = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(" ", callback_data="addath_ignore"))
+                continue
+            date_obj = datetime(current_year, current_month, day).date()
+            enabled = date_obj >= today
+            if date_obj == today:
+                btn_text = f"[{day:2d}]"
+            elif enabled:
+                btn_text = f"({day:2d})"
+            else:
+                btn_text = f"{day:2d}"
+            cb = (
+                f"addath_date_{current_year}_{current_month}_{day}"
+                if enabled
+                else "addath_ignore"
+            )
+            row.append(InlineKeyboardButton(btn_text, callback_data=cb))
+        keyboard.append(row)
+    prev_month = current_month - 1
+    prev_year = current_year
+    if prev_month < 1:
+        prev_month = 12
+        prev_year -= 1
+    next_month = current_month + 1
+    next_year = current_year
+    if next_month > 12:
+        next_month = 1
+        next_year += 1
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                "◀️ Предыдущий",
+                callback_data=f"addath_cal_{prev_year}_{prev_month}",
+            ),
+            InlineKeyboardButton(
+                "Следующий ▶️",
+                callback_data=f"addath_cal_{next_year}_{next_month}",
+            ),
+        ]
+    )
+    if current_month != now.month or current_year != now.year:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "📅 Сегодня",
+                    callback_data=f"addath_cal_{now.year}_{now.month}",
+                )
+            ]
+        )
+    keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def _coach_add_athlete_individual_time_keyboard(
+    session, coach_id: int, sport_type: str, year: int, month: int, day: int
+) -> Optional[InlineKeyboardMarkup]:
+    d = date(year, month, day)
+    starts = iter_allowed_individual_starts(
+        session, coach_id, sport_type, d, now_cutoff=now_moscow()
+    )
+    if not starts:
+        return None
+    rows = []
+    row = []
+    for st in starts:
+        row.append(
+            InlineKeyboardButton(
+                st.strftime("%H:%M"),
+                callback_data=f"addath_it_{db_utils_pkg.training_datetime_compact(st)}",
+            )
+        )
+        if len(row) >= 4:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "🔙 К дате",
+                callback_data=f"addath_cal_{year}_{month}",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
 async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка типа абонемента → переход к выбору первой даты тренировки."""
     user_id = update.effective_user.id
@@ -815,22 +926,30 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
         await cancel_athlete_creation(update, context)
         return ConversationHandler.END
 
-    if user_text not in ("Месячный", "Разовый"):
+    if user_text not in ("Месячный", "Разовый", "Индивидуальный"):
         await update.message.reply_text(
-            "❌ Выберите тип абонемента кнопкой: <b>Месячный</b> или <b>Разовый</b>.",
+            "❌ Выберите тип абонемента кнопкой: <b>Месячный</b>, <b>Разовый</b> или <b>Индивидуальный</b>.",
             parse_mode="HTML"
         )
         return ATHLETE_SUBSCRIPTION
 
     subscription_type_ru = user_text
-    subscription_type = "monthly" if subscription_type_ru == "Месячный" else "single"
+    if subscription_type_ru == "Месячный":
+        subscription_type = "monthly"
+    elif subscription_type_ru == "Разовый":
+        subscription_type = "single"
+    else:
+        subscription_type = "individual"
     context.user_data['subscription_type'] = subscription_type
     context.user_data['subscription_type_ru'] = subscription_type_ru
     logger.info("add_athlete_subscription user_id=%s type=%s -> calendar", user_id, subscription_type)
 
     sport_type = context.user_data['sport_type']
     age_group = context.user_data['age_group']
-    date_kb = create_add_athlete_training_calendar(sport_type, age_group)
+    if subscription_type == "individual":
+        date_kb = create_add_athlete_individual_calendar()
+    else:
+        date_kb = create_add_athlete_training_calendar(sport_type, age_group)
     if not date_kb:
         await update.message.reply_text(
             "❌ Нет доступных дат тренировок по расписанию для этой группы. Обратитесь к администратору.",
@@ -839,7 +958,9 @@ async def add_athlete_subscription(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "📅 Выберите <b>первую дату тренировки</b> по абонементу:",
+        "📅 Выберите <b>дату первой тренировки</b> по абонементу"
+        + (" (затем — время слота)" if subscription_type == "individual" else "")
+        + ":",
         parse_mode="HTML",
         reply_markup=date_kb
     )
@@ -864,7 +985,12 @@ async def handle_add_athlete_calendar_nav(update: Update, context: ContextTypes.
     month = int(parts[3])
     sport_type = context.user_data.get("sport_type")
     age_group = context.user_data.get("age_group")
-    reply_markup = create_add_athlete_training_calendar(sport_type, age_group, month=month, year=year)
+    if context.user_data.get("subscription_type") == "individual":
+        reply_markup = create_add_athlete_individual_calendar(month=month, year=year)
+    else:
+        reply_markup = create_add_athlete_training_calendar(
+            sport_type, age_group, month=month, year=year
+        )
     if not reply_markup:
         await query.edit_message_text("❌ Не удалось построить календарь. Обратитесь к администратору.")
         return ConversationHandler.END
@@ -893,6 +1019,33 @@ async def handle_add_athlete_calendar_date_pick(update: Update, context: Context
     sport_type = context.user_data.get("sport_type")
     age_group = context.user_data.get("age_group")
 
+    if context.user_data.get("subscription_type") == "individual":
+        coach_id = context.user_data.get("coach_id")
+        if not coach_id:
+            await query.answer()
+            await query.edit_message_text("❌ Не найден coach_id в сессии добавления.")
+            return ConversationHandler.END
+        session = Session()
+        try:
+            time_kb = _coach_add_athlete_individual_time_keyboard(
+                session, coach_id, sport_type, year, month, day
+            )
+        finally:
+            session.close()
+        await query.answer()
+        if not time_kb:
+            await query.edit_message_text(
+                "❌ В этот день нет свободного слота. Выберите другую дату.",
+                reply_markup=create_add_athlete_individual_calendar(month=month, year=year),
+            )
+            return ATHLETE_TRAINING_DATE
+        await query.edit_message_text(
+            "⏰ Выберите <b>время начала</b> индивидуальной тренировки (1,5 ч):",
+            parse_mode="HTML",
+            reply_markup=time_kb,
+        )
+        return ATHLETE_TRAINING_DATE
+
     schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
     if not schedule:
         await query.answer()
@@ -902,6 +1055,67 @@ async def handle_add_athlete_calendar_date_pick(update: Update, context: Context
     coach_selected_date = datetime(year, month, day, 0, 0, 0)
     await query.answer()
     return await _finalize_add_athlete_from_selected_date(query, context, coach_selected_date)
+
+
+async def handle_add_athlete_individual_time_pick(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Выбор времени индивидуальной первой тренировки при добавлении спортсмена."""
+    query = update.callback_query
+    await query.answer()
+    if "subscription_type" not in context.user_data:
+        await query.edit_message_text(
+            "Сессия добавления спортсмена завершена. Используйте меню «👥 Добавить спортсмена»."
+        )
+        return ConversationHandler.END
+    m = re.match(r"^addath_it_(\d{12})$", (query.data or "").strip())
+    if not m:
+        await query.edit_message_text("❌ Некорректная кнопка.")
+        return ATHLETE_TRAINING_DATE
+    start_dt = db_utils_pkg.parse_training_datetime_compact(m.group(1))
+    if not start_dt:
+        await query.edit_message_text("❌ Некорректное время.")
+        return ATHLETE_TRAINING_DATE
+    coach_id = context.user_data.get("coach_id")
+    sport_type = context.user_data.get("sport_type")
+    if not coach_id or not sport_type:
+        await query.edit_message_text("❌ Недостаточно данных в сессии.")
+        return ConversationHandler.END
+    session = Session()
+    try:
+        if db_utils_pkg.is_training_in_global_freeze(session, start_dt):
+            await query.edit_message_text(
+                "❌ Выбранное время в периоде массовой заморозки. Выберите другое время.",
+                reply_markup=_coach_add_athlete_individual_time_keyboard(
+                    session,
+                    coach_id,
+                    sport_type,
+                    start_dt.year,
+                    start_dt.month,
+                    start_dt.day,
+                ),
+            )
+            return ATHLETE_TRAINING_DATE
+        if individual_slot_conflicts(session, coach_id, sport_type, start_dt):
+            await query.edit_message_text(
+                "❌ Слот занят или пересекается с другой тренировкой. Выберите другое время.",
+                reply_markup=_coach_add_athlete_individual_time_keyboard(
+                    session,
+                    coach_id,
+                    sport_type,
+                    start_dt.year,
+                    start_dt.month,
+                    start_dt.day,
+                ),
+            )
+            return ATHLETE_TRAINING_DATE
+    finally:
+        session.close()
+    return await _finalize_add_athlete_from_selected_date(
+        query, context, start_dt.replace(hour=0, minute=0, second=0, microsecond=0),
+        exact_start=start_dt,
+        skip_freeze_confirm=True,
+    )
 
 
 async def handle_add_athlete_calendar_ignore(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -922,23 +1136,36 @@ def _parse_shift_confirm_callback_data(data: str):
     return db_utils_pkg.parse_training_datetime_compact(suffix)
 
 
-async def _finalize_add_athlete_from_selected_date(query, context, coach_selected_date: datetime, *, skip_freeze_confirm: bool = False):
+async def _finalize_add_athlete_from_selected_date(
+    query,
+    context,
+    coach_selected_date: datetime,
+    *,
+    skip_freeze_confirm: bool = False,
+    exact_start: Optional[datetime] = None,
+):
     """Единая логика завершения добавления спортсмена по выбранной дате."""
     sport_type = context.user_data['sport_type']
     age_group = context.user_data['age_group']
     subscription_type = context.user_data['subscription_type']
 
-    # Первая дата тренировки по расписанию
-    start_date = db_utils_pkg._find_nearest_training_date(
-        coach_selected_date.replace(hour=0, minute=0, second=0, microsecond=0),
-        sport_type,
-        age_group,
-    )
+    if exact_start is not None:
+        start_date = exact_start
+    else:
+        start_date = db_utils_pkg._find_nearest_training_date(
+            coach_selected_date.replace(hour=0, minute=0, second=0, microsecond=0),
+            sport_type,
+            age_group,
+        )
     session = Session()
     try:
         # Если первая тренировка попала в активную массовую заморозку,
         # просим подтверждение с автоматическим сдвигом.
-        if db_utils_pkg.is_training_in_global_freeze(session, start_date) and not skip_freeze_confirm:
+        if (
+            exact_start is None
+            and db_utils_pkg.is_training_in_global_freeze(session, start_date)
+            and not skip_freeze_confirm
+        ):
             freeze = session.query(GlobalFreeze).filter(
                 GlobalFreeze.is_active == True,
                 GlobalFreeze.start_date <= start_date,
@@ -979,6 +1206,11 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
         else:
             end_date = db_utils_pkg.training_end_time(start_date)
 
+        from utils.discipline_keys import discipline_key_for
+
+        sub_fmt = "individual" if subscription_type == "individual" else "group"
+        dk = discipline_key_for(sport_type, format=sub_fmt)
+
         athlete = create_athlete(
             session=session,
             telegram_id=None,
@@ -996,6 +1228,8 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
             athlete_id=athlete.id,
             subscription_type=subscription_type,
             sport_type=sport_type,
+            discipline_key=dk,
+            subscription_format=sub_fmt,
             commit=False,
         )
         subscription.start_date = start_date
@@ -1004,6 +1238,18 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
 
         if subscription_type == "monthly":
             db_utils_pkg._create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
+        elif subscription_type == "individual":
+            coach_id = athlete.created_by or context.user_data.get("coach_id")
+            training = Training(
+                sport_type=sport_type,
+                age_group=age_group,
+                training_date=start_date,
+                is_cancelled=False,
+                coach_id=coach_id,
+                training_format=TRAINING_FORMAT_INDIVIDUAL,
+            )
+            session.add(training)
+            session.flush()
         else:
             coach_id = athlete.created_by or context.user_data.get('coach_id')
             training = session.query(Training).filter_by(

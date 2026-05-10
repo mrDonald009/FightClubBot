@@ -17,6 +17,8 @@ def tariff_kind_for_subscription_type(subscription_type: Optional[str]) -> Optio
         return TARIFF_KIND_SUBSCRIPTION_MONTHLY
     if subscription_type == "single":
         return TARIFF_KIND_SUBSCRIPTION_SINGLE
+    if subscription_type == "individual":
+        return TARIFF_KIND_INDIVIDUAL_TRAINING
     return None
 
 

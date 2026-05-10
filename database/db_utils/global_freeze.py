@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -30,6 +30,19 @@ def is_training_in_global_freeze(session: Session, training_datetime: datetime) 
         GlobalFreeze.end_date >= training_datetime
     ).first()
     return bool(gf)
+
+
+def find_next_non_frozen_calendar_date(
+    session: Session, from_day: date, max_days: int = 400
+) -> date:
+    """Первый календарный день (полдень как тестовая точка), не попадающий в активную массовую заморозку."""
+    d = from_day
+    for _ in range(max_days):
+        noon = datetime(d.year, d.month, d.day, 12, 0, 0)
+        if not is_training_in_global_freeze(session, noon):
+            return d
+        d = d + timedelta(days=1)
+    return from_day
 
 
 def training_datetime_compact(dt: datetime) -> str:

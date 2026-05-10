@@ -220,9 +220,10 @@ def migrate_database():
         cursor.execute("""
             UPDATE subscriptions
             SET subscription_type = CASE
-                WHEN subscription_type IN ('monthly', 'single') THEN subscription_type
+                WHEN subscription_type IN ('monthly', 'single', 'individual') THEN subscription_type
                 WHEN subscription_type IN ('Месячный', 'месячный', 'month') THEN 'monthly'
                 WHEN subscription_type IN ('Разовый', 'разовый', 'one_time', 'single_use') THEN 'single'
+                WHEN subscription_type IN ('Индивидуальный', 'индивидуальный') THEN 'individual'
                 ELSE subscription_type
             END
             WHERE subscription_type IS NOT NULL
@@ -523,6 +524,7 @@ def migrate_database():
                         SELECT CASE
                             WHEN s.subscription_type = 'monthly' THEN 'subscription_monthly'
                             WHEN s.subscription_type = 'single' THEN 'subscription_single'
+                            WHEN s.subscription_type = 'individual' THEN 'individual_training'
                             ELSE 'individual_training'
                         END
                         FROM subscriptions s WHERE s.id = subscription_payments.subscription_id
@@ -530,6 +532,60 @@ def migrate_database():
                     """
                 )
                 print("✅ payment_kind добавлен и заполнен по типу абонемента")
+
+        # Расширение CHECK subscription_type (individual): SQLite не умеет ALTER CHECK
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='subscriptions'")
+        sub_sql_row = cursor.fetchone()
+        if sub_sql_row and sub_sql_row[0]:
+            sub_sql = sub_sql_row[0]
+            if (
+                "individual" not in sub_sql.lower()
+                and "IN ('monthly', 'single')" in sub_sql
+            ):
+                print("🔧 Пересоздаю таблицу subscriptions (CHECK + individual)...")
+                cursor.execute("PRAGMA foreign_keys=OFF")
+                try:
+                    new_sql = sub_sql.replace(
+                        "IN ('monthly', 'single')",
+                        "IN ('monthly', 'single', 'individual')",
+                        1,
+                    )
+                    new_sql = new_sql.replace(
+                        "CREATE TABLE subscriptions",
+                        "CREATE TABLE subscriptions_mig_nr",
+                        1,
+                    )
+                    cursor.execute(new_sql)
+                    cursor.execute(
+                        "INSERT INTO subscriptions_mig_nr SELECT * FROM subscriptions"
+                    )
+                    cursor.execute("DROP TABLE subscriptions")
+                    cursor.execute(
+                        "ALTER TABLE subscriptions_mig_nr RENAME TO subscriptions"
+                    )
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS ix_subscriptions_active_end
+                        ON subscriptions (is_active, end_date)
+                    """)
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS ix_subscriptions_athlete_active
+                        ON subscriptions (athlete_id, is_active)
+                    """)
+                    cursor.execute("""
+                        SELECT athlete_id, discipline_key, COUNT(*) as cnt
+                        FROM subscriptions
+                        WHERE discipline_key IS NOT NULL AND discipline_key != ''
+                        GROUP BY athlete_id, discipline_key
+                        HAVING COUNT(*) > 1
+                    """)
+                    if not cursor.fetchall():
+                        cursor.execute("""
+                            CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_discipline
+                            ON subscriptions (athlete_id, discipline_key)
+                        """)
+                    print("✅ subscriptions: CHECK допускает individual")
+                finally:
+                    cursor.execute("PRAGMA foreign_keys=ON")
 
         # Проверяем таблицу trainings
         cursor.execute("PRAGMA table_info(trainings)")
@@ -540,6 +596,13 @@ def migrate_database():
             print("🔧 Добавляю coach_id в таблицу trainings...")
             cursor.execute("ALTER TABLE trainings ADD COLUMN coach_id INTEGER")
             print("✅ coach_id добавлен в trainings")
+
+        if "training_format" not in columns:
+            print("🔧 Добавляю training_format в таблицу trainings...")
+            cursor.execute(
+                "ALTER TABLE trainings ADD COLUMN training_format VARCHAR(20)"
+            )
+            print("✅ training_format добавлен в trainings")
 
         connection.commit()
         print("🎉 Миграция завершена успешно!")

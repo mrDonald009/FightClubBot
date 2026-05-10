@@ -169,7 +169,7 @@ class Subscription(Base):
         Index('ix_subscriptions_athlete_active', 'athlete_id', 'is_active'),
         UniqueConstraint('athlete_id', 'discipline_key', name='uq_subscriptions_athlete_discipline'),
         CheckConstraint(
-            "subscription_type IS NULL OR subscription_type IN ('monthly', 'single')",
+            "subscription_type IS NULL OR subscription_type IN ('monthly', 'single', 'individual')",
             name='ck_subscriptions_type'
         ),
         CheckConstraint(
@@ -194,7 +194,7 @@ class Subscription(Base):
     responsible_coach_id = Column(Integer, ForeignKey('coaches.id'), nullable=True)
     sport_type_id = Column(Integer, ForeignKey('sport_types.id'), nullable=True)  # Связь с таблицей видов спорта
     sport_type = Column(String(50))  # Вид спорта для абонемента (для обратной совместимости)
-    subscription_type = Column(String(20))  # monthly, single
+    subscription_type = Column(String(20))  # monthly, single, individual
     # Дата начала должна выставляться ТОЛЬКО при активации абонемента (а не при создании записи)
     start_date = Column(DateTime, nullable=True)
     end_date = Column(DateTime)
@@ -280,6 +280,8 @@ class Training(Base):
     training_date = Column(DateTime)
     is_cancelled = Column(Boolean, default=False)
     coach_id = Column(Integer, ForeignKey('coaches.id'), nullable=True)  # Тренер, проводящий тренировку
+    # NULL / group — групповая пара по расписанию; individual — отдельный слот (дата/время = начало)
+    training_format = Column(String(20), nullable=True)
 
     # Связи
     coach = relationship("Coach", foreign_keys=[coach_id])  # Связь с таблицей тренеров

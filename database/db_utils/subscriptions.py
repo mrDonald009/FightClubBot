@@ -46,6 +46,9 @@ def create_subscription(
     elif subscription_type == "single":
         trainings_total = 1
         trainings_remaining = 1
+    elif subscription_type == "individual":
+        trainings_total = 1
+        trainings_remaining = 1
     else:
         raise ValueError(f"Неизвестный тип абонемента: {subscription_type}")
 

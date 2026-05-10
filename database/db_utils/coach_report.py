@@ -429,8 +429,7 @@ def _payment_counts_by_kind(
         SubscriptionPayment.payment_kind == TARIFF_KIND_INDIVIDUAL_TRAINING,
         and_(
             SubscriptionPayment.payment_kind.is_(None),
-            Subscription.subscription_type.isnot(None),
-            ~Subscription.subscription_type.in_(["monthly", "single"]),
+            Subscription.subscription_type == "individual",
         ),
     )
 

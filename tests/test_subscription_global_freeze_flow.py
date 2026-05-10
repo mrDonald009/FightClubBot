@@ -271,7 +271,8 @@ def test_subscription_audit_reports_overlapping_global_freezes():
 def test_deactivate_global_freeze_is_idempotent_and_sets_inactive():
     s, _, _ = _session_with_active_global_freeze()
     gf = s.query(GlobalFreeze).one()
-    r1 = deactivate_global_freeze_and_migrate(s, gf.id)
+    with _freeze_now(datetime(2026, 4, 3, 12, 0, 0)):
+        r1 = deactivate_global_freeze_and_migrate(s, gf.id)
     assert r1["success"] is True
     assert r1.get("already_inactive") is False
     assert r1["migrated"] == 0
@@ -280,7 +281,8 @@ def test_deactivate_global_freeze_is_idempotent_and_sets_inactive():
     s.refresh(gf)
     assert gf.is_active is False
 
-    r2 = deactivate_global_freeze_and_migrate(s, gf.id)
+    with _freeze_now(datetime(2026, 4, 3, 12, 0, 0)):
+        r2 = deactivate_global_freeze_and_migrate(s, gf.id)
     assert r2["success"] is True
     assert r2.get("already_inactive") is True
     assert r2["checked"] == 0
@@ -440,7 +442,8 @@ def test_deactivate_global_freeze_checks_non_monthly_subscriptions_too():
         created_by=1,
     )
     assert r_apply["success"] is True
-    r_deact = deactivate_global_freeze_and_migrate(s, r_apply["global_freeze_id"])
+    with _freeze_now(datetime(2026, 4, 3, 12, 0, 0)):
+        r_deact = deactivate_global_freeze_and_migrate(s, r_apply["global_freeze_id"])
     assert r_deact["success"] is True
     # Затронуты monthly + single: проверка должна учитывать оба.
     assert r_deact["checked"] >= 2

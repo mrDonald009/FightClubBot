@@ -5,6 +5,62 @@ from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow, training_end_time
 
 from .global_freeze import is_training_in_global_freeze
+from .training_slots import TRAINING_FORMAT_INDIVIDUAL
+
+
+def _deduct_individual_subscription(
+    session: Session, subscription: Subscription, athlete: Athlete, now
+) -> bool:
+    """Списание единственной индивидуальной тренировки после окончания слота (как разовая по расписанию)."""
+    if not subscription.start_date or not subscription.end_date:
+        return False
+    sport = subscription.sport_type or athlete.sport_type
+    if not sport or not athlete.age_group:
+        return False
+    training_row = (
+        session.query(Training)
+        .filter(
+            Training.training_format == TRAINING_FORMAT_INDIVIDUAL,
+            Training.sport_type == sport,
+            Training.age_group == athlete.age_group,
+            Training.training_date == subscription.start_date,
+            Training.is_cancelled.is_(False),
+        )
+        .first()
+    )
+    if not training_row:
+        return False
+    t_end = training_end_time(training_row.training_date)
+    if now < t_end:
+        return False
+    if is_training_in_global_freeze(session, training_row.training_date):
+        return False
+    if training_row.training_date < subscription.start_date or t_end > subscription.end_date:
+        return False
+    existing_attendance = (
+        session.query(Attendance)
+        .filter_by(
+            athlete_id=athlete.id,
+            training_id=training_row.id,
+            subscription_id=subscription.id,
+        )
+        .first()
+    )
+    if existing_attendance or subscription.trainings_remaining <= 0:
+        return False
+    session.add(
+        Attendance(
+            athlete_id=athlete.id,
+            training_id=training_row.id,
+            subscription_id=subscription.id,
+            attended=False,
+            marked_by=None,
+            created_at=now_moscow(),
+        )
+    )
+    subscription.trainings_remaining -= 1
+    return True
+
 
 def auto_deduct_daily_trainings(session: Session):
     """
@@ -27,12 +83,17 @@ def auto_deduct_daily_trainings(session: Session):
         athlete = session.query(Athlete).filter_by(id=subscription.athlete_id).first()
         if not athlete or not athlete.sport_type or not athlete.age_group:
             continue
-        
+
         # Проверяем статус абонемента
         status = SubscriptionChecker.get_subscription_status(subscription)
         if status != "active":
             continue
-        
+
+        if subscription.subscription_type == "individual":
+            if _deduct_individual_subscription(session, subscription, athlete, now):
+                deducted_count += 1
+            continue
+
         schedule = TrainingManager.TRAINING_SCHEDULE.get(athlete.sport_type, {}).get(athlete.age_group)
         if not schedule:
             continue

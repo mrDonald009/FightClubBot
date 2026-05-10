@@ -65,3 +65,8 @@ def today_moscow():
 def training_end_time(training_start: datetime) -> datetime:
     """Время окончания тренировки по времени ее начала."""
     return training_start + TRAINING_DURATION
+
+
+def individual_training_end_time(training_start: datetime) -> datetime:
+    """Конец индивидуальной тренировки (по ТЗ — 1,5 ч; совпадает с TRAINING_DURATION)."""
+    return training_end_time(training_start)

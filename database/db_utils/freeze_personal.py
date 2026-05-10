@@ -216,7 +216,7 @@ def freeze_subscription(
     # считаем период до freeze_until (без ограничения текущим end_date),
     # чтобы корректно переносить единственную тренировку на следующий доступный слот.
     effective_freeze_start = max(freeze_start, subscription.start_date or freeze_start)
-    if subscription.subscription_type == "single":
+    if subscription.subscription_type in ("single", "individual"):
         effective_freeze_end = freeze_until
     else:
         effective_freeze_end = min(freeze_until, subscription.end_date) if subscription.end_date else freeze_until

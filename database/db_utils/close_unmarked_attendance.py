@@ -3,7 +3,7 @@
 как в UI. Списание остатка — по тем же правилам, что при ручной отметке «не был».
 """
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Set
 
 from sqlalchemy import func
@@ -20,8 +20,64 @@ from utils.time_utils import (
 
 from .freeze_personal import is_training_in_athlete_personal_freeze
 from .global_freeze import is_training_in_global_freeze
+from .training_slots import TRAINING_FORMAT_INDIVIDUAL
 
 logger = logging.getLogger(__name__)
+
+
+def _close_unmarked_individual_training(
+    session: Session, training: Training, now: datetime
+) -> int:
+    """Одна индивидуальная пара: неявное посещение только у абонемента с тем же start_date."""
+    rows = (
+        session.query(Athlete, Subscription)
+        .join(Subscription, Subscription.athlete_id == Athlete.id)
+        .filter(
+            Subscription.is_active.is_(True),
+            Subscription.subscription_type == "individual",
+            Subscription.start_date == training.training_date,
+            Subscription.sport_type == training.sport_type,
+            Athlete.age_group == training.age_group,
+            Athlete.created_by == training.coach_id,
+        )
+        .order_by(Subscription.id.asc())
+        .all()
+    )
+    if not rows:
+        return 0
+    inserted = 0
+    for athlete, subscription in rows:
+        if (
+            session.query(Attendance.id)
+            .filter_by(athlete_id=athlete.id, training_id=training.id)
+            .first()
+        ):
+            continue
+        status = SubscriptionChecker.get_subscription_status(subscription)
+        if status != "active":
+            continue
+        if subscription.is_frozen:
+            continue
+        session.add(
+            Attendance(
+                athlete_id=athlete.id,
+                training_id=training.id,
+                subscription_id=subscription.id,
+                attended=False,
+                marked_by=None,
+                created_at=now,
+            )
+        )
+        if _should_deduct_on_system_absence(session, subscription, training, athlete.id):
+            subscription.trainings_remaining -= 1
+        inserted += 1
+        logger.info(
+            "implicit attendance (individual): training_id=%s athlete_id=%s sub_id=%s",
+            training.id,
+            athlete.id,
+            subscription.id,
+        )
+    return inserted
 
 
 def _should_deduct_on_system_absence(
@@ -75,6 +131,10 @@ def close_unmarked_attendance_after_grace(
     inserted = 0
     for training in trainings:
         if is_training_in_global_freeze(session, training.training_date):
+            continue
+
+        if getattr(training, "training_format", None) == TRAINING_FORMAT_INDIVIDUAL:
+            inserted += _close_unmarked_individual_training(session, training, now)
             continue
 
         training_day = training.training_date.date()
