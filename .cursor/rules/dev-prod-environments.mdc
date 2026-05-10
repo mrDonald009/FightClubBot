@@ -92,6 +92,47 @@ bash scripts/server_compare_database_urls.sh "$HOME/FightClubBot-dev" "$HOME/Fig
 
 При смене сервера или путей — обновить раздел **«Зафиксированная схема на VPS»** выше.
 
+## Git и порядок выката (зафиксировано по практике)
+
+- **Разработка** — в ветке **`dev`**: коммиты и **`git push origin dev`**.
+- **Сначала тест**, потом бой: новый функционал подтягивают в **`~/FightClubBot-dev`**, проверяют **тестового** бота; только после этого переносят на **`prod`** (merge в `origin/prod` или согласованный процесс) и обновляют **`~/FightClubBot`**.
+- **Путаница «сначала уехало на прод»** почти всегда из-за того, что **`git pull` / рестарт** сделали в **боевом** каталоге или перезапустили **`fightclubbot.service`**, а не dev; либо смотрели **другого бота** в Telegram; либо в Git сначала обновили **`prod`**, а тестовый каталог на сервере не трогали.
+- На сервере ветка **`prod`** в `~/FightClubBot` должна отслеживать **`origin/prod`** (`git branch -vv` → `[origin/prod]`). Если видно **`ahead N, behind M`** — локальный каталог на VPS **разошёлся** с GitHub; перед следующим деплоем нужно **сознательно** выровнять с `origin/prod` (merge / pull / при крайней необходимости `reset --hard` после бэкапа), иначе на бою крутится «не та» история, чем на GitHub.
+- **Не смешивать токены:** в `.env.dev` тестового процесса должен быть токен **тестового** бота, в `.env` прода — **боевого** (сравнение без публикации: `md5sum` по строкам `BOT_TOKEN=` из разных файлов — хеши должны **различаться**).
+
+### Команды обновления на сервере (эталон)
+
+**Тестовый бот (DEV):**
+
+```bash
+cd ~/FightClubBot-dev && git pull origin dev && sudo systemctl restart fightclubbot-dev
+```
+
+**Боевой бот (PROD)** — только после принятия на тесте:
+
+```bash
+cd ~/FightClubBot && git fetch origin && git pull origin prod && sudo systemctl restart fightclubbot
+```
+
+При появлении новых зависимостей в `requirements.txt` перед рестартом:  
+`.venv/bin/pip install -r requirements.txt` в **соответствующем** каталоге.
+
+### Быстрая проверка окружений
+
+```bash
+systemctl cat fightclubbot-dev.service 2>/dev/null | grep -E '^WorkingDirectory=|^EnvironmentFile=|^ExecStart='
+systemctl cat fightclubbot.service 2>/dev/null | grep -E '^WorkingDirectory=|^EnvironmentFile=|^ExecStart='
+```
+
+```bash
+(cd ~/FightClubBot-dev && git branch -vv && git log -1 --oneline)
+(cd ~/FightClubBot && git branch -vv && git log -1 --oneline)
+```
+
+## Совместимость Python
+
+На сервере или ПК может быть **Python 3.8**: в коде не использовать в аннотациях встроенные generics вида `list[int]` / `dict[str, int]` без `from __future__ import annotations` — безопаснее **`typing.List`**, **`typing.Dict`**, **`typing.Optional`** там, где это уже принято в проекте (см. `core/config.py`).
+
 ## Правило для ассистента (чтобы не путать данные)
 
 1. **`git pull origin dev`** обновляет только **исходный код**, не содержимое серверной БД.
