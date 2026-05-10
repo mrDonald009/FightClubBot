@@ -2260,18 +2260,42 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
             for training in trainings:
                 age_group_ru = "Дети" if training.age_group == "children" else "Взрослые"
                 time_str = training.training_date.strftime("%H:%M")
-                message += f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru})\n"
+                is_individual_slot = (
+                    (getattr(training, "training_format", None) or "").strip().lower()
+                    == TRAINING_FORMAT_INDIVIDUAL
+                )
+                slot_suffix = " — <i>индивидуально</i>" if is_individual_slot else ""
+                message += (
+                    f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
+                )
 
                 training_date_only = training.training_date.date()
-                subs = session.query(Subscription).join(
-                    Athlete, Subscription.athlete_id == Athlete.id
-                ).filter(
-                    Subscription.is_active == True,
-                    Subscription.sport_type == training.sport_type,
-                    Athlete.age_group == training.age_group,
-                    func.date(Subscription.start_date) <= training_date_only,
-                    func.date(Subscription.end_date) >= training_date_only,
-                ).all()
+                subs_q = (
+                    session.query(Subscription)
+                    .join(Athlete, Subscription.athlete_id == Athlete.id)
+                    .filter(
+                        Subscription.is_active == True,
+                        Subscription.sport_type == training.sport_type,
+                        Athlete.age_group == training.age_group,
+                        func.date(Subscription.start_date) <= training_date_only,
+                        func.date(Subscription.end_date) >= training_date_only,
+                    )
+                )
+                # Индивидуальный абонемент нельзя показывать под каждой групповой парой дня:
+                # у него start/end в один календарный день, иначе он попадёт под все слоты.
+                if is_individual_slot:
+                    subs_q = subs_q.filter(
+                        Subscription.subscription_type == "individual",
+                        Subscription.start_date == training.training_date,
+                    )
+                else:
+                    subs_q = subs_q.filter(
+                        or_(
+                            Subscription.subscription_type.is_(None),
+                            Subscription.subscription_type != "individual",
+                        )
+                    )
+                subs = subs_q.all()
 
                 if subs:
                     message += f"  <b>Записано спортсменов: {len(subs)}</b>\n"
