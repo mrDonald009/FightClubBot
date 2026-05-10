@@ -21,14 +21,67 @@ sys.path.append(str(project_root))
 
 import sqlite3
 
+from sqlalchemy.engine.url import make_url
+
 from utils.discipline_keys import default_group_key_for_subscription_sport
+
+
+def _sqlite_database_path_for_migration() -> str:
+    """Тот же файл SQLite, что и в DATABASE_URL (для dev/prod с разными путями)."""
+    raw = os.getenv("DATABASE_URL", "sqlite:///database/club.db")
+    try:
+        u = make_url(raw)
+        if u.drivername != "sqlite":
+            return "database/club.db"
+        db = u.database
+        if not db or db == ":memory:":
+            return "database/club.db"
+        return db
+    except Exception:
+        return "database/club.db"
+
+
+def _seed_default_subscription_tariffs(cursor) -> None:
+    """Тарифы по умолчанию: MMA и Тайский Бокс (как в TRAINING_SCHEDULE).
+
+    Месячный абонемент = групповые занятия; разовый = одно разовое занятие.
+    Одна сумма на взрослую и детскую группу (поле age_group в тарифах не используется).
+
+    Вставка только если для пары (вид спорта, tariff_kind) ещё нет ни одной строки —
+    чтобы не затирать ручные правки при каждом запуске миграции.
+    """
+    note = "Групповые / разовое; взрослая и детская группа (единая цена)"
+    defaults = [
+        ("MMA", "subscription_monthly", 6500),
+        ("MMA", "subscription_single", 550),
+        ("Тайский Бокс", "subscription_monthly", 6500),
+        ("Тайский Бокс", "subscription_single", 550),
+    ]
+    for sport, kind, amount in defaults:
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM subscription_tariffs
+            WHERE sport_type_name = ? AND tariff_kind = ?
+            """,
+            (sport, kind),
+        )
+        if (cursor.fetchone() or (0,))[0] > 0:
+            continue
+        cursor.execute(
+            """
+            INSERT INTO subscription_tariffs
+            (sport_type_name, tariff_kind, amount_rubles, is_active, note)
+            VALUES (?, ?, ?, 1, ?)
+            """,
+            (sport, kind, amount, note),
+        )
+    print("✅ Тарифы по умолчанию (MMA / Тайский Бокс): проверены при необходимости добавлены")
 
 
 def migrate_database():
     """Миграция базы данных для добавления новых полей"""
 
-    # Путь к базе данных
-    db_path = "database/club.db"
+    db_path = _sqlite_database_path_for_migration()
 
     # Создаем папку если её нет
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -419,6 +472,37 @@ def migrate_database():
             ON global_freeze_applications (subscription_id)
         """)
         print("✅ Индексы global_freezes/global_freeze_applications созданы")
+
+        # Тарифы абонементов (редактируемые цены при активации)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS subscription_tariffs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sport_type_name VARCHAR(50) NOT NULL,
+                tariff_kind VARCHAR(40) NOT NULL,
+                amount_rubles INTEGER NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                note TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                CHECK (amount_rubles >= 0),
+                CHECK (tariff_kind IN (
+                    'subscription_monthly',
+                    'subscription_single',
+                    'individual_training'
+                ))
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS ix_subscription_tariffs_kind_active_sport
+            ON subscription_tariffs (tariff_kind, is_active, sport_type_name)
+        """)
+        print("✅ Таблица subscription_tariffs и индекс созданы")
+
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='subscription_tariffs'"
+        )
+        if cursor.fetchone():
+            _seed_default_subscription_tariffs(cursor)
 
         # Проверяем таблицу trainings
         cursor.execute("PRAGMA table_info(trainings)")
