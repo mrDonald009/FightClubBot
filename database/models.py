@@ -203,6 +203,37 @@ class Subscription(Base):
         back_populates="subscription",
         foreign_keys="Attendance.subscription_id"
     )
+    payments = relationship(
+        "SubscriptionPayment",
+        back_populates="subscription",
+        foreign_keys="SubscriptionPayment.subscription_id",
+    )
+
+
+class SubscriptionPayment(Base):
+    """Оплата по абонементу (для сводки выручки тренера за период).
+
+    Минимум полей: к какому абонементу отнесена сумма, сколько рублей, когда учтена оплата.
+    Опционально: комментарий, кто занёс запись (telegram_id).
+    """
+
+    __tablename__ = "subscription_payments"
+    __table_args__ = (
+        Index("ix_subscription_payments_paid_at", "paid_at"),
+        Index("ix_subscription_payments_subscription", "subscription_id"),
+        CheckConstraint("amount_rubles >= 0", name="ck_subscription_payments_amount_nonneg"),
+        {"extend_existing": True},
+    )
+
+    id = Column(Integer, primary_key=True)
+    subscription_id = Column(Integer, ForeignKey("subscriptions.id"), nullable=False)
+    amount_rubles = Column(Integer, nullable=False)
+    paid_at = Column(DateTime, nullable=False)
+    note = Column(Text, nullable=True)
+    recorded_by_telegram_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    subscription = relationship("Subscription", back_populates="payments")
 
 
 class Training(Base):

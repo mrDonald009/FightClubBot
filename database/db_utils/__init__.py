@@ -57,6 +57,10 @@ from .migrate import migrate_existing_subscription, migrate_subscription_by_athl
 from .restore import restore_multiple_trainings, restore_training
 from .athlete_card import get_athlete_card_info
 from .coach_report import build_coach_period_report, coach_roster_athlete_ids, month_range
+from .subscription_activation_payment import (
+    activation_price_rubles,
+    record_payment_on_subscription_activation,
+)
 
 __all__ = [
     "ACTIVATION_GRACE_AFTER_START",
@@ -104,4 +108,6 @@ __all__ = [
     "build_coach_period_report",
     "coach_roster_athlete_ids",
     "month_range",
+    "activation_price_rubles",
+    "record_payment_on_subscription_activation",
 ]

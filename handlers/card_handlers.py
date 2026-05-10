@@ -5,6 +5,9 @@ import calendar as py_calendar
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
 from database.models import Session, Athlete, Subscription, Training, Attendance, Coach, Admin, GlobalFreeze
+from database.db_utils.subscription_activation_payment import (
+    record_payment_on_subscription_activation,
+)
 from database.db_utils import (
     get_user_by_telegram_id,
     get_user_role,
@@ -165,6 +168,12 @@ async def _finalize_subscription_activation(
             session.flush()
 
     sync_subscription_trainings_remaining(session, subscription)
+    record_payment_on_subscription_activation(
+        session,
+        subscription,
+        start_date,
+        recorded_by_telegram_id=query.from_user.id,
+    )
     session.commit()
 
     await show_subscription_card(update, context, override_query_data=f"subscription_{subscription.id}")

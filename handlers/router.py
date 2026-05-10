@@ -1175,7 +1175,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(execute_mark_attendance, pattern="^(mark_present|mark_absent)$")
     )
     registrar.register(
-        CallbackQueryHandler(coach_report_period_callback, pattern=r"^cprpt_(cur|prev)$")
+        CallbackQueryHandler(coach_report_period_callback, pattern=r"^cprpt_")
     )
 
     # Команды быстрого доступа

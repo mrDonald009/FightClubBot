@@ -8,6 +8,9 @@ from database.db_utils import (
     create_athlete,
 )
 import database.db_utils as db_utils_pkg
+from database.db_utils.subscription_activation_payment import (
+    record_payment_on_subscription_activation,
+)
 from typing import List, Optional, Tuple, Union
 from utils.training_manager import TrainingManager
 from utils.subscription_resolve import subscription_for_coach_sport
@@ -1025,6 +1028,13 @@ async def _finalize_add_athlete_from_selected_date(query, context, coach_selecte
 
         # Защитная синхронизация после установки дат/типа.
         db_utils_pkg.sync_subscription_trainings_remaining(session, subscription)
+
+        record_payment_on_subscription_activation(
+            session,
+            subscription,
+            start_date,
+            recorded_by_telegram_id=query.from_user.id,
+        )
 
         session.commit()
 

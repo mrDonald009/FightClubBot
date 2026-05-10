@@ -1,6 +1,7 @@
-"""Сводные отчёты тренера за календарный месяц (посещаемость, база, абонементы).
+"""Сводные отчёты тренера за календарный месяц (посещаемость, база, абонементы, оплаты).
 
-Денежных полей в модели нет — блок «выручка» в UI не заполняется из БД.
+Выручка за период — сумма `subscription_payments.amount_rubles` по дате `paid_at`
+для абонементов спортсменов из базы тренера (тот же фильтр по виду спорта).
 """
 from __future__ import annotations
 
@@ -11,7 +12,14 @@ from typing import List, Optional, Tuple
 from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import Session as OrmSession
 
-from database.models import Athlete, Attendance, Coach, Subscription, Training
+from database.models import (
+    Athlete,
+    Attendance,
+    Coach,
+    Subscription,
+    SubscriptionPayment,
+    Training,
+)
 
 
 def coach_sport_type_name(coach: Coach) -> Optional[str]:
@@ -71,8 +79,12 @@ class CoachPeriodReport:
     new_athletes_in_period: int
     attendance_present: int
     attendance_absent: int
+    athletes_present_distinct: int
+    athletes_absent_distinct: int
     subscription_starts_in_period: int
     new_subscription_rows_in_period: int
+    revenue_rubles: int
+    payment_records_in_period: int
 
 
 def build_coach_period_report(
@@ -99,11 +111,17 @@ def build_coach_period_report(
     present, absent = _count_attendance_pair(
         session, athlete_ids, coach_sport, period_start, period_end_excl
     )
+    u_pres, u_abs = _count_distinct_athletes_attendance_pair(
+        session, athlete_ids, coach_sport, period_start, period_end_excl
+    )
 
     sub_starts = _count_subscription_starts(
         session, athlete_ids, coach_sport, period_start, period_end_excl
     )
     sub_rows = _count_new_subscription_rows(
+        session, athlete_ids, coach_sport, period_start, period_end_excl
+    )
+    rev, pay_n = _revenue_in_period(
         session, athlete_ids, coach_sport, period_start, period_end_excl
     )
 
@@ -115,8 +133,12 @@ def build_coach_period_report(
         new_athletes_in_period=new_athletes_in_period,
         attendance_present=present,
         attendance_absent=absent,
+        athletes_present_distinct=u_pres,
+        athletes_absent_distinct=u_abs,
         subscription_starts_in_period=sub_starts,
         new_subscription_rows_in_period=sub_rows,
+        revenue_rubles=rev,
+        payment_records_in_period=pay_n,
     )
 
 
@@ -208,6 +230,38 @@ def _count_attendance_pair(
                 Training.training_date.isnot(None),
                 Training.training_date >= period_start,
                 Training.training_date < period_end_excl,
+                Training.is_cancelled.is_(False),
+            )
+        )
+        if coach_sport:
+            q = q.filter(Training.sport_type == coach_sport)
+        return int(q.scalar() or 0)
+
+    return one(True), one(False)
+
+
+def _count_distinct_athletes_attendance_pair(
+    session: OrmSession,
+    athlete_ids: List[int],
+    coach_sport: Optional[str],
+    period_start: datetime,
+    period_end_excl: datetime,
+) -> Tuple[int, int]:
+    """Сколько разных спортсменов имели хотя бы одну отметку «был» / «не был» за период."""
+
+    def one(attended: bool) -> int:
+        if not athlete_ids:
+            return 0
+        q = (
+            session.query(func.count(func.distinct(Attendance.athlete_id)))
+            .join(Training, Training.id == Attendance.training_id)
+            .filter(
+                Attendance.athlete_id.in_(athlete_ids),
+                Attendance.attended.is_(attended),
+                Training.training_date.isnot(None),
+                Training.training_date >= period_start,
+                Training.training_date < period_end_excl,
+                Training.is_cancelled.is_(False),
             )
         )
         if coach_sport:
@@ -263,3 +317,43 @@ def _count_new_subscription_rows(
     if coach_sport:
         q = q.filter(_subscription_sport_match_sql(coach_sport))
     return int(q.scalar() or 0)
+
+
+def _revenue_in_period(
+    session: OrmSession,
+    athlete_ids: List[int],
+    coach_sport: Optional[str],
+    period_start: datetime,
+    period_end_excl: datetime,
+) -> Tuple[int, int]:
+    """Сумма оплат (₽) и число платёжных записей за период по полю paid_at."""
+    if not athlete_ids:
+        return 0, 0
+
+    total = (
+        session.query(func.coalesce(func.sum(SubscriptionPayment.amount_rubles), 0))
+        .select_from(SubscriptionPayment)
+        .join(Subscription, Subscription.id == SubscriptionPayment.subscription_id)
+        .join(Athlete, Athlete.id == Subscription.athlete_id)
+        .filter(
+            Subscription.athlete_id.in_(athlete_ids),
+            SubscriptionPayment.paid_at >= period_start,
+            SubscriptionPayment.paid_at < period_end_excl,
+        )
+    )
+    if coach_sport:
+        total = total.filter(_subscription_sport_match_sql(coach_sport))
+    nq = (
+        session.query(func.count(SubscriptionPayment.id))
+        .select_from(SubscriptionPayment)
+        .join(Subscription, Subscription.id == SubscriptionPayment.subscription_id)
+        .join(Athlete, Athlete.id == Subscription.athlete_id)
+        .filter(
+            Subscription.athlete_id.in_(athlete_ids),
+            SubscriptionPayment.paid_at >= period_start,
+            SubscriptionPayment.paid_at < period_end_excl,
+        )
+    )
+    if coach_sport:
+        nq = nq.filter(_subscription_sport_match_sql(coach_sport))
+    return int(total.scalar() or 0), int(nq.scalar() or 0)
