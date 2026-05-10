@@ -14,6 +14,8 @@ from services.attendance_training_flow import (
     parse_attendance_page_callback,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def test_parse_attendance_page_callback_valid():
     assert parse_attendance_page_callback("attpg_42_0") == (42, 0)
@@ -75,6 +77,7 @@ def test_build_step2_pagination_nav_when_many_athletes():
         training, athletes, {}, page=0, page_size=ATTENDANCE_LIST_PAGE_SIZE
     )
     assert "Спортсменов в списке: <b>25</b>" in msg
+    assert "Строк в базе посещений" in msg
     # последняя строка перед «К тренировкам на сегодня» — навигация
     nav_found = any(
         any("attpg_100_1" in cd for _, cd in row) for row in rows[:-1]

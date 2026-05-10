@@ -1,9 +1,12 @@
 """Фильтр списка спортсменов тренера: вид спорта в профиле или в абонементе."""
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, joinedload
 
 from database.models import Athlete, Base, Coach, SportType, Subscription
 from handlers.coach_handlers import load_athletes_for_list
+
+pytestmark = pytest.mark.db
 
 
 def _session_coach_mma():

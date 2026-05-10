@@ -17,6 +17,7 @@ from utils.subscription_resolve import (
     subscription_for_coach_sport,
 )
 from utils.time_utils import now_moscow, training_end_time
+from utils.attendance_display import attendance_icon_for_training
 from services.attendance_training_flow import (
     build_step2_message_and_keyboard_rows,
     coach_training_access_error,
@@ -251,7 +252,10 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
                 btn_text = f"{status} - {training.training_date.strftime('%d.%m %H:%M')}"
                 callback_data = f"view_attendance_{attendance.id}"
             else:
-                btn_text = f"📅 {training.training_date.strftime('%d.%m %H:%M')}"
+                slot_icon = attendance_icon_for_training(
+                    None, training, now=now_moscow()
+                )
+                btn_text = f"{slot_icon} {training.training_date.strftime('%d.%m %H:%M')}"
                 callback_data = f"select_training_{training.id}"
 
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback_data)])

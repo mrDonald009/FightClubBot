@@ -27,6 +27,8 @@ from database.models import (
 )
 from services.subscription_audit_service import run_subscription_audit
 
+pytestmark = pytest.mark.db
+
 
 @contextmanager
 def _freeze_now(fixed_dt: datetime):

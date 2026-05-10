@@ -11,6 +11,7 @@ import database.db_utils as db_utils_pkg
 from typing import List, Optional, Tuple, Union
 from utils.training_manager import TrainingManager
 from utils.subscription_resolve import subscription_for_coach_sport
+from utils.attendance_display import attendance_icon_for_slot
 from utils.time_utils import now_moscow, ACTIVATION_GRACE_AFTER_START
 from keyboards.coach_kb import get_coach_main_menu
 from datetime import datetime, timedelta
@@ -177,6 +178,7 @@ MENU_BUTTONS = [
     "📝 Отметить посещения",
     "📅 Мой календарь",
     "🌍 Массовая заморозка",
+    "📊 Сводка за период",
 ]
 
 
@@ -1982,6 +1984,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                 return
 
         sport_type_name = resolve_coach_sport_type_name(user)
+        now = now_moscow()
 
         query_filter = session.query(Training).filter(
             Training.coach_id == user.id,
@@ -2034,10 +2037,9 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         if not ath:
                             continue
                         att = att_by_sub.get(sub.id)
-                        if att is None:
-                            status_icon = "⏳"
-                        else:
-                            status_icon = "✅" if att.attended else "❌"
+                        status_icon = attendance_icon_for_slot(
+                            att, training.training_date, now=now
+                        )
                         message += f"    {status_icon} {html.escape(ath.full_name)}\n"
                     if len(subs) > 10:
                         message += f"    ... и еще {len(subs) - 10}\n"
@@ -2061,6 +2063,12 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     for age_group, schedule in schedule_info.items():
                         age_group_ru = "Дети" if age_group == "children" else "Взрослые"
                         time_str = TrainingManager.get_time_str_for_weekday(schedule, weekday)
+                        hour, minute = TrainingManager.get_hour_minute_for_weekday(
+                            schedule, weekday
+                        )
+                        slot_start = datetime.combine(
+                            selected_date, datetime.min.time()
+                        ).replace(hour=hour, minute=minute, second=0, microsecond=0)
 
                         message += f"• <b>{time_str}</b> - {sport_type_name} ({age_group_ru})\n"
 
@@ -2103,10 +2111,13 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
 
                             for subscription, athlete in pair_list[:10]:
                                 attendance = att_by_pair.get((athlete.id, subscription.id))
-                                if attendance:
-                                    status_icon = "✅" if attendance.attended else "❌"
+                                if attendance and attendance.training:
+                                    slot_eff = attendance.training.training_date
                                 else:
-                                    status_icon = "❌"
+                                    slot_eff = slot_start
+                                status_icon = attendance_icon_for_slot(
+                                    attendance, slot_eff, now=now
+                                )
                                 message += f"    {status_icon} {html.escape(athlete.full_name)}\n"
                             if len(pair_list) > 10:
                                 message += f"    ... и еще {len(pair_list) - 10}\n"

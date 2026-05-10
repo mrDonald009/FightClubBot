@@ -99,6 +99,7 @@ from handlers.attendance_handlers import (
     handle_training_selection,
     execute_mark_attendance,
 )
+from handlers.coach_report_handlers import coach_report_entry, coach_report_period_callback
 
 logger = logging.getLogger(__name__)
 
@@ -962,6 +963,10 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar)
     )
     logger.info("✅ Зарегистрирован обработчик: 📅 Мой календарь")
+    registrar.register(
+        MessageHandler(filters.Regex("^(📊 Сводка за период)$"), coach_report_entry)
+    )
+    logger.info("✅ Зарегистрирован обработчик: 📊 Сводка за период")
 
     # Массовая заморозка — РАНЬШЕ диалога добавления спортсмена: иначе при «залипшем» состоянии
     # add_athlete команда /cancel обрабатывается первым зарегистрированным CH и показывает текст про спортсмена.
@@ -1008,6 +1013,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 start_training,
             ),
             MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
+            MessageHandler(filters.Regex("^(📊 Сводка за период)$"), coach_report_entry),
             MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
         ],
         name="global_freeze_conversation",
@@ -1078,6 +1084,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 start_training,
             ),
             MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
+            MessageHandler(filters.Regex("^(📊 Сводка за период)$"), coach_report_entry),
             MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
         ],
         name="add_athlete_conversation",
@@ -1166,6 +1173,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     registrar.register(
         CallbackQueryHandler(execute_mark_attendance, pattern="^(mark_present|mark_absent)$")
+    )
+    registrar.register(
+        CallbackQueryHandler(coach_report_period_callback, pattern=r"^cprpt_(cur|prev)$")
     )
 
     # Команды быстрого доступа

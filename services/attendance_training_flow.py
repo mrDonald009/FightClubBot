@@ -15,6 +15,12 @@ from database.db_utils import get_user_role
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow
+from utils.attendance_display import (
+    attendance_icon_for_training,
+    is_effective_absent_no_row,
+    is_effective_present,
+    is_pending_unmarked,
+)
 
 # Размер страницы списка спортсменов на шаге 2 (inline-кнопки Telegram)
 ATTENDANCE_LIST_PAGE_SIZE = 20
@@ -308,10 +314,25 @@ def build_step2_message_and_keyboard_rows(
     HTML-текст и строки клавиатуры: список (text, callback_data).
     """
     total_count = len(athletes)
-    marked_count = len(attendance_map)
-    attended_count = sum(1 for a in attendance_map.values() if a.attended)
-    absent_count = marked_count - attended_count
-    pending_count = total_count - marked_count
+    now = now_moscow()
+    attended_count = sum(
+        1 for a in athletes if is_effective_present(attendance_map.get(a.id))
+    )
+    absent_count = sum(
+        1
+        for a in athletes
+        if is_effective_absent_no_row(
+            attendance_map.get(a.id), training.training_date, now=now
+        )
+    )
+    pending_count = sum(
+        1
+        for a in athletes
+        if is_pending_unmarked(
+            attendance_map.get(a.id), training.training_date, now=now
+        )
+    )
+    rows_in_db = len(attendance_map)
 
     age_group_ru = "детская группа" if training.age_group == "children" else "взрослая группа"
     parts = [
@@ -323,9 +344,11 @@ def build_step2_message_and_keyboard_rows(
         [
             f"📅 <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b> — "
             f"{html.escape(training.sport_type)}, {age_group_ru}\n",
-            f"👥 Спортсменов в списке: <b>{total_count}</b> | Уже отмечено: <b>{marked_count}</b> | "
-            f"Без отметки: <b>{pending_count}</b>\n",
-            f"✅ Были: <b>{attended_count}</b> | ❌ Не были: <b>{absent_count}</b>\n\n",
+            f"👥 Спортсменов в списке: <b>{total_count}</b> | "
+            f"Строк в базе посещений: <b>{rows_in_db}</b> | "
+            f"Не отмечено (в срок 24ч после пары): <b>{pending_count}</b>\n",
+            f"✅ Были: <b>{attended_count}</b> | ❌ Не были: <b>{absent_count}</b> "
+            f"<i>(включая без записи в срок)</i>\n\n",
             "<b>Шаг 2 из 2</b> — нажмите на фамилию, затем «был» или «не был».",
         ]
     )
@@ -343,10 +366,7 @@ def build_step2_message_and_keyboard_rows(
     tid = training.id
     for athlete in chunk:
         att = attendance_map.get(athlete.id)
-        if att is None:
-            icon = "⏳"
-        else:
-            icon = "✅" if att.attended else "❌"
+        icon = attendance_icon_for_training(att, training, now=now)
         full_name = (athlete.full_name or "").strip()
         if len(full_name) > 24:
             full_name = full_name[:22] + ".."

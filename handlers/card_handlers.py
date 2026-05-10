@@ -16,9 +16,17 @@ from database.db_utils import (
     training_datetime_compact,
     parse_training_datetime_compact,
     now_moscow,
+    training_end_time,
 )
-from typing import Optional, Union
+from typing import List, Optional, Union
+
+from sqlalchemy.orm import joinedload
 import html
+from utils.attendance_display import (
+    attendance_icon_for_training,
+    attendance_label_ru_for_training,
+    count_implicit_absent_slots,
+)
 from utils.training_manager import TrainingManager
 from utils.discipline_keys import format_training_format_ru
 from utils.subscription_checker import SubscriptionChecker
@@ -1953,54 +1961,125 @@ def deactivate_subscription(session, subscription_id: int) -> bool:
 
 
 async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать историю посещений спортсмена"""
+    """Показать историю посещений спортсмена (в т.ч. слоты без записи в attendances)."""
     query = update.callback_query
     await query.answer()
-    
+
     athlete_id = int(query.data.replace("visits_", ""))
-    
+
     session = Session()
     try:
         user = get_user_by_telegram_id(session, query.from_user.id)
-        
+
         if not user or get_user_role(user) not in ['coach', 'admin']:
             await query.edit_message_text("❌ У вас нет доступа")
             return
-        
+
         athlete = session.query(Athlete).filter_by(id=athlete_id).first()
         if not athlete:
             await query.edit_message_text("❌ Спортсмен не найден")
             return
-        
+
         # Проверяем права
         if isinstance(user, Coach) and athlete.created_by != user.id:
             await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
             return
-        
-        # Получаем последние 20 посещений
-        attendances = session.query(Attendance).filter_by(
-            athlete_id=athlete_id
-        ).order_by(Attendance.created_at.desc()).limit(20).all()
-        
+
         message = f"📅 <b>ИСТОРИЯ ПОСЕЩЕНИЙ</b>\n\n"
         message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
-        
-        if not attendances:
-            message += "❌ Нет записей о посещениях"
+        message += (
+            "<i>✅ Был · ❌ Не был · ⏳ Не отмечено (нет строки в базе и прошло ≤24 ч после окончания пары); "
+            "после 24 ч без записи — ❌ Не был</i>\n\n"
+        )
+
+        now = now_moscow()
+        max_lines = 28
+        rows: List[str] = []
+        completed: List[Training] = []
+
+        if athlete.sport_type and athlete.age_group:
+            lookback = now - timedelta(days=120)
+            trainings = (
+                session.query(Training)
+                .filter(
+                    Training.sport_type == athlete.sport_type,
+                    Training.age_group == athlete.age_group,
+                    Training.is_cancelled.is_(False),
+                    Training.training_date >= lookback,
+                    Training.training_date <= now,
+                )
+                .order_by(Training.training_date.desc())
+                .limit(80)
+                .all()
+            )
+            completed = [t for t in trainings if training_end_time(t.training_date) <= now][:45]
+            if completed:
+                tids = [t.id for t in completed]
+                atts = (
+                    session.query(Attendance)
+                    .options(joinedload(Attendance.training))
+                    .filter(
+                        Attendance.athlete_id == athlete_id,
+                        Attendance.training_id.in_(tids),
+                    )
+                    .all()
+                )
+                att_by_tid = {a.training_id: a for a in atts}
+                for t in completed:
+                    att = att_by_tid.get(t.id)
+                    training_date = t.training_date.strftime("%d.%m.%Y %H:%M")
+                    icon = attendance_icon_for_training(att, t, now=now)
+                    label = attendance_label_ru_for_training(
+                        att, t, now=now, with_note=(att is None)
+                    )
+                    line = f"{icon} <b>{training_date}</b>\n   {label}\n"
+                    if att is not None:
+                        marked = att.created_at.strftime("%d.%m.%Y") if att.created_at else "—"
+                        line += f"   Отмечено в базе: {marked}\n"
+                        if att.was_restored:
+                            line += "   🔄 Восстановлено\n"
+                    rows.append(line + "\n")
+
+        covered_tids = {t.id for t in completed}
+
+        # Старые записи вне окна слотов (другая группа/вид спорта или до lookback)
+        extra = (
+            session.query(Attendance)
+            .options(joinedload(Attendance.training))
+            .filter_by(athlete_id=athlete_id)
+            .order_by(Attendance.created_at.desc())
+            .limit(25)
+            .all()
+        )
+        archive_lines: List[str] = []
+        for att in extra:
+            tid = att.training_id
+            if tid and tid in covered_tids:
+                continue
+            if att.training:
+                training_date = att.training.training_date.strftime("%d.%m.%Y %H:%M")
+            else:
+                training_date = "—"
+            status = "✅" if att.attended else "❌"
+            marked = att.created_at.strftime("%d.%m.%Y") if att.created_at else "—"
+            line = f"{status} <b>{training_date}</b>\n   Отмечено: {marked}\n"
+            if att.was_restored:
+                line += "   🔄 Восстановлено\n"
+            archive_lines.append(line + "\n")
+        if archive_lines:
+            rows.append(
+                "\n<b>Другие записи в базе</b> "
+                "<i>(другая дисциплина/группа или старше окна 120 дней)</i>:\n\n"
+            )
+            rows.extend(archive_lines)
+
+        if not rows:
+            message += "📭 Нет завершённых тренировок по текущему виду спорта и группе и нет сохранённых посещений.\n"
         else:
-            message += f"Последние {len(attendances)} записей:\n\n"
-            
-            for idx, att in enumerate(attendances, 1):
-                status = "✅" if att.attended else "❌"
-                training_date = att.training.training_date.strftime('%d.%m.%Y %H:%M') if att.training else "—"
-                marked_date = att.created_at.strftime('%d.%m.%Y') if att.created_at else "—"
-                
-                message += f"{idx}. {status} {training_date}\n"
-                message += f"   Отмечено: {marked_date}\n"
-                if att.was_restored:
-                    message += f"   🔄 Восстановлено\n"
-                message += "\n"
-        
+            message += f"Последние записи (до {max_lines} строк):\n\n"
+            for line in rows[:max_lines]:
+                message += line
+
         keyboard = [
             [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")]
         ]
@@ -2103,7 +2182,37 @@ async def show_athlete_stats(update: Update, context: ContextTypes.DEFAULT_TYPE)
             attended=False,
             was_restored=False
         ).count()
-        
+
+        week_implicit = month_implicit = three_implicit = 0
+        if athlete.sport_type and athlete.age_group:
+            week_implicit = count_implicit_absent_slots(
+                session,
+                athlete_id,
+                athlete.sport_type,
+                athlete.age_group,
+                week_ago,
+                now,
+                now=now,
+            )
+            month_implicit = count_implicit_absent_slots(
+                session,
+                athlete_id,
+                athlete.sport_type,
+                athlete.age_group,
+                month_ago,
+                now,
+                now=now,
+            )
+            three_implicit = count_implicit_absent_slots(
+                session,
+                athlete_id,
+                athlete.sport_type,
+                athlete.age_group,
+                three_months_ago,
+                now,
+                now=now,
+            )
+
         message = f"📊 <b>СТАТИСТИКА СПОРТСМЕНА</b>\n\n"
         message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
         
@@ -2111,17 +2220,26 @@ async def show_athlete_stats(update: Update, context: ContextTypes.DEFAULT_TYPE)
         message += f"<b>Неделя:</b>\n"
         message += f"• Посещено: {week_attended}/{week_trainings}\n"
         week_rate = round((week_attended / week_trainings * 100), 1) if week_trainings > 0 else 0
-        message += f"• Посещаемость: {week_rate}%\n\n"
-        
+        message += f"• Посещаемость: {week_rate}%\n"
+        if week_implicit:
+            message += f"• <i>Без записи в срок (24ч после пары): {week_implicit}</i>\n"
+        message += "\n"
+
         message += f"<b>Месяц:</b>\n"
         message += f"• Посещено: {month_attended}/{month_trainings}\n"
         month_rate = round((month_attended / month_trainings * 100), 1) if month_trainings > 0 else 0
-        message += f"• Посещаемость: {month_rate}%\n\n"
-        
+        message += f"• Посещаемость: {month_rate}%\n"
+        if month_implicit:
+            message += f"• <i>Без записи в срок (24ч после пары): {month_implicit}</i>\n"
+        message += "\n"
+
         message += f"<b>3 месяца:</b>\n"
         message += f"• Посещено: {three_months_attended}/{three_months_trainings}\n"
         three_months_rate = round((three_months_attended / three_months_trainings * 100), 1) if three_months_trainings > 0 else 0
-        message += f"• Посещаемость: {three_months_rate}%\n\n"
+        message += f"• Посещаемость: {three_months_rate}%\n"
+        if three_implicit:
+            message += f"• <i>Без записи в срок (24ч после пары): {three_implicit}</i>\n"
+        message += "\n"
         
         message += f"<b>📋 ОБЩАЯ СТАТИСТИКА</b>\n"
         message += f"• Всего посещено: {total_attended}\n"

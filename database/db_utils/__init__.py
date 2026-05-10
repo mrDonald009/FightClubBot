@@ -52,9 +52,11 @@ from .global_freeze import (
     training_datetime_compact,
 )
 from .auto_deduct import auto_deduct_daily_trainings
+from .close_unmarked_attendance import close_unmarked_attendance_after_grace
 from .migrate import migrate_existing_subscription, migrate_subscription_by_athlete_name
 from .restore import restore_multiple_trainings, restore_training
 from .athlete_card import get_athlete_card_info
+from .coach_report import build_coach_period_report, coach_roster_athlete_ids, month_range
 
 __all__ = [
     "ACTIVATION_GRACE_AFTER_START",
@@ -93,9 +95,13 @@ __all__ = [
     "parse_training_datetime_compact",
     "training_datetime_compact",
     "auto_deduct_daily_trainings",
+    "close_unmarked_attendance_after_grace",
     "migrate_existing_subscription",
     "migrate_subscription_by_athlete_name",
     "restore_multiple_trainings",
     "restore_training",
     "get_athlete_card_info",
+    "build_coach_period_report",
+    "coach_roster_athlete_ids",
+    "month_range",
 ]

@@ -1,0 +1,139 @@
+"""
+Фиксация в БД просроченных «не отмечено»: после конца пары + 24 ч создаётся Attendance (attended=False),
+как в UI. Списание остатка — по тем же правилам, что при ручной отметке «не был».
+"""
+import logging
+from datetime import timedelta
+from typing import Set
+
+from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from database.models import Athlete, Attendance, Subscription, Training
+from utils.subscription_checker import SubscriptionChecker
+from utils.time_utils import (
+    ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END,
+    TRAINING_DURATION,
+    now_moscow,
+    training_end_time,
+)
+
+from .freeze_personal import is_training_in_athlete_personal_freeze
+from .global_freeze import is_training_in_global_freeze
+
+logger = logging.getLogger(__name__)
+
+
+def _should_deduct_on_system_absence(
+    session: Session,
+    subscription: Subscription,
+    training: Training,
+    athlete_id: int,
+) -> bool:
+    training_in_freeze = (
+        subscription.is_frozen
+        and subscription.frozen_from
+        and subscription.frozen_until
+        and subscription.frozen_from <= training.training_date <= subscription.frozen_until
+    ) or is_training_in_athlete_personal_freeze(session, athlete_id, training.training_date)
+    if training_in_freeze:
+        return False
+    if subscription.trainings_remaining is None or subscription.trainings_remaining <= 0:
+        return False
+    return True
+
+
+def close_unmarked_attendance_after_grace(
+    session: Session,
+    *,
+    lookback_days: int = 180,
+) -> int:
+    """
+    Для завершённых тренировок, у которых прошло >24 ч после окончания пары,
+    для спортсменов с активным абонементом на этот день — вставить строку attendances,
+    если её ещё нет (attended=False, marked_by=None).
+
+    Returns:
+        Количество вставленных строк.
+    """
+    now = now_moscow()
+    start_floor = now - timedelta(days=lookback_days)
+    # Слот «можно закрыть», если: конец пары + 24 ч <= now  ⇔  начало <= now - длительность - 24 ч
+    latest_eligible_start = now - TRAINING_DURATION - ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END
+
+    trainings = (
+        session.query(Training)
+        .filter(
+            Training.is_cancelled == False,
+            Training.training_date >= start_floor,
+            Training.training_date <= latest_eligible_start,
+        )
+        .order_by(Training.id.asc())
+        .all()
+    )
+
+    inserted = 0
+    for training in trainings:
+        if is_training_in_global_freeze(session, training.training_date):
+            continue
+
+        training_day = training.training_date.date()
+
+        pairs = (
+            session.query(Athlete, Subscription)
+            .join(Subscription, Subscription.athlete_id == Athlete.id)
+            .filter(
+                Subscription.is_active == True,
+                Subscription.sport_type == training.sport_type,
+                Athlete.age_group == training.age_group,
+                func.date(Subscription.start_date) <= training_day,
+                func.date(Subscription.end_date) >= training_day,
+            )
+            .order_by(Athlete.id.asc(), Subscription.id.asc())
+            .all()
+        )
+
+        seen_athletes: Set[int] = set()
+        for athlete, subscription in pairs:
+            if athlete.id in seen_athletes:
+                continue
+            seen_athletes.add(athlete.id)
+
+            if (
+                session.query(Attendance.id)
+                .filter_by(athlete_id=athlete.id, training_id=training.id)
+                .first()
+            ):
+                continue
+
+            status = SubscriptionChecker.get_subscription_status(subscription)
+            if status != "active":
+                continue
+
+            if subscription.is_frozen:
+                continue
+
+            att = Attendance(
+                athlete_id=athlete.id,
+                training_id=training.id,
+                subscription_id=subscription.id,
+                attended=False,
+                marked_by=None,
+                created_at=now,
+            )
+            session.add(att)
+
+            if _should_deduct_on_system_absence(
+                session, subscription, training, athlete.id
+            ):
+                subscription.trainings_remaining -= 1
+
+            inserted += 1
+            logger.info(
+                "implicit attendance row: training_id=%s athlete_id=%s sub_id=%s",
+                training.id,
+                athlete.id,
+                subscription.id,
+            )
+
+    return inserted

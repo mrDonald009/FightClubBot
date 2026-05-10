@@ -53,8 +53,8 @@ class Config:
         _thai_raw = os.getenv("THAI_COACH_TELEGRAM_ID", "").strip()
         self.THAI_COACH_TELEGRAM_ID = int(_thai_raw) if _thai_raw else None
 
-        def _parse_id_list(raw: str, label: str) -> list[int]:
-            out: list[int] = []
+        def _parse_id_list(raw: str, label: str) -> List[int]:
+            out: List[int] = []
             for part in raw.split(","):
                 part = part.strip()
                 if not part:
@@ -69,7 +69,7 @@ class Config:
         self.THAI_COACH_TELEGRAM_IDS = _parse_id_list(_thai_list_raw, "THAI_COACH_TELEGRAM_IDS")
 
         _mma_coaches_raw = os.getenv("MMA_COACH_TELEGRAM_IDS", "").strip()
-        self.MMA_COACH_TELEGRAM_IDS: list[int] = []
+        self.MMA_COACH_TELEGRAM_IDS: List[int] = []
         for part in _mma_coaches_raw.split(","):
             part = part.strip()
             if not part:

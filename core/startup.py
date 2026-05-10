@@ -7,6 +7,7 @@ from telegram.ext import Application
 
 from core.config import Config
 from core.database import get_db_session
+from database.db_utils import auto_deduct_daily_trainings, close_unmarked_attendance_after_grace
 from services.user_service import UserService
 from services.subscription_service import SubscriptionService
 from services.subscription_audit_service import run_subscription_audit, format_audit_report
@@ -135,8 +136,40 @@ def initialize_app(config: Config) -> None:
 
     # Проверяем абонементы
     check_subscriptions_on_startup()
-    
+
+    # Просроченные «не отмечено» → строки attendances в БД (как в UI после 24 ч)
+    try:
+        with get_db_session() as session:
+            n_backfill = close_unmarked_attendance_after_grace(session)
+        if n_backfill:
+            logger.info(
+                "🧾 При старте создано записей посещений (просрочка 24ч): %s",
+                n_backfill,
+            )
+    except Exception as e:
+        logger.error(
+            "❌ Ошибка close_unmarked_attendance_after_grace при старте: %s",
+            e,
+            exc_info=True,
+        )
+
     logger.info("✅ Инициализация завершена")
+
+
+async def _daily_attendance_maintenance_job(context) -> None:
+    """Авто-списание по расписанию + фиксация в БД просроченных без отметки (24 ч после пары)."""
+    try:
+        with get_db_session() as session:
+            d0 = auto_deduct_daily_trainings(session)
+        with get_db_session() as session:
+            d1 = close_unmarked_attendance_after_grace(session)
+        logger.info(
+            "📋 Ежедневное обслуживание посещений: auto_deduct=%s, close_unmarked=%s",
+            d0,
+            d1,
+        )
+    except Exception as e:  # pragma: no cover
+        logger.error("❌ Ошибка daily attendance maintenance: %s", e, exc_info=True)
 
 
 async def _daily_subscription_audit_job(context) -> None:
@@ -167,6 +200,17 @@ def setup_scheduled_jobs(application: Application, config: Config) -> None:
     if not application.job_queue:
         logger.warning("⚠️ JobQueue недоступен: ежедневный аудит не запланирован")
         return
+
+    maintenance_time = time(hour=8, minute=5, tzinfo=APP_TZ)
+    application.job_queue.run_daily(
+        _daily_attendance_maintenance_job,
+        time=maintenance_time,
+        name="daily_attendance_maintenance",
+    )
+    logger.info(
+        "🗓️ Запланировано ежедневное обслуживание посещений (08:05 APP_TIMEZONE): "
+        "auto_deduct + close_unmarked"
+    )
 
     run_time = time(hour=8, minute=0, tzinfo=APP_TZ)
     application.job_queue.run_daily(

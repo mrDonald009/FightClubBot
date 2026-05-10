@@ -11,6 +11,8 @@ from tests.fixtures.global_freeze_snapshot_loader import (
     load_global_freezes_snapshot,
 )
 
+pytestmark = pytest.mark.db
+
 
 @pytest.fixture
 def memory_session_empty_gf():

@@ -7,6 +7,7 @@ from utils.subscription_resolve import (
     subscription_for_coach_sport,
 )
 from utils.time_utils import now_moscow
+from utils.attendance_display import count_implicit_absent_slots
 
 from .users import get_coach_by_sport_type
 
@@ -69,6 +70,17 @@ def get_athlete_card_info(session: Session, athlete_id: int, preferred_sport_typ
         Attendance.training.has(Training.training_date >= month_ago),
         Attendance.was_restored == False
     ).count()
+
+    if sport_type_for_stats and athlete.age_group:
+        missed_trainings += count_implicit_absent_slots(
+            session,
+            athlete_id,
+            sport_type_for_stats,
+            athlete.age_group,
+            month_ago,
+            current_time,
+            now=current_time,
+        )
 
     attendance_rate = round((attended_trainings / total_trainings * 100), 1) if total_trainings > 0 else 0
 
