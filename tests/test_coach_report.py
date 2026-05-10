@@ -1,4 +1,4 @@
-"""Сводка тренера за месяц: агрегаты из coach_report."""
+"""Статистика тренера за месяц: агрегаты из coach_report."""
 from datetime import datetime
 
 import pytest

@@ -964,9 +964,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     logger.info("✅ Зарегистрирован обработчик: 📅 Мой календарь")
     registrar.register(
-        MessageHandler(filters.Regex("^(📊 Сводка за период)$"), coach_report_entry)
+        MessageHandler(filters.Regex("^(📊 Статистика)$"), coach_report_entry)
     )
-    logger.info("✅ Зарегистрирован обработчик: 📊 Сводка за период")
+    logger.info("✅ Зарегистрирован обработчик: 📊 Статистика")
 
     # Массовая заморозка — РАНЬШЕ диалога добавления спортсмена: иначе при «залипшем» состоянии
     # add_athlete команда /cancel обрабатывается первым зарегистрированным CH и показывает текст про спортсмена.
@@ -1013,7 +1013,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 start_training,
             ),
             MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
-            MessageHandler(filters.Regex("^(📊 Сводка за период)$"), coach_report_entry),
+            MessageHandler(filters.Regex("^(📊 Статистика)$"), coach_report_entry),
             MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
         ],
         name="global_freeze_conversation",
@@ -1084,7 +1084,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 start_training,
             ),
             MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
-            MessageHandler(filters.Regex("^(📊 Сводка за период)$"), coach_report_entry),
+            MessageHandler(filters.Regex("^(📊 Статистика)$"), coach_report_entry),
             MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
         ],
         name="add_athlete_conversation",

@@ -1,4 +1,4 @@
-"""Отчёт тренера за календарный месяц: посещаемость, база, абонементы, выручка."""
+"""Статистика тренера за календарный месяц: KPI, выручка, посещаемость, абонементы."""
 from __future__ import annotations
 
 import html
@@ -60,16 +60,21 @@ def _format_report_html(rep, sport_label: Optional[str]) -> str:
     title_m = _MONTH_NAMES_NOM[rep.month]
     period_h = html.escape(_period_range_human(rep.year, rep.month))
     lines = [
-        f"📊 <b>Сводка: {html.escape(title_m)} {rep.year}</b>",
+        f"📊 <b>Статистика: {html.escape(title_m)} {rep.year}</b>",
         f"<i>Период: {period_h}</i>",
     ]
     if sport_label:
         lines.append(f"<i>Направление: {html.escape(sport_label)}</i>")
     lines += [
         "",
+        "<b>KPI</b>",
         f"• В вашей базе (по направлению): <b>{rep.roster_total}</b>",
         f"• Активных абонементов на конец месяца: <b>{rep.active_at_month_end}</b>",
         f"• Новых спортсменов за период: <b>{rep.new_athletes_in_period}</b>",
+        "",
+        "<b>Выручка</b> (таблица оплат, дата учёта — <code>paid_at</code>):",
+        f"• За период: <b>{html.escape(_format_rubles(rep.revenue_rubles))}</b>",
+        f"• Платёжных записей: <b>{rep.payment_records_in_period}</b>",
         "",
         "<b>Посещаемость</b> (тренировки не отменены; ваш вид спорта):",
         f"• Отметок «был»: <b>{rep.attendance_present}</b> "
@@ -80,10 +85,6 @@ def _format_report_html(rep, sport_label: Optional[str]) -> str:
         "<b>Абонементы</b>:",
         f"• Старт действия в периоде (по дате начала): <b>{rep.subscription_starts_in_period}</b>",
         f"• Новых записей абонемента (по дате создания строки): <b>{rep.new_subscription_rows_in_period}</b>",
-        "",
-        "<b>Выручка</b> (таблица оплат, дата учёта — <code>paid_at</code>):",
-        f"• За период: <b>{html.escape(_format_rubles(rep.revenue_rubles))}</b>",
-        f"• Платёжных записей: <b>{rep.payment_records_in_period}</b>",
         "",
         "<i>При активации абонемента сумма может создаваться автоматически, если в .env заданы "
         "<code>SUBSCRIPTION_PRICE_MONTHLY_RUB</code> и/или <code>SUBSCRIPTION_PRICE_SINGLE_RUB</code>. "
@@ -170,7 +171,7 @@ async def coach_report_entry(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     await update.message.reply_text(
-        "📊 Выберите месяц для сводки по <b>вашим</b> спортсменам, посещениям и оплатам:",
+        "📊 Выберите месяц для <b>статистики</b> по вашим спортсменам, посещениям и оплатам:",
         reply_markup=coach_report_month_keyboard(),
         parse_mode="HTML",
     )
