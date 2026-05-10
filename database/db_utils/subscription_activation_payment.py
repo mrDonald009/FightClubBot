@@ -1,40 +1,41 @@
-"""Автозапись оплаты при активации абонемента (фиксированная сумма по типу из env)."""
+"""Автозапись оплаты при активации абонемента (сумма только из subscription_tariffs)."""
 from __future__ import annotations
 
-import os
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional
 
 from sqlalchemy.orm import Session as OrmSession
 
-from database.models import Subscription, SubscriptionPayment
+from database.db_utils.subscription_tariffs import (
+    find_active_tariff_amount_rubles,
+    tariff_kind_for_subscription_type,
+)
+from database.models import Athlete, Subscription, SubscriptionPayment
 
 
-def activation_price_rubles(subscription_type: Optional[str]) -> Optional[int]:
-    """
-    Сумма в рублях для типа абонемента из окружения.
-    Если переменная не задана, пустая или не число — None (платёж не создаём).
-    """
-    if subscription_type == "monthly":
-        raw = os.getenv("SUBSCRIPTION_PRICE_MONTHLY_RUB", "").strip()
-    elif subscription_type == "single":
-        raw = os.getenv("SUBSCRIPTION_PRICE_SINGLE_RUB", "").strip()
-    else:
-        return None
-    if not raw:
-        return None
-    try:
-        n = int(raw)
-    except ValueError:
-        return None
-    if n <= 0:
-        return None
-    return n
+def _effective_subscription_sport_type(session: OrmSession, subscription: Subscription) -> str:
+    st = (subscription.sport_type or "").strip()
+    if st:
+        return st
+    if subscription.athlete_id:
+        row = session.query(Athlete.sport_type).filter_by(id=subscription.athlete_id).first()
+        if row and row[0]:
+            return (row[0] or "").strip()
+    return ""
 
 
-def tariff_prices_from_env() -> Tuple[Optional[int], Optional[int]]:
-    """Текущие тарифы из окружения процесса: (месячный, разовый). None — не задано или неверно."""
-    return activation_price_rubles("monthly"), activation_price_rubles("single")
+def resolve_subscription_activation_price_rubles(
+    session: OrmSession,
+    subscription: Subscription,
+) -> Optional[int]:
+    """Сумма при активации — активная строка subscription_tariffs по виду спорта и типу абонемента."""
+    kind = tariff_kind_for_subscription_type(subscription.subscription_type)
+    if not kind:
+        return None
+    sport = _effective_subscription_sport_type(session, subscription)
+    return find_active_tariff_amount_rubles(
+        session, sport_type_name=sport, tariff_kind=kind
+    )
 
 
 def record_payment_on_subscription_activation(
@@ -45,10 +46,10 @@ def record_payment_on_subscription_activation(
     recorded_by_telegram_id: Optional[int] = None,
 ) -> None:
     """
-    Одна строка в subscription_payments при активации, если для типа задана цена в env.
-    paid_at — как правило дата/время старта абонемента (первая тренировка).
+    Одна строка в subscription_payments при активации, если для вида спорта и типа есть тариф в БД.
+    paid_at — дата/время активации (первая тренировка).
     """
-    amount = activation_price_rubles(subscription.subscription_type)
+    amount = resolve_subscription_activation_price_rubles(session, subscription)
     if amount is None:
         return
     session.add(

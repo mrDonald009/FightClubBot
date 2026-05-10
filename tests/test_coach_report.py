@@ -14,6 +14,7 @@ from database.models import (
     SportType,
     Subscription,
     SubscriptionPayment,
+    SubscriptionTariff,
     Training,
 )
 
@@ -195,10 +196,17 @@ def test_report_excludes_other_sport_training():
     assert rep.estimated_revenue_if_current_env_rub == 0
 
 
-def test_report_estimated_revenue_from_starts_when_env_set(monkeypatch):
-    monkeypatch.setenv("SUBSCRIPTION_PRICE_MONTHLY_RUB", "12000")
-    monkeypatch.delenv("SUBSCRIPTION_PRICE_SINGLE_RUB", raising=False)
+def test_report_estimated_revenue_from_starts_when_tariff_in_db():
     s, coach = _coach_mma_session()
+    s.add(
+        SubscriptionTariff(
+            sport_type_name="MMA",
+            tariff_kind="subscription_monthly",
+            amount_rubles=12000,
+            is_active=True,
+        )
+    )
+    s.commit()
     y, m = 2026, 1
 
     a = Athlete(
@@ -231,6 +239,48 @@ def test_report_estimated_revenue_from_starts_when_env_set(monkeypatch):
     assert rep.revenue_rubles == 0
     assert rep.payment_records_in_period == 0
     assert rep.estimated_revenue_if_current_env_rub == 12000
+
+
+def test_report_estimated_uses_db_tariff():
+    s, coach = _coach_mma_session()
+    s.add(
+        SubscriptionTariff(
+            sport_type_name="MMA",
+            tariff_kind="subscription_monthly",
+            amount_rubles=8800,
+            is_active=True,
+        )
+    )
+    y, m = 2026, 2
+
+    a = Athlete(
+        full_name="ТолькоБД",
+        sport_type="MMA",
+        age_group="adults",
+        created_by=coach.id,
+        created_at=datetime(2026, 1, 1),
+    )
+    s.add(a)
+    s.flush()
+    s.add(
+        Subscription(
+            athlete_id=a.id,
+            discipline_key="mma_feb",
+            sport_type="MMA",
+            subscription_type="monthly",
+            is_active=True,
+            start_date=datetime(2026, 2, 5, 19, 0, 0),
+            end_date=datetime(2027, 2, 5, 19, 0, 0),
+            created_at=datetime(2026, 1, 20),
+        )
+    )
+    s.commit()
+
+    rep = build_coach_period_report(s, coach, y, m)
+    s.close()
+
+    assert rep.subscription_starts_in_period == 1
+    assert rep.estimated_revenue_if_current_env_rub == 8800
 
 
 def test_report_revenue_by_paid_at():

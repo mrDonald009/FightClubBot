@@ -18,7 +18,7 @@ from database.db_utils.coach_report import (
     coach_sport_type_name,
     month_range,
 )
-from database.db_utils.subscription_activation_payment import tariff_prices_from_env
+from database.db_utils.subscription_tariffs import tariff_preview_monthly_single_for_sport
 from database.models import Coach
 from utils.time_utils import now_moscow
 
@@ -87,7 +87,14 @@ def _report_header_lines(rep, sport_label: Optional[str]) -> List[str]:
     return lines
 
 
-def _format_section_html(rep, sport_label: Optional[str], section: str) -> str:
+def _format_section_html(
+    rep,
+    sport_label: Optional[str],
+    section: str,
+    *,
+    coach_tariff_monthly_rub: Optional[int] = None,
+    coach_tariff_single_rub: Optional[int] = None,
+) -> str:
     head = _report_header_lines(rep, sport_label)
     body: List[str] = []
     if section == "kpi":
@@ -99,39 +106,50 @@ def _format_section_html(rep, sport_label: Optional[str], section: str) -> str:
             f"• Новых спортсменов за период: <b>{rep.new_athletes_in_period}</b>",
         ]
     elif section == "rev":
-        monthly_t, single_t = tariff_prices_from_env()
         monthly_h = (
-            "не задано"
-            if monthly_t is None
-            else html.escape(_format_rubles(monthly_t))
+            "нет активной записи"
+            if coach_tariff_monthly_rub is None
+            else html.escape(_format_rubles(coach_tariff_monthly_rub))
         )
         single_h = (
-            "не задано"
-            if single_t is None
-            else html.escape(_format_rubles(single_t))
+            "нет активной записи"
+            if coach_tariff_single_rub is None
+            else html.escape(_format_rubles(coach_tariff_single_rub))
         )
         body = [
             "",
             "<b>Выручка</b> (таблица оплат, дата учёта — <code>paid_at</code>):",
+            "<i>Здесь не «деньги за активных в месяце», а только строки "
+            "<code>subscription_payments</code>, у которых <code>paid_at</code> попал в выбранный месяц. "
+            "Оплата при активации обычно одна и относится к месяцу старта; в следующих месяцах абонемент "
+            "может быть активен, а сумма за период — 0 ₽. Сколько абонементов активно на конец месяца — "
+            f"в разделе KPI (<b>{rep.active_at_month_end}</b>).</i>",
+            "",
             f"• За период: <b>{html.escape(_format_rubles(rep.revenue_rubles))}</b>",
             f"• Платёжных записей: <b>{rep.payment_records_in_period}</b>",
             "",
-            f"• Тарифы, которые <b>сейчас видит процесс</b> (как при активации): "
+            f"• Тарифы для вашего направления в <code>subscription_tariffs</code>: "
             f"месячный — <b>{monthly_h}</b>; разовый — <b>{single_h}</b>",
             "",
-            "<i>При активации абонемента сумма может создаваться автоматически, если в .env заданы "
-            "<code>SUBSCRIPTION_PRICE_MONTHLY_RUB</code> и/или <code>SUBSCRIPTION_PRICE_SINGLE_RUB</code> "
-            "(в том же файле, что подхватывает запуск бота, например <code>EnvironmentFile</code> у systemd). "
-            "Дополнительно можно заносить строки в <code>subscription_payments</code> вручную.</i>",
+            "<i>При активации строка оплаты создаётся только если для вида спорта абонемента есть "
+            "активная сумма в <code>subscription_tariffs</code>. Строки в "
+            "<code>subscription_payments</code> можно добавлять вручную.</i>",
         ]
         if rep.revenue_rubles == 0 and rep.payment_records_in_period == 0:
             if rep.subscription_starts_in_period == 0:
+                tail = (
+                    " Откройте месяц первой тренировки после активации (там обычно "
+                    "<code>paid_at</code>), или занесите оплату вручную."
+                )
+                if rep.active_at_month_end > 0:
+                    tail += (
+                        " Активные абонементы в KPI при этом возможны — это не ошибка."
+                    )
                 body.extend(
                     [
                         "",
-                        "<i>В выбранном месяце нет стартов абонемента по дате начала и нет оплат с "
-                        "<code>paid_at</code> в этом месяце — нули ожидаемы. Откройте месяц, когда была "
-                        "первая тренировка после активации, или занесите оплату вручную.</i>",
+                        "<i>В выбранном месяце нет стартов по дате начала и нет оплат с "
+                        "<code>paid_at</code> в этом месяце — нули в сумме ожидаемы." + tail + "</i>",
                     ]
                 )
             elif rep.estimated_revenue_if_current_env_rub > 0:
@@ -141,18 +159,18 @@ def _format_section_html(rep, sport_label: Optional[str], section: str) -> str:
                 body.extend(
                     [
                         "",
-                        "<i>Справочно: при текущих тарифах из .env старты абонемента в этом месяце "
-                        f"соответствуют примерно <b>{est_h}</b>, а в таблице оплат записей нет — "
-                        "автозапись не сработала в момент активации (другой env, не рестартовали бота, "
-                        "старый деплой) или оплату нужно внести вручную.</i>",
+                        "<i>Справочно: по текущим строкам <code>subscription_tariffs</code> старты в месяце дают "
+                        f"примерно <b>{est_h}</b>, а в таблице оплат "
+                        "записей нет — автозапись не сработала в момент активации (старый код, не было тарифа "
+                        "или суммы) или оплату нужно внести вручную.</i>",
                     ]
                 )
             else:
                 body.extend(
                     [
                         "",
-                        "<i>В месяце есть старты абонемента, но тарифы в env для их типов не заданы "
-                        "или равны 0 — автоматическая строка оплаты не создавалась.</i>",
+                        "<i>В месяце есть старты, но для их видов спорта и типов абонемента нет подходящих "
+                        "активных сумм в <code>subscription_tariffs</code> — автострока оплаты не создавалась.</i>",
                     ]
                 )
     elif section == "att":
@@ -358,7 +376,19 @@ async def coach_statistics_callback(update: Update, context: ContextTypes.DEFAUL
                     return
                 rep = build_coach_period_report(session, coach, year, month)
                 sport_label = coach_sport_type_name(coach)
-                text = _format_section_html(rep, sport_label, sec)
+                monthly_prev: Optional[int] = None
+                single_prev: Optional[int] = None
+                if sec == "rev":
+                    monthly_prev, single_prev = tariff_preview_monthly_single_for_sport(
+                        session, sport_label
+                    )
+                text = _format_section_html(
+                    rep,
+                    sport_label,
+                    sec,
+                    coach_tariff_monthly_rub=monthly_prev,
+                    coach_tariff_single_rub=single_prev,
+                )
                 if len(text) > 4000:
                     text = text[:3900] + "\n\n<i>… обрезано (лимит Telegram).</i>"
                 await query.edit_message_text(

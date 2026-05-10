@@ -28,6 +28,34 @@ class SportType(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class SubscriptionTariff(Base):
+    """Тарифы на абонементы и продукты (редактируемые в БД; цены при активации только отсюда).
+
+    Вид спорта задаётся явно (как у абонемента): для каждого вида — свои строки monthly/single.
+    tariff_kind: subscription_monthly, subscription_single; позже — individual_training и др.
+    """
+
+    __tablename__ = "subscription_tariffs"
+    __table_args__ = (
+        Index("ix_subscription_tariffs_kind_active_sport", "tariff_kind", "is_active", "sport_type_name"),
+        CheckConstraint("amount_rubles >= 0", name="ck_subscription_tariffs_amount_nonneg"),
+        CheckConstraint(
+            "tariff_kind IN ('subscription_monthly', 'subscription_single', 'individual_training')",
+            name="ck_subscription_tariffs_kind",
+        ),
+        {"extend_existing": True},
+    )
+
+    id = Column(Integer, primary_key=True)
+    sport_type_name = Column(String(50), nullable=False)  # как subscriptions.sport_type / athlete.sport_type
+    tariff_kind = Column(String(40), nullable=False)
+    amount_rubles = Column(Integer, nullable=False)
+    is_active = Column(Boolean, default=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Coach(Base):
     """Таблица тренеров"""
     __tablename__ = 'coaches'

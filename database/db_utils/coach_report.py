@@ -12,7 +12,9 @@ from typing import List, Optional, Tuple
 from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import Session as OrmSession
 
-from database.db_utils.subscription_activation_payment import activation_price_rubles
+from database.db_utils.subscription_activation_payment import (
+    resolve_subscription_activation_price_rubles,
+)
 from database.models import (
     Athlete,
     Attendance,
@@ -86,7 +88,7 @@ class CoachPeriodReport:
     new_subscription_rows_in_period: int
     revenue_rubles: int
     payment_records_in_period: int
-    # Справочно: сумма «как если бы» по текущим SUBSCRIPTION_PRICE_* из env для каждого старта в периоде.
+    # Справочно: сумма «как если бы» по текущим subscription_tariffs для каждого старта в периоде.
     estimated_revenue_if_current_env_rub: int
 
 
@@ -374,8 +376,8 @@ def _estimated_revenue_from_subscription_starts(
     period_end_excl: datetime,
 ) -> int:
     """
-    Сумма по стартам абонемента в периоде, если для каждого типа взять текущий тариф из env
-    (тот же activation_price_rubles, что при активации). Не заменяет факт из subscription_payments.
+    Сумма по стартам абонемента в периоде при текущих тарифах (subscription_tariffs, затем env —
+    как resolve_subscription_activation_price_rubles при активации). Не заменяет факт из subscription_payments.
     """
     if not athlete_ids:
         return 0
@@ -393,7 +395,7 @@ def _estimated_revenue_from_subscription_starts(
         q = q.filter(_subscription_sport_match_sql(coach_sport))
     total = 0
     for sub in q:
-        p = activation_price_rubles(sub.subscription_type)
+        p = resolve_subscription_activation_price_rubles(session, sub)
         if p is not None:
             total += p
     return total

@@ -58,9 +58,16 @@ from .restore import restore_multiple_trainings, restore_training
 from .athlete_card import get_athlete_card_info
 from .coach_report import build_coach_period_report, coach_roster_athlete_ids, month_range
 from .subscription_activation_payment import (
-    activation_price_rubles,
     record_payment_on_subscription_activation,
-    tariff_prices_from_env,
+    resolve_subscription_activation_price_rubles,
+)
+from .subscription_tariffs import (
+    TARIFF_KIND_INDIVIDUAL_TRAINING,
+    TARIFF_KIND_SUBSCRIPTION_MONTHLY,
+    TARIFF_KIND_SUBSCRIPTION_SINGLE,
+    find_active_tariff_amount_rubles,
+    tariff_kind_for_subscription_type,
+    tariff_preview_monthly_single_for_sport,
 )
 
 __all__ = [
@@ -109,7 +116,12 @@ __all__ = [
     "build_coach_period_report",
     "coach_roster_athlete_ids",
     "month_range",
-    "activation_price_rubles",
     "record_payment_on_subscription_activation",
-    "tariff_prices_from_env",
+    "resolve_subscription_activation_price_rubles",
+    "TARIFF_KIND_INDIVIDUAL_TRAINING",
+    "TARIFF_KIND_SUBSCRIPTION_MONTHLY",
+    "TARIFF_KIND_SUBSCRIPTION_SINGLE",
+    "find_active_tariff_amount_rubles",
+    "tariff_kind_for_subscription_type",
+    "tariff_preview_monthly_single_for_sport",
 ]
