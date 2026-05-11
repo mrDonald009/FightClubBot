@@ -119,6 +119,8 @@ def test_build_step2_no_nav_when_few_athletes():
     assert "Шаг 2 из 2" in msg
     assert "Иванов Иван" in msg
     assert rows[0][0][1] == "atmark_2_1_1" and rows[0][1][1] == "atmark_2_1_0"
+    assert "Иванов Иван - ✅ Был" == rows[0][0][0]
+    assert rows[0][1][0] == "❌ Не был"
     assert not any("attpg_" in str(row) for row in rows[:-1])
 
 

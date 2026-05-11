@@ -372,11 +372,11 @@ def build_step2_message_and_keyboard_rows(
     keyboard_rows: List[List[Tuple[str, str]]] = []
     tid = training.id
     for athlete in chunk:
-        short = _short_name_for_attendance_button((athlete.full_name or "").strip())
+        full = (athlete.full_name or "").strip()
         keyboard_rows.append(
             [
-                ("✅ Был · " + short, f"atmark_{tid}_{athlete.id}_1"),
-                ("❌ Не был · " + short, f"atmark_{tid}_{athlete.id}_0"),
+                (_present_button_label_for_attendance_row(full), f"atmark_{tid}_{athlete.id}_1"),
+                ("❌ Не был", f"atmark_{tid}_{athlete.id}_0"),
             ]
         )
 
@@ -428,8 +428,13 @@ def parse_attendance_direct_mark_callback(data: str) -> Optional[Tuple[int, int,
     return int(tid_s), int(aid_s), bit == "1"
 
 
-def _short_name_for_attendance_button(full_name: str, max_len: int = 22) -> str:
+def _present_button_label_for_attendance_row(full_name: str, max_len: int = 64) -> str:
+    """Текст левой кнопки: «ФИО - ✅ Был» (лимит длины под Telegram)."""
+    suffix = " - ✅ Был"
     s = (full_name or "").strip()
-    if len(s) <= max_len:
-        return s
-    return s[: max_len - 2] + ".."
+    budget = max_len - len(suffix)
+    if budget < 8:
+        budget = 8
+    if len(s) > budget:
+        s = s[: max(budget - 2, 1)] + ".."
+    return s + suffix
