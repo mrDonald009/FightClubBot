@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timedelta
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
@@ -23,6 +23,7 @@ from services.attendance_training_flow import (
     coach_training_access_error,
     fetch_athletes_for_training_slot,
     get_coach_sport_type_name,
+    parse_attendance_direct_mark_callback,
     parse_attendance_page_callback,
     resolve_training_from_attendance_callback,
 )
@@ -136,6 +137,193 @@ async def handle_attendance_page_info(update: Update, context: ContextTypes.DEFA
         "Это номер страницы. Листайте список кнопками «Пред.» и «След.».",
         show_alert=False,
     )
+
+
+async def _run_attendance_mark_query(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+    session,
+    athlete_id: int,
+    training_id: int,
+    attended: bool,
+    *,
+    clear_legacy_mark_flow_keys: bool,
+) -> Optional[str]:
+    """
+    Запись отметки посещения. При успехе или noop — перерисовывает шаг 2, возвращает None.
+    При ошибке — возвращает текст для edit_message_text (HTML не везде).
+    """
+    athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+    training = session.query(Training).filter_by(id=training_id).first()
+
+    if not athlete or not training:
+        return "❌ Спортсмен или тренировка не найдены"
+
+    if is_training_in_global_freeze(session, training.training_date):
+        await query.edit_message_text(
+            "⛔️ В период массовой заморозки отметка посещений недоступна."
+            "\n\nСписание тренировок в этот период не производится."
+        )
+        return "__handled__"
+
+    user = get_user_by_telegram_id(session, query.from_user.id)
+    if user and get_user_role(user) == "coach":
+        err_coach = coach_training_access_error(user, training)
+        if err_coach:
+            return err_coach
+
+    subscription = active_subscription_for_training(athlete, training)
+    if not subscription:
+        return "❌ Нет активного абонемента для этой тренировки"
+
+    if not subscription.is_active:
+        return "❌ Абонемент не активен"
+
+    if attended and subscription.trainings_remaining <= 0:
+        return "❌ Нет доступных тренировок в абонементе"
+
+    training_end_datetime = training_end_time(training.training_date)
+    current_time = now_moscow()
+    if current_time < training_end_datetime:
+        await query.edit_message_text(
+            "⏳ Пока рано ставить отметку.\n\n"
+            f"Начало занятия: {training.training_date.strftime('%d.%m.%Y %H:%M')}\n"
+            f"Ориентир «можно отмечать»: после {training_end_datetime.strftime('%d.%m.%Y %H:%M')}\n\n"
+            "<i>Так сделано, чтобы не отмечать людей до фактического окончания пары.</i>",
+            parse_mode="HTML",
+        )
+        return "__handled__"
+
+    existing_attendance = session.query(Attendance).filter(
+        Attendance.athlete_id == athlete_id,
+        Attendance.training_id == training_id,
+    ).first()
+
+    if existing_attendance:
+        old_status = existing_attendance.attended
+        if old_status == attended:
+            logger.info(
+                "attendance_noop trainer_tg=%s athlete_id=%s training_id=%s status=%s",
+                query.from_user.id,
+                athlete_id,
+                training_id,
+                "present" if attended else "absent",
+            )
+            page = context.user_data.get("attendance_slot_page", 0)
+            name_esc = html.escape((athlete.full_name or "").strip())
+            flash = f"ℹ️ Для <b>{name_esc}</b> этот статус уже установлен"
+            await _render_attendance_step2(
+                query, context, session, user, training, page, flash_html=flash
+            )
+            if clear_legacy_mark_flow_keys:
+                context.user_data.pop("mark_attendance_athlete_id", None)
+                context.user_data.pop("selected_training_id", None)
+            return "__handled__"
+        existing_attendance.attended = attended
+        existing_attendance.marked_by = query.from_user.id
+        logger.info(
+            "attendance_updated trainer_tg=%s athlete_id=%s training_id=%s old=%s new=%s",
+            query.from_user.id,
+            athlete_id,
+            training_id,
+            "present" if old_status else "absent",
+            "present" if attended else "absent",
+        )
+    else:
+        attendance = Attendance(
+            athlete_id=athlete_id,
+            training_id=training_id,
+            subscription_id=subscription.id,
+            attended=attended,
+            marked_by=query.from_user.id,
+            created_at=now_moscow(),
+        )
+
+        training_in_freeze = (
+            subscription.is_frozen
+            and subscription.frozen_from
+            and subscription.frozen_until
+            and subscription.frozen_from <= training.training_date <= subscription.frozen_until
+        ) or is_training_in_athlete_personal_freeze(
+            session, athlete_id, training.training_date
+        )
+        if (
+            not training_in_freeze
+            and subscription.trainings_remaining is not None
+            and subscription.trainings_remaining > 0
+        ):
+            subscription.trainings_remaining -= 1
+
+        session.add(attendance)
+        logger.info(
+            "attendance_created trainer_tg=%s athlete_id=%s training_id=%s status=%s",
+            query.from_user.id,
+            athlete_id,
+            training_id,
+            "present" if attended else "absent",
+        )
+
+    session.commit()
+
+    page = context.user_data.get("attendance_slot_page", 0)
+    name_esc = html.escape((athlete.full_name or "").strip())
+    status_ru = "присутствовал" if attended else "не был"
+    flash = f"✅ <b>{name_esc}</b>: {status_ru}"
+    if subscription.trainings_remaining is not None:
+        flash += f"\n🎫 Осталось тренировок: <b>{subscription.trainings_remaining}</b>"
+
+    if clear_legacy_mark_flow_keys:
+        context.user_data.pop("mark_attendance_athlete_id", None)
+        context.user_data.pop("selected_training_id", None)
+
+    await _render_attendance_step2(
+        query, context, session, user, training, page, flash_html=flash
+    )
+    return "__handled__"
+
+
+async def execute_mark_attendance_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отметка «Был»/«Не был» с шага 2 (callback atmark_…)."""
+    query = update.callback_query
+    await query.answer()
+
+    parsed = parse_attendance_direct_mark_callback(query.data or "")
+    if not parsed:
+        return
+
+    training_id, athlete_id, attended = parsed
+    action_signature = query.data or ""
+    action_guard = context.user_data.get("attendance_click_guard")
+    now_ts = now_moscow().timestamp()
+    if (
+        isinstance(action_guard, dict)
+        and action_guard.get("signature") == action_signature
+        and isinstance(action_guard.get("ts"), (int, float))
+        and (now_ts - action_guard.get("ts")) < 3
+    ):
+        return
+    context.user_data["attendance_click_guard"] = {"signature": action_signature, "ts": now_ts}
+
+    session = Session()
+    try:
+        result = await _run_attendance_mark_query(
+            query,
+            context,
+            session,
+            athlete_id,
+            training_id,
+            attended,
+            clear_legacy_mark_flow_keys=False,
+        )
+        if result and result != "__handled__":
+            await query.edit_message_text(result)
+    except Exception as e:
+        logger.error("❌ ОШИБКА ОТМЕТКИ (atmark): %s", e, exc_info=True)
+        session.rollback()
+        await query.edit_message_text(f"❌ Ошибка при отметке посещения: {str(e)}")
+    finally:
+        context.user_data.pop("attendance_click_guard", None)
+        session.close()
 
 
 async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -313,19 +501,19 @@ async def handle_training_selection(update: Update, context: ContextTypes.DEFAUL
 
 
 async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выполнить отметку посещения"""
+    """Выполнить отметку посещения (промежуточный экран «был/не был» по mark_present/mark_absent)."""
     query = update.callback_query
     await query.answer()
 
     action = query.data  # "mark_present" или "mark_absent"
-    athlete_id = context.user_data.get('mark_attendance_athlete_id')
-    training_id = context.user_data.get('selected_training_id')
+    athlete_id = context.user_data.get("mark_attendance_athlete_id")
+    training_id = context.user_data.get("selected_training_id")
 
     if not athlete_id or not training_id:
         await query.edit_message_text("❌ Данные сессии утеряны")
         return
 
-    attended = (action == "mark_present")
+    attended = action == "mark_present"
     action_signature = f"{athlete_id}:{training_id}:{action}"
     action_guard = context.user_data.get("attendance_click_guard")
     now_ts = now_moscow().timestamp()
@@ -340,148 +528,19 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
 
     session = Session()
     try:
-        athlete = session.query(Athlete).filter_by(id=athlete_id).first()
-        training = session.query(Training).filter_by(id=training_id).first()
-
-        if not athlete or not training:
-            await query.edit_message_text("❌ Спортсмен или тренировка не найдены")
-            return
-
-        # Массовая заморозка = период без списаний и с ограничением действий.
-        # Блокируем любые изменения Attendance, чтобы не плодить неконсистентные записи.
-        if is_training_in_global_freeze(session, training.training_date):
-            await query.edit_message_text(
-                "⛔️ В период массовой заморозки отметка посещений недоступна."
-                "\n\nСписание тренировок в этот период не производится."
-            )
-            return
-
-        user = get_user_by_telegram_id(session, query.from_user.id)
-        if user and get_user_role(user) == "coach":
-            err_coach = coach_training_access_error(user, training)
-            if err_coach:
-                await query.edit_message_text(err_coach)
-                return
-
-        subscription = active_subscription_for_training(athlete, training)
-        if not subscription:
-            await query.edit_message_text("❌ Нет активного абонемента для этой тренировки")
-            return
-
-        if not subscription.is_active:
-            await query.edit_message_text("❌ Абонемент не активен")
-            return
-
-        # Если отмечаем присутствие - проверяем наличие тренировок
-        if attended and subscription.trainings_remaining <= 0:
-            await query.edit_message_text("❌ Нет доступных тренировок в абонементе")
-            return
-
-        # Проверяем, что тренировка уже завершилась (начало + 1.5 часа)
-        training_end_datetime = training_end_time(training.training_date)
-        current_time = now_moscow()
-        if current_time < training_end_datetime:
-            await query.edit_message_text(
-                "⏳ Пока рано ставить отметку.\n\n"
-                f"Начало занятия: {training.training_date.strftime('%d.%m.%Y %H:%M')}\n"
-                f"Ориентир «можно отмечать»: после {training_end_datetime.strftime('%d.%m.%Y %H:%M')}\n\n"
-                "<i>Так сделано, чтобы не отмечать людей до фактического окончания пары.</i>",
-                parse_mode="HTML",
-            )
-            return
-
-        # Проверяем, не отмечена ли уже эта тренировка
-        existing_attendance = session.query(Attendance).filter(
-            Attendance.athlete_id == athlete_id,
-            Attendance.training_id == training_id
-        ).first()
-
-        if existing_attendance:
-            # Обновляем существующую запись
-            # Тренировка уже списана автоматически, поэтому просто обновляем статус
-            old_status = existing_attendance.attended
-            if old_status == attended:
-                logger.info(
-                    "attendance_noop trainer_tg=%s athlete_id=%s training_id=%s status=%s",
-                    query.from_user.id,
-                    athlete_id,
-                    training_id,
-                    "present" if attended else "absent",
-                )
-                page = context.user_data.get("attendance_slot_page", 0)
-                name_esc = html.escape((athlete.full_name or "").strip())
-                flash = f"ℹ️ Для <b>{name_esc}</b> этот статус уже установлен"
-                await _render_attendance_step2(
-                    query, context, session, user, training, page, flash_html=flash
-                )
-                context.user_data.pop("mark_attendance_athlete_id", None)
-                context.user_data.pop("selected_training_id", None)
-                return
-            existing_attendance.attended = attended
-            existing_attendance.marked_by = query.from_user.id
-            logger.info(
-                "attendance_updated trainer_tg=%s athlete_id=%s training_id=%s old=%s new=%s",
-                query.from_user.id,
-                athlete_id,
-                training_id,
-                "present" if old_status else "absent",
-                "present" if attended else "absent",
-            )
-        else:
-            # Создаем новую запись (для старых абонементов без автоматического списания)
-            attendance = Attendance(
-                athlete_id=athlete_id,
-                training_id=training_id,
-                subscription_id=subscription.id,
-                attended=attended,
-                marked_by=query.from_user.id,
-                created_at=now_moscow()
-            )
-
-            # Списываем тренировку при создании записи (как "использовано" или "неиспользовано").
-            # НЕ списываем, если тренировка пришлась на период заморозки абонемента.
-            training_in_freeze = (
-                subscription.is_frozen
-                and subscription.frozen_from
-                and subscription.frozen_until
-                and subscription.frozen_from <= training.training_date <= subscription.frozen_until
-            ) or is_training_in_athlete_personal_freeze(
-                session, athlete_id, training.training_date
-            )
-            if (
-                not training_in_freeze
-                and subscription.trainings_remaining is not None
-                and subscription.trainings_remaining > 0
-            ):
-                subscription.trainings_remaining -= 1
-
-            session.add(attendance)
-            logger.info(
-                "attendance_created trainer_tg=%s athlete_id=%s training_id=%s status=%s",
-                query.from_user.id,
-                athlete_id,
-                training_id,
-                "present" if attended else "absent",
-            )
-
-        session.commit()
-
-        page = context.user_data.get("attendance_slot_page", 0)
-        name_esc = html.escape((athlete.full_name or "").strip())
-        status_ru = "присутствовал" if attended else "не был"
-        flash = f"✅ <b>{name_esc}</b>: {status_ru}"
-        if subscription.trainings_remaining is not None:
-            flash += f"\n🎫 Осталось тренировок: <b>{subscription.trainings_remaining}</b>"
-
-        context.user_data.pop("mark_attendance_athlete_id", None)
-        context.user_data.pop("selected_training_id", None)
-
-        await _render_attendance_step2(
-            query, context, session, user, training, page, flash_html=flash
+        result = await _run_attendance_mark_query(
+            query,
+            context,
+            session,
+            athlete_id,
+            training_id,
+            attended,
+            clear_legacy_mark_flow_keys=True,
         )
-
+        if result and result != "__handled__":
+            await query.edit_message_text(result)
     except Exception as e:
-        logger.error(f"❌ ОШИБКА ОТМЕТКИ ПОСЕЩЕНИЯ: {e}")
+        logger.error("❌ ОШИБКА ОТМЕТКИ ПОСЕЩЕНИЯ: %s", e, exc_info=True)
         session.rollback()
         await query.edit_message_text(f"❌ Ошибка при отметке посещения: {str(e)}")
     finally:

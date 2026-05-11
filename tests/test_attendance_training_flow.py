@@ -15,6 +15,7 @@ from services.attendance_training_flow import (
     coach_training_access_error,
     fetch_athletes_for_training_slot,
     format_today_trainings_count_ru,
+    parse_attendance_direct_mark_callback,
     parse_attendance_page_callback,
 )
 
@@ -30,6 +31,17 @@ def test_parse_attendance_page_callback_invalid():
     assert parse_attendance_page_callback("attpg_info") is None
     assert parse_attendance_page_callback("attpg_abc_0") is None
     assert parse_attendance_page_callback("mark_attendance_1_2") is None
+
+
+def test_parse_attendance_direct_mark_callback_valid():
+    assert parse_attendance_direct_mark_callback("atmark_10_20_1") == (10, 20, True)
+    assert parse_attendance_direct_mark_callback("atmark_10_20_0") == (10, 20, False)
+
+
+def test_parse_attendance_direct_mark_callback_invalid():
+    assert parse_attendance_direct_mark_callback("atmark_1_2") is None
+    assert parse_attendance_direct_mark_callback("atmark_a_b_1") is None
+    assert parse_attendance_direct_mark_callback("mark_present") is None
 
 
 def test_coach_training_access_error_admin_unrestricted():
@@ -82,6 +94,10 @@ def test_build_step2_pagination_nav_when_many_athletes():
     )
     assert "04.04.2026 12:30" in msg
     assert "Шаг 2 из 2" in msg
+    assert "Спортсмен 0" in msg
+    assert any(
+        any(cd == "atmark_100_0_1" for _, cd in row) for row in rows
+    )
     # последняя строка перед «К тренировкам на сегодня» — навигация
     nav_found = any(
         any("attpg_100_1" in cd for _, cd in row) for row in rows[:-1]
@@ -101,6 +117,8 @@ def test_build_step2_no_nav_when_few_athletes():
     athletes = [SimpleNamespace(id=1, full_name="Иванов Иван")]
     msg, rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
     assert "Шаг 2 из 2" in msg
+    assert "Иванов Иван" in msg
+    assert rows[0][0][1] == "atmark_2_1_1" and rows[0][1][1] == "atmark_2_1_0"
     assert not any("attpg_" in str(row) for row in rows[:-1])
 
 

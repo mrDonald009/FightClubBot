@@ -16,7 +16,6 @@ from database.db_utils.training_slots import TRAINING_FORMAT_INDIVIDUAL
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow
-from utils.attendance_display import attendance_icon_for_training
 
 # Размер страницы списка спортсменов на шаге 2 (inline-кнопки Telegram)
 ATTENDANCE_LIST_PAGE_SIZE = 20
@@ -339,6 +338,11 @@ def build_step2_message_and_keyboard_rows(
     total_count = len(athletes)
     now = now_moscow()
 
+    max_page = max(0, (total_count - 1) // page_size) if total_count else 0
+    page = max(0, min(page, max_page))
+    start = page * page_size
+    chunk = athletes[start : start + page_size]
+
     age_group_ru = "детская группа" if training.age_group == "children" else "взрослая группа"
     parts = [
         "📝 <b>ОТМЕТКА ПОСЕЩЕНИЯ</b>\n\n",
@@ -349,29 +353,31 @@ def build_step2_message_and_keyboard_rows(
         [
             f"📅 <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b> — "
             f"{html.escape(training.sport_type)}, {age_group_ru}\n\n",
-            "<b>Шаг 2 из 2</b> — нажмите на фамилию, затем «был» или «не был».",
+            "<b>Шаг 2 из 2</b> — у каждого из списка ниже нажмите «Был» или «Не был».",
         ]
     )
     if not athletes:
         parts.append("\n\n📭 На это время нет спортсменов с подходящим абонементом.")
+    elif chunk:
+        parts.append("\n\n<b>Спортсмены на занятии</b>")
+        if total_count > page_size:
+            parts.append(f" <i>(стр. {page + 1}/{max_page + 1})</i>")
+        parts.append(":\n")
+        for a in chunk:
+            nm = (a.full_name or "").strip()
+            parts.append(f"• {html.escape(nm)}\n")
 
     message = "".join(parts)
-
-    max_page = max(0, (total_count - 1) // page_size) if total_count else 0
-    page = max(0, min(page, max_page))
-    start = page * page_size
-    chunk = athletes[start : start + page_size]
 
     keyboard_rows: List[List[Tuple[str, str]]] = []
     tid = training.id
     for athlete in chunk:
-        att = attendance_map.get(athlete.id)
-        icon = attendance_icon_for_training(att, training, now=now)
-        full_name = (athlete.full_name or "").strip()
-        if len(full_name) > 24:
-            full_name = full_name[:22] + ".."
+        short = _short_name_for_attendance_button((athlete.full_name or "").strip())
         keyboard_rows.append(
-            [(f"{icon} {full_name}", f"mark_attendance_{athlete.id}_{tid}")]
+            [
+                ("✅ Был · " + short, f"atmark_{tid}_{athlete.id}_1"),
+                ("❌ Не был · " + short, f"atmark_{tid}_{athlete.id}_0"),
+            ]
         )
 
     nav_row: List[Tuple[str, str]] = []
@@ -405,3 +411,25 @@ def parse_attendance_page_callback(data: str) -> Optional[Tuple[int, int]]:
     if not left.isdigit() or not right.isdigit():
         return None
     return int(left), int(right)
+
+
+def parse_attendance_direct_mark_callback(data: str) -> Optional[Tuple[int, int, bool]]:
+    """atmark_{training_id}_{athlete_id}_{0|1} — 1 был, 0 не был."""
+    if not data.startswith("atmark_"):
+        return None
+    parts = data.split("_")
+    if len(parts) != 4 or parts[0] != "atmark":
+        return None
+    tid_s, aid_s, bit = parts[1], parts[2], parts[3]
+    if not tid_s.isdigit() or not aid_s.isdigit():
+        return None
+    if bit not in ("0", "1"):
+        return None
+    return int(tid_s), int(aid_s), bit == "1"
+
+
+def _short_name_for_attendance_button(full_name: str, max_len: int = 22) -> str:
+    s = (full_name or "").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 2] + ".."

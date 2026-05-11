@@ -101,6 +101,7 @@ from handlers.attendance_handlers import (
     mark_attendance_start,
     handle_training_selection,
     execute_mark_attendance,
+    execute_mark_attendance_slot,
 )
 from handlers.coach_report_handlers import coach_report_entry, coach_statistics_callback
 
@@ -1161,6 +1162,12 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     registrar.register(
         CallbackQueryHandler(handle_attendance_page_info, pattern="^attpg_info$")
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            execute_mark_attendance_slot,
+            pattern=r"^atmark_\d+_\d+_[01]$",
+        )
     )
     registrar.register(
         CallbackQueryHandler(mark_attendance_start, pattern="^mark_attendance_")
