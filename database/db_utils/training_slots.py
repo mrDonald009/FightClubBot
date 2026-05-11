@@ -12,6 +12,8 @@ from utils.time_utils import training_end_time
 TRAINING_FORMAT_GROUP = "group"
 TRAINING_FORMAT_INDIVIDUAL = "individual"
 
+MAX_INDIVIDUAL_SAME_SLOT = 4
+
 
 def _intervals_overlap(a0: datetime, a1: datetime, b0: datetime, b1: datetime) -> bool:
     return a0 < b1 and b0 < a1
@@ -51,20 +53,25 @@ def individual_slot_conflicts(
 ) -> bool:
     """
     True, если интервал [start, end) пересекается с групповым слотом этого тренера
-    или с другой индивидуальной тренировкой (все с тем же sport_type).
+    или если кол-во индивидуальных тренировок в этом слоте >= MAX_INDIVIDUAL_SAME_SLOT.
     """
     if not coach_id or not sport_type:
         return True
     end_dt = end if end is not None else training_end_time(start)
     day = start.date()
+    individual_overlaps = 0
     for t in coach_trainings_on_calendar_day(session, coach_id, sport_type, day):
         if ignore_training_id is not None and t.id == ignore_training_id:
             continue
         t0 = t.training_date
         t1 = training_end_time(t0)
-        if _intervals_overlap(start, end_dt, t0, t1):
+        if not _intervals_overlap(start, end_dt, t0, t1):
+            continue
+        fmt = (getattr(t, "training_format", None) or "").strip().lower()
+        if fmt != TRAINING_FORMAT_INDIVIDUAL:
             return True
-    return False
+        individual_overlaps += 1
+    return individual_overlaps >= MAX_INDIVIDUAL_SAME_SLOT
 
 
 def iter_allowed_individual_starts(
