@@ -1976,7 +1976,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = "📝 <b>ОТМЕТИТЬ ПОСЕЩЕНИЯ</b>\n\n"
         message += (
             "<i>Отмечайте <b>во время пары</b> (с начала до окончания). Слот с 🔒 — не текущее время; "
-            "если не отметите — после конца пары в учёте появится «не был».</i>\n\n"
+            "после окончания пары отметки и списания фиксируются автоматически.</i>\n\n"
         )
         if slot_rows:
             cnt = format_today_trainings_count_ru(len(slot_rows))

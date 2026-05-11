@@ -382,7 +382,6 @@ def build_step2_message_and_keyboard_rows(
     HTML-текст и строки клавиатуры: список (text, callback_data).
     """
     total_count = len(athletes)
-    now = now_moscow()
 
     max_page = max(0, (total_count - 1) // page_size) if total_count else 0
     page = max(0, min(page, max_page))

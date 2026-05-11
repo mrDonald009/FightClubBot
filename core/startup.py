@@ -141,14 +141,15 @@ def initialize_app(config: Config) -> None:
     # Проверяем абонементы
     check_subscriptions_on_startup()
 
-    # «Не отмечено» после конца пары → строки attendances в БД (как в UI)
+    # После окончания пары: locked_at + списание за «был»; неявные «не был» без отметки
     try:
         with get_db_session() as session:
-            lock_attendances_for_ended_trainings(session)
+            n_lock = lock_attendances_for_ended_trainings(session)
             n_backfill = close_unmarked_attendance_after_grace(session)
-        if n_backfill:
+        if n_lock or n_backfill:
             logger.info(
-                "🧾 При старте создано записей посещений (close_unmarked): %s",
+                "🧾 При старте посещения: lock_attendances=%s, close_unmarked (новые строки)=%s",
+                n_lock,
                 n_backfill,
             )
     except Exception as e:
@@ -162,7 +163,7 @@ def initialize_app(config: Config) -> None:
 
 
 async def _close_unmarked_interval_job(context) -> None:
-    """Частое закрытие слотов без отметки тренера (после конца пары)."""
+    """Фиксация отметок после конца пары и строки «не был» без отметки тренера."""
     try:
         with get_db_session() as session:
             n_lock = lock_attendances_for_ended_trainings(session)

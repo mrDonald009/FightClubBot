@@ -1,6 +1,9 @@
 """
 Фиксация в БД «не отмечено» после конца пары: создаётся Attendance (attended=False),
 как в UI после окончания слота (без дополнительной задержки). Списание остатка — как при ручном «не был».
+
+После окончания слота lock_attendances_for_ended_trainings выставляет locked_at у уже
+созданных отметок и списывает остаток за «Был».
 """
 import logging
 from datetime import datetime, timedelta
@@ -15,15 +18,24 @@ from utils.time_utils import (
     ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END,
     TRAINING_DURATION,
     now_moscow,
-    training_end_time,
 )
+
+from .freeze_personal import is_training_in_athlete_personal_freeze
+from .global_freeze import is_training_in_global_freeze
+from .training_slots import (
+    TRAINING_FORMAT_INDIVIDUAL,
+    dedupe_individual_trainings_by_slot,
+    individual_slot_training_ids,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def lock_attendances_for_ended_trainings(session: Session) -> int:
     """
     Выставить locked_at у строк attendances, если пара уже закончилась.
     До этого тренер может менять «был/не был»; после — только просмотр.
-    При фиксации: для «Был» выполняется списание trainings_remaining (раньше это делалось при отметке).
+    При фиксации: для «Был» выполняется списание trainings_remaining (после окончания пары).
     """
     now = now_moscow()
     boundary = now - TRAINING_DURATION
@@ -49,16 +61,6 @@ def lock_attendances_for_ended_trainings(session: Session) -> int:
             )
         n += 1
     return n
-
-from .freeze_personal import is_training_in_athlete_personal_freeze
-from .global_freeze import is_training_in_global_freeze
-from .training_slots import (
-    TRAINING_FORMAT_INDIVIDUAL,
-    dedupe_individual_trainings_by_slot,
-    individual_slot_training_ids,
-)
-
-logger = logging.getLogger(__name__)
 
 
 def _close_unmarked_individual_training(
@@ -128,7 +130,7 @@ def apply_trainings_remaining_on_present_after_lock(
     subscription: Subscription,
 ) -> None:
     """
-    После выставления locked_at: если итог «Был», один раз списать остаток (как раньше при отметке во время пары).
+    После выставления locked_at: если итог «Был», один раз списать остаток.
     Во время пары остаток не трогаем — только здесь и в ветках неявного «не был».
     """
     if not attendance.attended:
