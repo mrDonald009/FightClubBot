@@ -2454,7 +2454,6 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 and_(
                     Subscription.athlete_id == athlete_id,
                     Subscription.sport_type == Training.sport_type,
-                    Subscription.is_active.is_(True),
                     func.date(Subscription.start_date) <= func.date(Training.training_date),
                     func.date(Subscription.end_date) >= func.date(Training.training_date),
                     or_(
