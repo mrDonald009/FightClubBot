@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 from database.models import Session, Athlete, Training, Attendance
 from database.db_utils import (
@@ -58,9 +59,15 @@ async def _render_attendance_step2(
     )
     context.user_data["attendance_slot_page"] = page
     context.user_data["attendance_selected_training_id"] = training.id
-    await query.edit_message_text(
-        message, reply_markup=_keyboard_from_rows(rows), parse_mode="HTML"
-    )
+    try:
+        await query.edit_message_text(
+            message, reply_markup=_keyboard_from_rows(rows), parse_mode="HTML"
+        )
+    except BadRequest as e:
+        if "message is not modified" in str(e).lower():
+            logger.debug("Шаг 2 посещения: сообщение не изменилось, пропускаем edit")
+            return
+        raise
 
 
 async def select_training_for_attendance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -175,8 +182,9 @@ async def _run_attendance_mark_query(
     clear_legacy_mark_flow_keys: bool,
 ) -> Optional[str]:
     """
-    Запись отметки посещения. При успехе или noop — перерисовывает шаг 2, возвращает None.
-    При ошибке — возвращает текст для edit_message_text (HTML не везде).
+    Запись отметки посещения.
+    Возвращает: "__noop__" (повтор того же «был/не был»), "__handled__" (успех или уже отвечено через edit),
+    иначе строку ошибки для edit_message_text.
     """
     athlete = session.query(Athlete).filter_by(id=athlete_id).first()
     training = session.query(Training).filter_by(id=training_id).first()
@@ -203,9 +211,6 @@ async def _run_attendance_mark_query(
 
     if not subscription.is_active:
         return "❌ Абонемент не активен"
-
-    if attended and subscription.trainings_remaining <= 0:
-        return "❌ Нет доступных тренировок в абонементе"
 
     training_start = training.training_date
     training_end_datetime = training_end_time(training_start)
@@ -244,21 +249,43 @@ async def _run_attendance_mark_query(
                 training_id,
                 "present" if attended else "absent",
             )
-            page = context.user_data.get("attendance_slot_page", 0)
-            name_esc = html.escape((athlete.full_name or "").strip())
-            flash = f"ℹ️ Для <b>{name_esc}</b> этот статус уже установлен"
-            await _render_attendance_step2(
-                query, context, session, user, training, page, flash_html=flash
-            )
             if clear_legacy_mark_flow_keys:
                 context.user_data.pop("mark_attendance_athlete_id", None)
                 context.user_data.pop("selected_training_id", None)
-            return "__handled__"
+            # Повторное нажатие того же статуса: не перерисовываем (Telegram: message is not modified)
+            return "__noop__"
+
+    # Списание «остатка» только при появлении «Был», если раньше не было «Был» на этой паре
+    need_present_quota = attended and (
+        existing_attendance is None or not existing_attendance.attended
+    )
+    if need_present_quota and (
+        subscription.trainings_remaining is not None and subscription.trainings_remaining <= 0
+    ):
+        return "❌ Нет доступных тренировок в абонементе"
+
+    if existing_attendance:
+        old_status = existing_attendance.attended
         if getattr(existing_attendance, "locked_at", None) is not None:
             return (
                 "❌ Пара уже завершена, статус зафиксирован. "
                 "Для исправления обратитесь к администратору."
             )
+        if not old_status and attended:
+            training_in_freeze = (
+                subscription.is_frozen
+                and subscription.frozen_from
+                and subscription.frozen_until
+                and subscription.frozen_from <= training.training_date <= subscription.frozen_until
+            ) or is_training_in_athlete_personal_freeze(
+                session, athlete_id, training.training_date
+            )
+            if (
+                not training_in_freeze
+                and subscription.trainings_remaining is not None
+                and subscription.trainings_remaining > 0
+            ):
+                subscription.trainings_remaining -= 1
         existing_attendance.attended = attended
         existing_attendance.marked_by = query.from_user.id
         logger.info(
@@ -325,10 +352,10 @@ async def _run_attendance_mark_query(
 async def execute_mark_attendance_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отметка «Был»/«Не был» с шага 2 (callback atmark_…)."""
     query = update.callback_query
-    await query.answer()
 
     parsed = parse_attendance_direct_mark_callback(query.data or "")
     if not parsed:
+        await query.answer()
         return
 
     training_id, athlete_id, attended = parsed
@@ -341,6 +368,7 @@ async def execute_mark_attendance_slot(update: Update, context: ContextTypes.DEF
         and isinstance(action_guard.get("ts"), (int, float))
         and (now_ts - action_guard.get("ts")) < 3
     ):
+        await query.answer()
         return
     context.user_data["attendance_click_guard"] = {"signature": action_signature, "ts": now_ts}
 
@@ -355,12 +383,24 @@ async def execute_mark_attendance_slot(update: Update, context: ContextTypes.DEF
             attended,
             clear_legacy_mark_flow_keys=False,
         )
-        if result and result != "__handled__":
+        if result == "__noop__":
+            await query.answer("Уже так отмечено.", show_alert=False)
+        elif result == "__handled__":
+            await query.answer()
+        elif result:
+            await query.answer()
             await query.edit_message_text(result)
     except Exception as e:
         logger.error("❌ ОШИБКА ОТМЕТКИ (atmark): %s", e, exc_info=True)
         session.rollback()
-        await query.edit_message_text(f"❌ Ошибка при отметке посещения: {str(e)}")
+        try:
+            await query.answer("Ошибка отметки.", show_alert=False)
+        except Exception:
+            pass
+        try:
+            await query.edit_message_text(f"❌ Ошибка при отметке посещения: {str(e)}")
+        except BadRequest:
+            pass
     finally:
         context.user_data.pop("attendance_click_guard", None)
         session.close()
@@ -577,7 +617,9 @@ async def execute_mark_attendance(update: Update, context: ContextTypes.DEFAULT_
             attended,
             clear_legacy_mark_flow_keys=True,
         )
-        if result and result != "__handled__":
+        if result == "__noop__":
+            pass  # callback уже подтверждён в начале обработчика
+        elif result and result != "__handled__":
             await query.edit_message_text(result)
     except Exception as e:
         logger.error("❌ ОШИБКА ОТМЕТКИ ПОСЕЩЕНИЯ: %s", e, exc_info=True)
