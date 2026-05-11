@@ -138,7 +138,7 @@ def iter_allowed_individual_starts(
     *,
     step_minutes: int = 30,
     day_start_hour: int = 8,
-    day_end_hour: int = 21,
+    day_end_hour: int = 23,
     now_cutoff: Optional[datetime] = None,
 ) -> List[datetime]:
     """
