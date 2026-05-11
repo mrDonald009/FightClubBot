@@ -277,21 +277,29 @@ async def _run_attendance_mark_query(
                 "❌ Пара уже завершена, статус зафиксирован. "
                 "Для исправления обратитесь к администратору."
             )
+        training_in_freeze = (
+            subscription.is_frozen
+            and subscription.frozen_from
+            and subscription.frozen_until
+            and subscription.frozen_from <= training.training_date <= subscription.frozen_until
+        ) or is_training_in_athlete_personal_freeze(
+            session, athlete_id, training.training_date
+        )
+        # «Был» после «не был» — списание; обратно при «не был» после «был» — возврат остатка (передумал тренер).
         if not old_status and attended:
-            training_in_freeze = (
-                subscription.is_frozen
-                and subscription.frozen_from
-                and subscription.frozen_until
-                and subscription.frozen_from <= training.training_date <= subscription.frozen_until
-            ) or is_training_in_athlete_personal_freeze(
-                session, athlete_id, training.training_date
-            )
             if (
                 not training_in_freeze
                 and subscription.trainings_remaining is not None
                 and subscription.trainings_remaining > 0
             ):
                 subscription.trainings_remaining -= 1
+        elif old_status and not attended:
+            if not training_in_freeze and subscription.trainings_remaining is not None:
+                cap = subscription.trainings_total
+                if cap is None:
+                    subscription.trainings_remaining += 1
+                elif subscription.trainings_remaining < cap:
+                    subscription.trainings_remaining += 1
         existing_attendance.attended = attended
         existing_attendance.marked_by = query.from_user.id
         logger.info(
