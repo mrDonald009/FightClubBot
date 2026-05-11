@@ -2546,9 +2546,8 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                     )
                     if att is not None and att.attended:
                         status_code = "present"
-                    elif icon == "⏳":
-                        status_code = "pending"
                     else:
+                        # В истории не используем «не отмечено»: отсутствие отметки считаем «не был».
                         status_code = "absent"
 
                     vh = (
@@ -2602,10 +2601,8 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
 
                     if icon == "✅":
                         status_text = "✅ Был"
-                    elif icon == "❌":
-                        status_text = "❌ Не был"
                     else:
-                        status_text = "⏳ Не отмечено"
+                        status_text = "❌ Не был"
 
                     rows.append(f"{slot_desc} — {status_text}\n")
                 if history_changed:
