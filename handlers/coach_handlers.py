@@ -2332,8 +2332,6 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         func.date(Subscription.end_date) >= training_date_only,
                     )
                 )
-                if isinstance(user, Coach):
-                    subs_q = subs_q.filter(Athlete.created_by == user.id)
                 # Индивидуальный абонемент нельзя показывать под каждой групповой парой дня:
                 # у него start/end в один календарный день, иначе он попадёт под все слоты.
                 if is_individual_slot:
