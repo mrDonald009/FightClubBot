@@ -321,6 +321,37 @@ class Attendance(Base):
     )
 
 
+class VisitHistory(Base):
+    """
+    Материализованная история посещений (для UI и аудита),
+    заполняется из фактических слотов Training + отметок Attendance.
+    """
+    __tablename__ = "visit_history"
+    __table_args__ = (
+        UniqueConstraint("athlete_id", "training_id", name="uq_visit_history_athlete_training"),
+        Index("ix_visit_history_athlete_date", "athlete_id", "training_id"),
+        Index("ix_visit_history_status", "status_code"),
+        {"extend_existing": True},
+    )
+
+    id = Column(Integer, primary_key=True)
+    athlete_id = Column(Integer, ForeignKey("athletes.id"), nullable=False)
+    training_id = Column(Integer, ForeignKey("trainings.id"), nullable=False)
+    subscription_id = Column(Integer, ForeignKey("subscriptions.id"), nullable=True)
+    attendance_id = Column(Integer, ForeignKey("attendances.id"), nullable=True)
+    # present / absent / pending
+    status_code = Column(String(16), nullable=False)
+    status_label = Column(String(128), nullable=True)
+    source = Column(String(24), nullable=True, default="derived")
+    recorded_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    athlete = relationship("Athlete")
+    training = relationship("Training")
+    subscription = relationship("Subscription")
+    attendance = relationship("Attendance")
+
+
 class RestorationRequest(Base):
     """Запрос на восстановление тренировок (упрощенный - сразу исполняется)"""
     __tablename__ = 'restoration_requests'

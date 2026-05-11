@@ -609,6 +609,46 @@ def migrate_database():
             )
             print("✅ training_format добавлен в trainings")
 
+        # Материализованная история посещений
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visit_history (
+                id INTEGER PRIMARY KEY,
+                athlete_id INTEGER NOT NULL,
+                training_id INTEGER NOT NULL,
+                subscription_id INTEGER NULL,
+                attendance_id INTEGER NULL,
+                status_code VARCHAR(16) NOT NULL,
+                status_label VARCHAR(128) NULL,
+                source VARCHAR(24) NULL,
+                recorded_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY(athlete_id) REFERENCES athletes(id),
+                FOREIGN KEY(training_id) REFERENCES trainings(id),
+                FOREIGN KEY(subscription_id) REFERENCES subscriptions(id),
+                FOREIGN KEY(attendance_id) REFERENCES attendances(id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_visit_history_athlete_training
+            ON visit_history (athlete_id, training_id)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_visit_history_athlete_date
+            ON visit_history (athlete_id, training_id)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_visit_history_status
+            ON visit_history (status_code)
+            """
+        )
+
         connection.commit()
         print("🎉 Миграция завершена успешно!")
 

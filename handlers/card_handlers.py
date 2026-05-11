@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 import calendar as py_calendar
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
-from database.models import Session, Athlete, Subscription, Training, Attendance, Coach, Admin, GlobalFreeze
+from database.models import Session, Athlete, Subscription, Training, Attendance, Coach, Admin, GlobalFreeze, VisitHistory
 from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
 )
@@ -2450,6 +2450,19 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
         if athlete.sport_type and athlete.age_group:
             lookback = now - timedelta(days=120)
             _fit = TRAINING_FORMAT_INDIVIDUAL
+            has_group_sub = exists().where(
+                and_(
+                    Subscription.athlete_id == athlete_id,
+                    Subscription.sport_type == Training.sport_type,
+                    Subscription.is_active.is_(True),
+                    func.date(Subscription.start_date) <= func.date(Training.training_date),
+                    func.date(Subscription.end_date) >= func.date(Training.training_date),
+                    or_(
+                        Subscription.subscription_type.is_(None),
+                        Subscription.subscription_type != "individual",
+                    ),
+                )
+            )
             # Групповые слоты: совпадение вида спорта и возрастной группы, без individual.
             trainings_group = (
                 session.query(Training)
@@ -2459,6 +2472,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                     Training.is_cancelled.is_(False),
                     Training.training_date >= lookback,
                     Training.training_date <= now,
+                    has_group_sub,
                     or_(
                         Training.training_format.is_(None),
                         func.trim(Training.training_format) == "",
@@ -2522,6 +2536,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                             return att_by_tid[sid]
                     return None
 
+                history_changed = False
                 for t in visible_slots:
                     att = _attendance_for_slot(t)
                     training_date = t.training_date.strftime("%d.%m.%Y %H:%M")
@@ -2529,6 +2544,48 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                     label = attendance_label_ru_for_training(
                         att, t, now=now, with_note=(att is None)
                     )
+                    if att is not None and att.attended:
+                        status_code = "present"
+                    elif icon == "⏳":
+                        status_code = "pending"
+                    else:
+                        status_code = "absent"
+
+                    vh = (
+                        session.query(VisitHistory)
+                        .filter(
+                            VisitHistory.athlete_id == athlete_id,
+                            VisitHistory.training_id == t.id,
+                        )
+                        .first()
+                    )
+                    if vh is None:
+                        vh = VisitHistory(
+                            athlete_id=athlete_id,
+                            training_id=t.id,
+                            subscription_id=att.subscription_id if att is not None else None,
+                            attendance_id=att.id if att is not None else None,
+                            status_code=status_code,
+                            status_label=label,
+                            source="derived",
+                            recorded_at=now,
+                        )
+                        session.add(vh)
+                        history_changed = True
+                    else:
+                        if (
+                            vh.subscription_id != (att.subscription_id if att is not None else None)
+                            or vh.attendance_id != (att.id if att is not None else None)
+                            or vh.status_code != status_code
+                            or vh.status_label != label
+                        ):
+                            vh.subscription_id = att.subscription_id if att is not None else None
+                            vh.attendance_id = att.id if att is not None else None
+                            vh.status_code = status_code
+                            vh.status_label = label
+                            vh.updated_at = now
+                            history_changed = True
+
                     line = f"{icon} <b>{training_date}</b>\n   {label}\n"
                     if att is not None:
                         marked = att.created_at.strftime("%d.%m.%Y") if att.created_at else "—"
@@ -2536,6 +2593,8 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                         if att.was_restored:
                             line += "   🔄 Восстановлено\n"
                     rows.append(line + "\n")
+                if history_changed:
+                    session.commit()
 
         covered_tids = set()
         for tr in visible_slots:
