@@ -23,6 +23,7 @@ from services.attendance_training_flow import (
     coach_training_access_error,
     fetch_athletes_for_training_slot,
     get_coach_sport_type_name,
+    is_training_in_live_attendance_window,
     parse_attendance_direct_mark_callback,
     parse_attendance_page_callback,
     resolve_training_from_attendance_callback,
@@ -91,6 +92,15 @@ async def select_training_for_attendance(update: Update, context: ContextTypes.D
         if created_new:
             session.commit()
 
+        if not is_training_in_live_attendance_window(training):
+            await query.edit_message_text(
+                "🔒 Сейчас отметить можно только <b>текущую пару</b> "
+                "(пока идёт занятие по расписанию).\n\n"
+                "Вернитесь в список и выберите слот <b>без замка 🔒</b> или обновите позже.",
+                parse_mode="HTML",
+            )
+            return
+
         context.user_data["attendance_slot_page"] = 0
         await _render_attendance_step2(query, context, session, user, training, 0)
     except Exception as e:
@@ -142,7 +152,16 @@ async def handle_attendance_page_info(update: Update, context: ContextTypes.DEFA
 async def handle_attendance_name_column(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     """Колонка «ФИО» в отметке посещения — не действие, только подсказка."""
     query = update.callback_query
-    await query.answer("Нажмите «✅ Был» или «❌ Не был».", show_alert=False)
+    await query.answer("Нажмите «✅ Был» или «❌ Не был». До конца пары статус можно менять.", show_alert=False)
+
+
+async def handle_attendance_slot_locked(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    """Слот не в окне текущей пары — выбор заблокирован."""
+    query = update.callback_query
+    await query.answer(
+        "Сейчас доступна только тренировка, которая идёт по времени. Остальные слоты с 🔒 откроются в своё время.",
+        show_alert=True,
+    )
 
 
 async def _run_attendance_mark_query(
@@ -235,6 +254,11 @@ async def _run_attendance_mark_query(
                 context.user_data.pop("mark_attendance_athlete_id", None)
                 context.user_data.pop("selected_training_id", None)
             return "__handled__"
+        if getattr(existing_attendance, "locked_at", None) is not None:
+            return (
+                "❌ Пара уже завершена, статус зафиксирован. "
+                "Для исправления обратитесь к администратору."
+            )
         existing_attendance.attended = attended
         existing_attendance.marked_by = query.from_user.id
         logger.info(

@@ -20,7 +20,7 @@ from typing import List, Optional, Tuple, Union
 from utils.training_manager import TrainingManager
 from utils.subscription_resolve import subscription_for_coach_sport
 from utils.attendance_display import attendance_icon_for_slot
-from utils.time_utils import now_moscow, ACTIVATION_GRACE_AFTER_START
+from utils.time_utils import now_moscow, ACTIVATION_GRACE_AFTER_START, training_end_time
 from keyboards.coach_kb import get_coach_main_menu
 from datetime import date, datetime, timedelta
 from sqlalchemy import and_, exists, func, or_
@@ -1930,8 +1930,8 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         message = "📝 <b>ОТМЕТИТЬ ПОСЕЩЕНИЯ</b>\n\n"
         message += (
-            "<i>Отмечайте <b>во время пары</b> (с начала до окончания). Если не отметите — "
-            "после конца занятия в учёте появится «не был».</i>\n\n"
+            "<i>Отмечайте <b>во время пары</b> (с начала до окончания). Слот с 🔒 — не текущее время; "
+            "если не отметите — после конца пары в учёте появится «не был».</i>\n\n"
         )
         if slot_rows:
             cnt = format_today_trainings_count_ru(len(slot_rows))
@@ -1949,15 +1949,22 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for slot in slot_rows:
             age_group_ru = "Дети" if slot.age_group == "children" else "Взрослые"
             format_label = "Индивидуальная" if slot.is_individual_format else "Групповая"
+            slot_start = slot.training_datetime
+            slot_end = training_end_time(slot_start)
+            is_live = slot_start <= now <= slot_end
+            prefix = "" if is_live else "🔒 "
             button_text = (
-                f"🕒 {slot.training_datetime.strftime('%H:%M')} | "
+                f"{prefix}🕒 {slot.training_datetime.strftime('%H:%M')} | "
                 f"{slot.sport_type} ({age_group_ru}) — {format_label}"
             )
-            callback_data = (
-                f"select_mark_training_virtual_{slot.virtual_token}"
-                if slot.is_virtual
-                else f"select_mark_training_{slot.training_id}"
-            )
+            if is_live:
+                callback_data = (
+                    f"select_mark_training_virtual_{slot.virtual_token}"
+                    if slot.is_virtual
+                    else f"select_mark_training_{slot.training_id}"
+                )
+            else:
+                callback_data = "attendance_slot_locked"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
         if not slot_rows:

@@ -7,7 +7,11 @@ from telegram.ext import Application
 
 from core.config import Config
 from core.database import get_db_session
-from database.db_utils import auto_deduct_daily_trainings, close_unmarked_attendance_after_grace
+from database.db_utils import (
+    auto_deduct_daily_trainings,
+    close_unmarked_attendance_after_grace,
+    lock_attendances_for_ended_trainings,
+)
 from services.user_service import UserService
 from services.subscription_service import SubscriptionService
 from services.subscription_audit_service import run_subscription_audit, format_audit_report
@@ -140,6 +144,7 @@ def initialize_app(config: Config) -> None:
     # «Не отмечено» после конца пары → строки attendances в БД (как в UI)
     try:
         with get_db_session() as session:
+            lock_attendances_for_ended_trainings(session)
             n_backfill = close_unmarked_attendance_after_grace(session)
         if n_backfill:
             logger.info(
@@ -160,9 +165,14 @@ async def _close_unmarked_interval_job(context) -> None:
     """Частое закрытие слотов без отметки тренера (после конца пары)."""
     try:
         with get_db_session() as session:
+            n_lock = lock_attendances_for_ended_trainings(session)
             n = close_unmarked_attendance_after_grace(session)
-        if n:
-            logger.info("🧾 close_unmarked (интервал 15 мин): создано записей: %s", n)
+        if n_lock or n:
+            logger.info(
+                "🧾 close_unmarked (интервал 15 мин): lock=%s, создано записей=%s",
+                n_lock,
+                n,
+            )
     except Exception as e:  # pragma: no cover
         logger.error("❌ Ошибка interval close_unmarked: %s", e, exc_info=True)
 
@@ -173,6 +183,7 @@ async def _daily_attendance_maintenance_job(context) -> None:
         with get_db_session() as session:
             d0 = auto_deduct_daily_trainings(session)
         with get_db_session() as session:
+            lock_attendances_for_ended_trainings(session)
             d1 = close_unmarked_attendance_after_grace(session)
         logger.info(
             "📋 Ежедневное обслуживание посещений: auto_deduct=%s, close_unmarked=%s",

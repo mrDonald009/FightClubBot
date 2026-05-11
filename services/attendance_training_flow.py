@@ -15,7 +15,7 @@ from database.db_utils import get_user_role
 from database.db_utils.training_slots import TRAINING_FORMAT_INDIVIDUAL
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
 from utils.training_manager import TrainingManager
-from utils.time_utils import now_moscow
+from utils.time_utils import now_moscow, training_end_time
 
 # Размер страницы списка спортсменов на шаге 2 (inline-кнопки Telegram)
 ATTENDANCE_LIST_PAGE_SIZE = 20
@@ -31,6 +31,14 @@ def format_today_trainings_count_ru(count: int) -> str:
     else:
         word = "тренировок"
     return f"{n} {word}"
+
+
+def is_training_in_live_attendance_window(training: Training, now: Optional[datetime] = None) -> bool:
+    """Идёт ли сейчас эта пара (можно открыть шаг отметки): [начало, конец] включительно."""
+    t_now = now if now is not None else now_moscow()
+    start = training.training_date
+    end = training_end_time(start)
+    return start <= t_now <= end
 
 
 @dataclass(frozen=True)
@@ -324,6 +332,37 @@ def fetch_athletes_for_training_slot(
     return athletes, attendance_map
 
 
+def _surname_initials_button_label(full_name: str, max_len: int = 40) -> str:
+    """Фамилия и инициалы (как в списках): «Иванов И.П.» — компактно для кнопки."""
+    parts = [p for p in (full_name or "").strip().split() if p]
+    if not parts:
+        return "—"
+    if len(parts) == 1:
+        s = parts[0]
+    elif len(parts) == 2:
+        sur, first = parts[0], parts[1]
+        ini = f"{first[0].upper()}." if first else ""
+        s = f"{sur} {ini}".strip()
+    else:
+        sur, first, pat = parts[0], parts[1], parts[2]
+        i1 = f"{first[0].upper()}." if first else ""
+        i2 = f"{pat[0].upper()}." if pat else ""
+        s = f"{sur} {i1}{i2}".strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max(max_len - 2, 4)] + ".."
+
+
+def _name_column_button_with_status(full_name: str, att: Optional[Attendance]) -> str:
+    """Кнопка колонки ФИО: ⏳/✅/❌ + фамилия с инициалами."""
+    base = _surname_initials_button_label(full_name)
+    if att is None:
+        return f"⏳ {base}"
+    if att.attended:
+        return f"✅ {base}"
+    return f"❌ {base}"
+
+
 def build_step2_message_and_keyboard_rows(
     training: Training,
     athletes: List[Athlete],
@@ -373,9 +412,10 @@ def build_step2_message_and_keyboard_rows(
     tid = training.id
     for athlete in chunk:
         full = (athlete.full_name or "").strip()
+        att_row = attendance_map.get(athlete.id)
         keyboard_rows.append(
             [
-                (_surname_initials_button_label(full), f"attnm_{tid}_{athlete.id}"),
+                (_name_column_button_with_status(full, att_row), f"attnm_{tid}_{athlete.id}"),
                 ("✅ Был", f"atmark_{tid}_{athlete.id}_1"),
                 ("❌ Не был", f"atmark_{tid}_{athlete.id}_0"),
             ]
@@ -436,24 +476,3 @@ def parse_attendance_direct_mark_callback(data: str) -> Optional[Tuple[int, int,
     if bit not in ("0", "1"):
         return None
     return int(tid_s), int(aid_s), bit == "1"
-
-
-def _surname_initials_button_label(full_name: str, max_len: int = 40) -> str:
-    """Фамилия и инициалы (как в списках): «Иванов И.П.» — компактно для кнопки."""
-    parts = [p for p in (full_name or "").strip().split() if p]
-    if not parts:
-        return "—"
-    if len(parts) == 1:
-        s = parts[0]
-    elif len(parts) == 2:
-        sur, first = parts[0], parts[1]
-        ini = f"{first[0].upper()}." if first else ""
-        s = f"{sur} {ini}".strip()
-    else:
-        sur, first, pat = parts[0], parts[1], parts[2]
-        i1 = f"{first[0].upper()}." if first else ""
-        i2 = f"{pat[0].upper()}." if pat else ""
-        s = f"{sur} {i1}{i2}".strip()
-    if len(s) <= max_len:
-        return s
-    return s[: max(max_len - 2, 4)] + ".."

@@ -18,6 +18,29 @@ from utils.time_utils import (
     training_end_time,
 )
 
+
+def lock_attendances_for_ended_trainings(session: Session) -> int:
+    """
+    Выставить locked_at у строк attendances, если пара уже закончилась.
+    До этого тренер может менять «был/не был»; после — только просмотр.
+    """
+    now = now_moscow()
+    boundary = now - TRAINING_DURATION
+    q = (
+        session.query(Attendance)
+        .join(Training, Training.id == Attendance.training_id)
+        .filter(
+            Training.is_cancelled.is_(False),
+            Training.training_date <= boundary,
+            Attendance.locked_at.is_(None),
+        )
+    )
+    n = 0
+    for att in q:
+        att.locked_at = now
+        n += 1
+    return n
+
 from .freeze_personal import is_training_in_athlete_personal_freeze
 from .global_freeze import is_training_in_global_freeze
 from .training_slots import TRAINING_FORMAT_INDIVIDUAL
@@ -66,6 +89,7 @@ def _close_unmarked_individual_training(
                 attended=False,
                 marked_by=None,
                 created_at=now,
+                locked_at=now,
             )
         )
         if _should_deduct_on_system_absence(session, subscription, training, athlete.id):
@@ -180,6 +204,7 @@ def close_unmarked_attendance_after_grace(
                 attended=False,
                 marked_by=None,
                 created_at=now,
+                locked_at=now,
             )
             session.add(att)
 

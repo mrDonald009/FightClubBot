@@ -16,6 +16,7 @@ from services.attendance_training_flow import (
     coach_training_access_error,
     fetch_athletes_for_training_slot,
     format_today_trainings_count_ru,
+    is_training_in_live_attendance_window,
     parse_attendance_direct_mark_callback,
     parse_attendance_name_column_callback,
     parse_attendance_page_callback,
@@ -55,6 +56,15 @@ def test_surname_initials_button_label():
     assert _surname_initials_button_label("Морозов Егор Иванович") == "Морозов Е.И."
     assert _surname_initials_button_label("Иванов Иван") == "Иванов И."
     assert _surname_initials_button_label("Волков") == "Волков"
+
+
+def test_is_training_in_live_attendance_window():
+    tr = SimpleNamespace(training_date=datetime(2026, 5, 11, 11, 30))
+    assert is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 11, 30))
+    assert is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 12, 30))
+    assert is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 13, 0))
+    assert not is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 11, 29))
+    assert not is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 13, 1))
 
 
 def test_coach_training_access_error_admin_unrestricted():
@@ -120,6 +130,19 @@ def test_build_step2_pagination_nav_when_many_athletes():
     assert rows[-1] == [("🏠 В меню", "back_to_menu_main")]
 
 
+def test_build_step2_name_button_shows_status_icon_when_marked():
+    training = SimpleNamespace(
+        id=2,
+        training_date=datetime(2026, 4, 4, 14, 0),
+        sport_type="Тайский Бокс",
+        age_group="adults",
+    )
+    athletes = [SimpleNamespace(id=1, full_name="Иванов Иван Петрович")]
+    att = SimpleNamespace(attended=True, locked_at=None)
+    _msg, rows = build_step2_message_and_keyboard_rows(training, athletes, {1: att}, page=0)
+    assert rows[0][0][0] == "✅ Иванов И.П."
+
+
 def test_build_step2_no_nav_when_few_athletes():
     training = SimpleNamespace(
         id=2,
@@ -131,7 +154,7 @@ def test_build_step2_no_nav_when_few_athletes():
     msg, rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
     assert "Шаг 2 из 2" in msg
     assert "Иванов Иван Петрович" in msg
-    assert rows[0][0] == ("Иванов И.П.", "attnm_2_1")
+    assert rows[0][0] == ("⏳ Иванов И.П.", "attnm_2_1")
     assert rows[0][1] == ("✅ Был", "atmark_2_1_1")
     assert rows[0][2] == ("❌ Не был", "atmark_2_1_0")
     assert rows[-2] == [("🔙 К тренировкам на сегодня", "attendance_training_list")]

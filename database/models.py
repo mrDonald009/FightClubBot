@@ -304,6 +304,8 @@ class Attendance(Base):
     # В БД исторически хранится один идентификатор отметившего (telegram_id или legacy id)
     marked_by = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # После окончания пары NULL→now: строка не меняется тренером; до этого можно менять «был/не был»
+    locked_at = Column(DateTime, nullable=True)
 
     # Флаги восстановления
     was_restored = Column(Boolean, default=False)

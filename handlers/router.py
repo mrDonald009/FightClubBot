@@ -99,6 +99,7 @@ from handlers.attendance_handlers import (
     handle_attendance_athletes_page,
     handle_attendance_page_info,
     handle_attendance_name_column,
+    handle_attendance_slot_locked,
     mark_attendance_start,
     handle_training_selection,
     execute_mark_attendance,
@@ -1158,6 +1159,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
 
     # Обработчики для отметки посещения
+    registrar.register(
+        CallbackQueryHandler(handle_attendance_slot_locked, pattern="^attendance_slot_locked$")
+    )
     registrar.register(
         CallbackQueryHandler(handle_attendance_athletes_page, pattern=r"^attpg_\d+_\d+$")
     )

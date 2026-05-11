@@ -347,6 +347,11 @@ def migrate_database():
             cursor.execute("ALTER TABLE attendances ADD COLUMN subscription_id INTEGER")
             print("✅ subscription_id добавлен")
 
+        if "locked_at" not in columns:
+            print("🔧 Добавляю locked_at в таблицу attendances...")
+            cursor.execute("ALTER TABLE attendances ADD COLUMN locked_at DATETIME")
+            print("✅ locked_at добавлен")
+
         # Создаем таблицу restoration_requests если её нет
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS restoration_requests (

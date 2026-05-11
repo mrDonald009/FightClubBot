@@ -53,7 +53,10 @@ from .global_freeze import (
     training_datetime_compact,
 )
 from .auto_deduct import auto_deduct_daily_trainings
-from .close_unmarked_attendance import close_unmarked_attendance_after_grace
+from .close_unmarked_attendance import (
+    close_unmarked_attendance_after_grace,
+    lock_attendances_for_ended_trainings,
+)
 from .migrate import migrate_existing_subscription, migrate_subscription_by_athlete_name
 from .restore import restore_multiple_trainings, restore_training
 from .athlete_card import get_athlete_card_info
@@ -111,6 +114,7 @@ __all__ = [
     "training_datetime_compact",
     "auto_deduct_daily_trainings",
     "close_unmarked_attendance_after_grace",
+    "lock_attendances_for_ended_trainings",
     "migrate_existing_subscription",
     "migrate_subscription_by_athlete_name",
     "restore_multiple_trainings",
