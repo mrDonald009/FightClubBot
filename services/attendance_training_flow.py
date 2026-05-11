@@ -403,15 +403,13 @@ def build_step2_message_and_keyboard_rows(
             f"{training.training_date.strftime('%d.%m.%Y %H:%M')} — "
             f"{html.escape(training.sport_type)}, {age_group_ru}\n\n"
         )
-    parts = [
-        "📝 <b>ОТМЕТКА ПОСЕЩЕНИЯ</b>\n\n",
-    ]
+    parts: List[str] = []
     if flash_html:
         parts.append(flash_html + "\n\n")
     parts.extend(
         [
             slot_title,
-            "Отметьте присутствие по списку.",
+            "Отметьте присутствие.",
         ]
     )
     if not athletes:

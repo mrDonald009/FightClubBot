@@ -1947,10 +1947,7 @@ async def cancel_global_freeze(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Шаг 1: список тренировок на сегодня для отметки посещений."""
-    from services.attendance_training_flow import (
-        build_today_attendance_slots,
-        format_today_trainings_count_ru,
-    )
+    from services.attendance_training_flow import build_today_attendance_slots
 
     user_id = update.effective_user.id
     query = update.callback_query
@@ -1974,21 +1971,10 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["attendance_virtual_slots"] = virtual_slots
 
         message = "📝 <b>ОТМЕТИТЬ ПОСЕЩЕНИЯ</b>\n\n"
-        message += (
-            "<i>Отмечайте <b>во время пары</b> (с начала до окончания). Слот с 🔒 — не текущее время; "
-            "после окончания пары отметки и списания фиксируются автоматически.</i>\n\n"
-        )
         if slot_rows:
-            cnt = format_today_trainings_count_ru(len(slot_rows))
-            message += (
-                f"Сегодня в списке: <b>{cnt}</b>.\n\n"
-                "<b>Шаг 1 из 2</b> — выберите тренировку по времени (групповая / индивидуальная):\n"
-            )
+            message += "Выберите тренировку.\n\n"
         else:
-            message += (
-                "Сегодня в этом списке пока пусто.\n"
-                "Если занятие уже есть в «📅 Мой календарь», нажмите «🔄 Обновить».\n\n"
-            )
+            message += "Список пуст — «🔄 Обновить».\n\n"
 
         keyboard = []
         for slot in slot_rows:
