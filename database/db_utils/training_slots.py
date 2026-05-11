@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from database.models import Training
-from utils.time_utils import training_end_time
+from utils.time_utils import ACTIVATION_GRACE_AFTER_START, training_end_time
 
 TRAINING_FORMAT_GROUP = "group"
 TRAINING_FORMAT_INDIVIDUAL = "individual"
@@ -88,15 +88,19 @@ def iter_allowed_individual_starts(
     """
     Старты индивидуальной тренировки длительностью как у групповой (TRAINING_DURATION),
     без пересечений с существующими слотами тренера.
+    Слот доступен до (начало + ACTIVATION_GRACE_AFTER_START), как у групповой активации.
     """
     out: List[datetime] = []
     if step_minutes <= 0:
         step_minutes = 30
-    now_floor = now_cutoff or datetime.combine(day, time(0, 0, 0))
+    now_ts = now_cutoff or datetime.combine(day, time(0, 0, 0))
     t = datetime.combine(day, time(day_start_hour, 0, 0, 0))
     last_start = datetime.combine(day, time(day_end_hour, 0, 0, 0))
     while t <= last_start:
-        if t >= now_floor and not individual_slot_conflicts(session, coach_id, sport_type, t):
+        slot_deadline = t + ACTIVATION_GRACE_AFTER_START
+        if now_ts <= slot_deadline and not individual_slot_conflicts(
+            session, coach_id, sport_type, t
+        ):
             out.append(t)
         t += timedelta(minutes=step_minutes)
     return out

@@ -9,6 +9,7 @@ from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
 )
 from database.db_utils import (
+    ACTIVATION_GRACE_AFTER_START,
     get_user_by_telegram_id,
     get_user_role,
     get_athlete_card_info,
@@ -717,6 +718,24 @@ async def handle_activation_time_pick(update: Update, context: ContextTypes.DEFA
         coach_id = subscription.responsible_coach_id or athlete.created_by
         if not coach_id:
             await query.edit_message_text("❌ Не указан тренер.")
+            return
+        now = now_moscow()
+        if now > start_date + ACTIVATION_GRACE_AFTER_START:
+            grace_min = int(ACTIVATION_GRACE_AFTER_START.total_seconds() // 60)
+            await query.edit_message_text(
+                "❌ Время для выбора этого слота истекло "
+                f"(запас после начала {grace_min} мин). "
+                "Выберите другое время.",
+                reply_markup=_build_individual_time_keyboard(
+                    session,
+                    subscription_id,
+                    coach_id,
+                    sport_type,
+                    start_date.year,
+                    start_date.month,
+                    start_date.day,
+                ),
+            )
             return
         if is_training_in_global_freeze(session, start_date):
             await query.edit_message_text(

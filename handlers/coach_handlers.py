@@ -1076,6 +1076,32 @@ async def handle_add_athlete_individual_time_pick(
     if not start_dt:
         await query.edit_message_text("❌ Некорректное время.")
         return ATHLETE_TRAINING_DATE
+    now = now_moscow()
+    if now > start_dt + ACTIVATION_GRACE_AFTER_START:
+        grace_min = int(ACTIVATION_GRACE_AFTER_START.total_seconds() // 60)
+        session = Session()
+        try:
+            coach_id = context.user_data.get("coach_id")
+            sport_type = context.user_data.get("sport_type")
+            if not coach_id or not sport_type:
+                await query.edit_message_text("❌ Недостаточно данных в сессии.")
+                return ConversationHandler.END
+            await query.edit_message_text(
+                "❌ Время для выбора этого слота истекло "
+                f"(запас после начала {grace_min} мин). "
+                "Выберите другое время.",
+                reply_markup=_coach_add_athlete_individual_time_keyboard(
+                    session,
+                    coach_id,
+                    sport_type,
+                    start_dt.year,
+                    start_dt.month,
+                    start_dt.day,
+                ),
+            )
+        finally:
+            session.close()
+        return ATHLETE_TRAINING_DATE
     coach_id = context.user_data.get("coach_id")
     sport_type = context.user_data.get("sport_type")
     if not coach_id or not sport_type:
