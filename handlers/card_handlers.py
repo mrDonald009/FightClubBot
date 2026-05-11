@@ -2445,7 +2445,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
         now = now_moscow()
         max_lines = 28
         rows: List[str] = []
-        completed: List[Training] = []
+        visible_slots: List[Training] = []
 
         if athlete.sport_type and athlete.age_group:
             lookback = now - timedelta(days=120)
@@ -2495,12 +2495,11 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 .all()
             )
             all_slots = dedupe_individual_trainings_by_slot(trainings_group + trainings_indiv)
-            completed = [t for t in all_slots if training_end_time(t.training_date) <= now]
-            completed.sort(key=lambda tr: tr.training_date, reverse=True)
-            completed = completed[:45]
-            if completed:
+            # Показываем не только завершённые, но и текущие слоты: отмеченные статусы видны сразу.
+            visible_slots = sorted(all_slots, key=lambda tr: tr.training_date, reverse=True)[:45]
+            if visible_slots:
                 tids_flat = set()
-                for tr in completed:
+                for tr in visible_slots:
                     tids_flat.update(individual_slot_training_ids(session, tr))
                 atts = (
                     session.query(Attendance)
@@ -2519,7 +2518,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                             return att_by_tid[sid]
                     return None
 
-                for t in completed:
+                for t in visible_slots:
                     att = _attendance_for_slot(t)
                     training_date = t.training_date.strftime("%d.%m.%Y %H:%M")
                     icon = attendance_icon_for_training(att, t, now=now)
@@ -2535,7 +2534,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                     rows.append(line + "\n")
 
         covered_tids = set()
-        for tr in completed:
+        for tr in visible_slots:
             covered_tids.update(individual_slot_training_ids(session, tr))
 
         # Старые записи вне окна слотов (другая группа/вид спорта или до lookback)
@@ -2570,7 +2569,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
             rows.extend(archive_lines)
 
         if not rows:
-            message += "📭 Нет завершённых тренировок по текущему виду спорта и группе и нет сохранённых посещений.\n"
+            message += "📭 Нет тренировок по текущему виду спорта и группе и нет сохранённых посещений.\n"
         else:
             message += f"Последние записи (до {max_lines} строк):\n\n"
             for line in rows[:max_lines]:
