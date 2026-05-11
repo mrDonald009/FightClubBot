@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session as OrmSession
 
 from database.db_utils import get_user_role
@@ -284,6 +284,10 @@ def fetch_athletes_for_training_slot(
     session: OrmSession, training: Training
 ) -> Tuple[List[Athlete], Dict[int, Attendance]]:
     training_day = training.training_date.date()
+    is_individual_slot = (
+        (getattr(training, "training_format", None) or "").strip().lower()
+        == TRAINING_FORMAT_INDIVIDUAL
+    )
     athletes_query = (
         session.query(Athlete)
         .join(Subscription, Subscription.athlete_id == Athlete.id)
@@ -294,8 +298,22 @@ def fetch_athletes_for_training_slot(
             func.date(Subscription.start_date) <= training_day,
             func.date(Subscription.end_date) >= training_day,
         )
-        .order_by(Athlete.full_name.asc())
     )
+    # Как в «Мой календарь»: индивидуальный слот — только абонемент individual с тем же началом;
+    # групповой — без individual (иначе monthly попадает на все слоты дня).
+    if is_individual_slot:
+        athletes_query = athletes_query.filter(
+            Subscription.subscription_type == "individual",
+            Subscription.start_date == training.training_date,
+        )
+    else:
+        athletes_query = athletes_query.filter(
+            or_(
+                Subscription.subscription_type.is_(None),
+                Subscription.subscription_type != "individual",
+            )
+        )
+    athletes_query = athletes_query.order_by(Athlete.full_name.asc())
     athletes = athletes_query.all()
     athlete_ids = [a.id for a in athletes]
     attendance_map: Dict[int, Attendance] = {}

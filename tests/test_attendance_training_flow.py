@@ -1,15 +1,19 @@
 """Unit-тесты сервиса потока «Отметить посещения» (без Telegram)."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
+from database.models import Athlete, Base, Coach, SportType, Subscription, Training
 from services.attendance_training_flow import (
     ATTENDANCE_LIST_PAGE_SIZE,
     build_step2_message_and_keyboard_rows,
     coach_training_access_error,
+    fetch_athletes_for_training_slot,
     format_today_trainings_count_ru,
     parse_attendance_page_callback,
 )
@@ -112,3 +116,97 @@ def test_build_step2_no_nav_when_few_athletes():
 )
 def test_format_today_trainings_count_ru(n, expected_suffix):
     assert format_today_trainings_count_ru(n) == expected_suffix
+
+
+@pytest.mark.db
+def test_fetch_athletes_individual_slot_only_matching_subscription():
+    """На индивидуальной паре не показывать спортсменов с групповым абонементом за тот же день."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    st = SportType(name="MMA", display_name="MMA")
+    session.add(st)
+    session.flush()
+    coach = Coach(telegram_id=9001, sport_type_id=st.id, sport_type="MMA")
+    session.add(coach)
+    session.flush()
+
+    slot_start = datetime(2026, 5, 11, 11, 30, 0)
+    slot_end = slot_start + timedelta(hours=1, minutes=30)
+
+    ind_ath = Athlete(
+        full_name="Морозов Егор Иванович",
+        age_group="adults",
+        sport_type="MMA",
+        created_by=coach.id,
+    )
+    grp_ath = Athlete(
+        full_name="Волков Алексей Сергеевич",
+        age_group="adults",
+        sport_type="MMA",
+        created_by=coach.id,
+    )
+    session.add_all([ind_ath, grp_ath])
+    session.flush()
+
+    session.add(
+        Subscription(
+            athlete_id=ind_ath.id,
+            discipline_key="mma_adults_ind_1",
+            sport_type="MMA",
+            subscription_type="individual",
+            start_date=slot_start,
+            end_date=slot_end,
+            is_active=True,
+            trainings_total=1,
+            trainings_remaining=1,
+        )
+    )
+    session.add(
+        Subscription(
+            athlete_id=grp_ath.id,
+            discipline_key="mma_adults_monthly_1",
+            sport_type="MMA",
+            subscription_type="monthly",
+            start_date=datetime(2026, 5, 1, 0, 0, 0),
+            end_date=datetime(2026, 5, 31, 23, 59, 59),
+            is_active=True,
+            trainings_total=12,
+            trainings_remaining=8,
+        )
+    )
+    session.flush()
+
+    training_ind = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=slot_start,
+        coach_id=coach.id,
+        training_format="individual",
+        is_cancelled=False,
+    )
+    session.add(training_ind)
+    session.commit()
+
+    athletes, _ = fetch_athletes_for_training_slot(session, training_ind)
+    names = {a.full_name for a in athletes}
+    assert names == {"Морозов Егор Иванович"}
+
+    training_grp = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=datetime(2026, 5, 11, 20, 0, 0),
+        coach_id=coach.id,
+        training_format=None,
+        is_cancelled=False,
+    )
+    session.add(training_grp)
+    session.commit()
+
+    athletes_g, _ = fetch_athletes_for_training_slot(session, training_grp)
+    names_g = {a.full_name for a in athletes_g}
+    assert "Волков Алексей Сергеевич" in names_g
+    assert "Морозов Егор Иванович" not in names_g
+
+    session.close()
