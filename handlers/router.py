@@ -98,6 +98,7 @@ from handlers.attendance_handlers import (
     select_training_for_attendance,
     handle_attendance_athletes_page,
     handle_attendance_page_info,
+    handle_attendance_name_column,
     mark_attendance_start,
     handle_training_selection,
     execute_mark_attendance,
@@ -1162,6 +1163,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     registrar.register(
         CallbackQueryHandler(handle_attendance_page_info, pattern="^attpg_info$")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_attendance_name_column, pattern=r"^attnm_\d+_\d+$")
     )
     registrar.register(
         CallbackQueryHandler(

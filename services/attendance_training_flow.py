@@ -375,7 +375,8 @@ def build_step2_message_and_keyboard_rows(
         full = (athlete.full_name or "").strip()
         keyboard_rows.append(
             [
-                (_present_button_label_for_attendance_row(full), f"atmark_{tid}_{athlete.id}_1"),
+                (_name_only_button_label(full), f"attnm_{tid}_{athlete.id}"),
+                ("✅ Был", f"atmark_{tid}_{athlete.id}_1"),
                 ("❌ Не был", f"atmark_{tid}_{athlete.id}_0"),
             ]
         )
@@ -390,12 +391,8 @@ def build_step2_message_and_keyboard_rows(
         if nav_row:
             keyboard_rows.append(nav_row)
 
-    keyboard_rows.append(
-        [
-            ("🔙 К тренировкам на сегодня", "attendance_training_list"),
-            ("🏠 В меню", "back_to_menu_main"),
-        ]
-    )
+    keyboard_rows.append([("🔙 К тренировкам на сегодня", "attendance_training_list")])
+    keyboard_rows.append([("🏠 В меню", "back_to_menu_main")])
 
     return message, keyboard_rows
 
@@ -413,6 +410,19 @@ def parse_attendance_page_callback(data: str) -> Optional[Tuple[int, int]]:
     return int(left), int(right)
 
 
+def parse_attendance_name_column_callback(data: str) -> Optional[Tuple[int, int]]:
+    """attnm_{training_id}_{athlete_id} — колонка ФИО (без действия, только подсказка)."""
+    if not data.startswith("attnm_"):
+        return None
+    parts = data.split("_")
+    if len(parts) != 3 or parts[0] != "attnm":
+        return None
+    tid_s, aid_s = parts[1], parts[2]
+    if not tid_s.isdigit() or not aid_s.isdigit():
+        return None
+    return int(tid_s), int(aid_s)
+
+
 def parse_attendance_direct_mark_callback(data: str) -> Optional[Tuple[int, int, bool]]:
     """atmark_{training_id}_{athlete_id}_{0|1} — 1 был, 0 не был."""
     if not data.startswith("atmark_"):
@@ -428,13 +438,9 @@ def parse_attendance_direct_mark_callback(data: str) -> Optional[Tuple[int, int,
     return int(tid_s), int(aid_s), bit == "1"
 
 
-def _present_button_label_for_attendance_row(full_name: str, max_len: int = 64) -> str:
-    """Текст левой кнопки: «ФИО - ✅ Был» (лимит длины под Telegram)."""
-    suffix = " - ✅ Был"
+def _name_only_button_label(full_name: str, max_len: int = 28) -> str:
+    """Текст кнопки-колонки «ФИО» в ряду из трёх кнопок (узкая колонка)."""
     s = (full_name or "").strip()
-    budget = max_len - len(suffix)
-    if budget < 8:
-        budget = 8
-    if len(s) > budget:
-        s = s[: max(budget - 2, 1)] + ".."
-    return s + suffix
+    if len(s) <= max_len:
+        return s
+    return s[: max(max_len - 2, 4)] + ".."

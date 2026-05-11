@@ -16,6 +16,7 @@ from services.attendance_training_flow import (
     fetch_athletes_for_training_slot,
     format_today_trainings_count_ru,
     parse_attendance_direct_mark_callback,
+    parse_attendance_name_column_callback,
     parse_attendance_page_callback,
 )
 
@@ -42,6 +43,11 @@ def test_parse_attendance_direct_mark_callback_invalid():
     assert parse_attendance_direct_mark_callback("atmark_1_2") is None
     assert parse_attendance_direct_mark_callback("atmark_a_b_1") is None
     assert parse_attendance_direct_mark_callback("mark_present") is None
+
+
+def test_parse_attendance_name_column_callback():
+    assert parse_attendance_name_column_callback("attnm_10_20") == (10, 20)
+    assert parse_attendance_name_column_callback("attnm_x_1") is None
 
 
 def test_coach_training_access_error_admin_unrestricted():
@@ -100,11 +106,11 @@ def test_build_step2_pagination_nav_when_many_athletes():
     )
     # последняя строка перед «К тренировкам на сегодня» — навигация
     nav_found = any(
-        any("attpg_100_1" in cd for _, cd in row) for row in rows[:-1]
+        any("attpg_100_1" in cd for _, cd in row) for row in rows[:-2]
     )
     assert nav_found
-    bottom = rows[-1]
-    assert any(cd == "attendance_training_list" for _, cd in bottom)
+    assert rows[-2] == [("🔙 К тренировкам на сегодня", "attendance_training_list")]
+    assert rows[-1] == [("🏠 В меню", "back_to_menu_main")]
 
 
 def test_build_step2_no_nav_when_few_athletes():
@@ -118,10 +124,12 @@ def test_build_step2_no_nav_when_few_athletes():
     msg, rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
     assert "Шаг 2 из 2" in msg
     assert "Иванов Иван" in msg
-    assert rows[0][0][1] == "atmark_2_1_1" and rows[0][1][1] == "atmark_2_1_0"
-    assert "Иванов Иван - ✅ Был" == rows[0][0][0]
-    assert rows[0][1][0] == "❌ Не был"
-    assert not any("attpg_" in str(row) for row in rows[:-1])
+    assert rows[0][0] == ("Иванов Иван", "attnm_2_1")
+    assert rows[0][1] == ("✅ Был", "atmark_2_1_1")
+    assert rows[0][2] == ("❌ Не был", "atmark_2_1_0")
+    assert rows[-2] == [("🔙 К тренировкам на сегодня", "attendance_training_list")]
+    assert rows[-1] == [("🏠 В меню", "back_to_menu_main")]
+    assert not any("attpg_" in str(row) for row in rows[:-2])
 
 
 @pytest.mark.parametrize(

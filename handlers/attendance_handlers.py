@@ -139,6 +139,12 @@ async def handle_attendance_page_info(update: Update, context: ContextTypes.DEFA
     )
 
 
+async def handle_attendance_name_column(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    """Колонка «ФИО» в отметке посещения — не действие, только подсказка."""
+    query = update.callback_query
+    await query.answer("Нажмите «✅ Был» или «❌ Не был».", show_alert=False)
+
+
 async def _run_attendance_mark_query(
     query,
     context: ContextTypes.DEFAULT_TYPE,
