@@ -375,7 +375,7 @@ def build_step2_message_and_keyboard_rows(
         full = (athlete.full_name or "").strip()
         keyboard_rows.append(
             [
-                (_name_only_button_label(full), f"attnm_{tid}_{athlete.id}"),
+                (_surname_initials_button_label(full), f"attnm_{tid}_{athlete.id}"),
                 ("✅ Был", f"atmark_{tid}_{athlete.id}_1"),
                 ("❌ Не был", f"atmark_{tid}_{athlete.id}_0"),
             ]
@@ -438,9 +438,22 @@ def parse_attendance_direct_mark_callback(data: str) -> Optional[Tuple[int, int,
     return int(tid_s), int(aid_s), bit == "1"
 
 
-def _name_only_button_label(full_name: str, max_len: int = 28) -> str:
-    """Текст кнопки-колонки «ФИО» в ряду из трёх кнопок (узкая колонка)."""
-    s = (full_name or "").strip()
+def _surname_initials_button_label(full_name: str, max_len: int = 40) -> str:
+    """Фамилия и инициалы (как в списках): «Иванов И.П.» — компактно для кнопки."""
+    parts = [p for p in (full_name or "").strip().split() if p]
+    if not parts:
+        return "—"
+    if len(parts) == 1:
+        s = parts[0]
+    elif len(parts) == 2:
+        sur, first = parts[0], parts[1]
+        ini = f"{first[0].upper()}." if first else ""
+        s = f"{sur} {ini}".strip()
+    else:
+        sur, first, pat = parts[0], parts[1], parts[2]
+        i1 = f"{first[0].upper()}." if first else ""
+        i2 = f"{pat[0].upper()}." if pat else ""
+        s = f"{sur} {i1}{i2}".strip()
     if len(s) <= max_len:
         return s
     return s[: max(max_len - 2, 4)] + ".."

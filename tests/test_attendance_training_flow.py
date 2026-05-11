@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from database.models import Athlete, Base, Coach, SportType, Subscription, Training
 from services.attendance_training_flow import (
     ATTENDANCE_LIST_PAGE_SIZE,
+    _surname_initials_button_label,
     build_step2_message_and_keyboard_rows,
     coach_training_access_error,
     fetch_athletes_for_training_slot,
@@ -48,6 +49,12 @@ def test_parse_attendance_direct_mark_callback_invalid():
 def test_parse_attendance_name_column_callback():
     assert parse_attendance_name_column_callback("attnm_10_20") == (10, 20)
     assert parse_attendance_name_column_callback("attnm_x_1") is None
+
+
+def test_surname_initials_button_label():
+    assert _surname_initials_button_label("Морозов Егор Иванович") == "Морозов Е.И."
+    assert _surname_initials_button_label("Иванов Иван") == "Иванов И."
+    assert _surname_initials_button_label("Волков") == "Волков"
 
 
 def test_coach_training_access_error_admin_unrestricted():
@@ -120,11 +127,11 @@ def test_build_step2_no_nav_when_few_athletes():
         sport_type="Тайский Бокс",
         age_group="adults",
     )
-    athletes = [SimpleNamespace(id=1, full_name="Иванов Иван")]
+    athletes = [SimpleNamespace(id=1, full_name="Иванов Иван Петрович")]
     msg, rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
     assert "Шаг 2 из 2" in msg
-    assert "Иванов Иван" in msg
-    assert rows[0][0] == ("Иванов Иван", "attnm_2_1")
+    assert "Иванов Иван Петрович" in msg
+    assert rows[0][0] == ("Иванов И.П.", "attnm_2_1")
     assert rows[0][1] == ("✅ Был", "atmark_2_1_1")
     assert rows[0][2] == ("❌ Не был", "atmark_2_1_0")
     assert rows[-2] == [("🔙 К тренировкам на сегодня", "attendance_training_list")]
