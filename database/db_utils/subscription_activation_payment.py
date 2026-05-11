@@ -53,6 +53,23 @@ def record_payment_on_subscription_activation(
     if amount is None:
         return
     kind = tariff_kind_for_subscription_type(subscription.subscription_type)
+    # Договорённость домена: активация = одна оплата.
+    # Если запись уже есть для этого абонемента и типа оплаты — обновляем её.
+    existing = (
+        session.query(SubscriptionPayment)
+        .filter(
+            SubscriptionPayment.subscription_id == subscription.id,
+            SubscriptionPayment.payment_kind == kind,
+        )
+        .order_by(SubscriptionPayment.id.asc())
+        .first()
+    )
+    if existing is not None:
+        existing.amount_rubles = amount
+        existing.paid_at = paid_at
+        existing.note = "Активация абонемента"
+        existing.recorded_by_telegram_id = recorded_by_telegram_id
+        return
     session.add(
         SubscriptionPayment(
             subscription_id=subscription.id,

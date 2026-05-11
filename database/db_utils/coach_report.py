@@ -349,12 +349,15 @@ def _revenue_in_period(
     period_start: datetime,
     period_end_excl: datetime,
 ) -> Tuple[int, int]:
-    """Сумма оплат (₽) и число платёжных записей за период по полю paid_at."""
+    """Сумма оплат (₽) и число оплат за период по уникальным subscription_id."""
     if not athlete_ids:
         return 0, 0
 
-    total = (
-        session.query(func.coalesce(func.sum(SubscriptionPayment.amount_rubles), 0))
+    base = (
+        session.query(
+            SubscriptionPayment.subscription_id.label("subscription_id"),
+            func.max(SubscriptionPayment.amount_rubles).label("amount_rubles"),
+        )
         .select_from(SubscriptionPayment)
         .join(Subscription, Subscription.id == SubscriptionPayment.subscription_id)
         .join(Athlete, Athlete.id == Subscription.athlete_id)
@@ -365,21 +368,12 @@ def _revenue_in_period(
         )
     )
     if coach_sport:
-        total = total.filter(_subscription_sport_match_sql(coach_sport))
-    nq = (
-        session.query(func.count(SubscriptionPayment.id))
-        .select_from(SubscriptionPayment)
-        .join(Subscription, Subscription.id == SubscriptionPayment.subscription_id)
-        .join(Athlete, Athlete.id == Subscription.athlete_id)
-        .filter(
-            Subscription.athlete_id.in_(athlete_ids),
-            SubscriptionPayment.paid_at >= period_start,
-            SubscriptionPayment.paid_at < period_end_excl,
-        )
-    )
-    if coach_sport:
-        nq = nq.filter(_subscription_sport_match_sql(coach_sport))
-    return int(total.scalar() or 0), int(nq.scalar() or 0)
+        base = base.filter(_subscription_sport_match_sql(coach_sport))
+    base = base.group_by(SubscriptionPayment.subscription_id).subquery()
+
+    total = session.query(func.coalesce(func.sum(base.c.amount_rubles), 0)).scalar() or 0
+    nq = session.query(func.count(base.c.subscription_id)).scalar() or 0
+    return int(total), int(nq)
 
 
 def _payment_counts_by_kind(
@@ -389,13 +383,13 @@ def _payment_counts_by_kind(
     period_start: datetime,
     period_end_excl: datetime,
 ) -> Tuple[int, int, int]:
-    """Число оплат за период: месячный абонемент, разовый, индивидуальная тренировка (по payment_kind или типу абонемента)."""
+    """Число оплат за период (уникальных subscription_id): monthly/single/individual."""
     if not athlete_ids:
         return 0, 0, 0
 
     def base():
         q = (
-            session.query(SubscriptionPayment)
+            session.query(func.distinct(SubscriptionPayment.subscription_id))
             .join(Subscription, Subscription.id == SubscriptionPayment.subscription_id)
             .join(Athlete, Athlete.id == Subscription.athlete_id)
             .filter(
