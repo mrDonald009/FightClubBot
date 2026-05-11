@@ -2378,7 +2378,38 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     if len(subs) > 10:
                         message += f"    ... и еще {len(subs) - 10}\n"
                 else:
-                    message += f"  Нет записанных спортсменов\n"
+                    # Fallback: если по активным абонементам никого нет, но по слоту уже есть
+                    # фактические отметки Attendance — показываем их в календаре.
+                    slot_training_ids = individual_slot_training_ids(session, training)
+                    slot_atts = (
+                        session.query(Attendance)
+                        .filter(Attendance.training_id.in_(slot_training_ids))
+                        .order_by(Attendance.created_at.asc())
+                        .all()
+                    )
+                    if slot_atts:
+                        by_athlete = {}
+                        for att in slot_atts:
+                            by_athlete[att.athlete_id] = att
+                        fallback_atts = list(by_athlete.values())
+                        athlete_ids = [att.athlete_id for att in fallback_atts]
+                        athletes_map = {
+                            a.id: a
+                            for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
+                        }
+                        message += f"  <b>Записано спортсменов: {len(fallback_atts)}</b>\n"
+                        for att in fallback_atts[:10]:
+                            ath = athletes_map.get(att.athlete_id)
+                            if not ath:
+                                continue
+                            status_icon = attendance_icon_for_slot(
+                                att, training.training_date, now=now
+                            )
+                            message += f"    {status_icon} {html.escape(ath.full_name)}\n"
+                        if len(fallback_atts) > 10:
+                            message += f"    ... и еще {len(fallback_atts) - 10}\n"
+                    else:
+                        message += f"  Нет записанных спортсменов\n"
 
                 message += "\n"
         else:

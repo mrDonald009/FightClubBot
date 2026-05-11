@@ -2469,6 +2469,8 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 .limit(80)
                 .all()
             )
+            if getattr(athlete, "created_by", None):
+                trainings_group = [t for t in trainings_group if t.coach_id == athlete.created_by]
             # Индивидуальные слоты: в trainings.age_group часто «adults» для всех;
             # отбор по факту абонемента individual с тем же start_date, что у слота.
             has_individual_sub = exists().where(
@@ -2494,6 +2496,8 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 .limit(80)
                 .all()
             )
+            if getattr(athlete, "created_by", None):
+                trainings_indiv = [t for t in trainings_indiv if t.coach_id == athlete.created_by]
             all_slots = dedupe_individual_trainings_by_slot(trainings_group + trainings_indiv)
             # Показываем не только завершённые, но и текущие слоты: отмеченные статусы видны сразу.
             visible_slots = sorted(all_slots, key=lambda tr: tr.training_date, reverse=True)[:45]
