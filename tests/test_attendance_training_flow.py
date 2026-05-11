@@ -80,8 +80,8 @@ def test_build_step2_pagination_nav_when_many_athletes():
     msg, rows = build_step2_message_and_keyboard_rows(
         training, athletes, {}, page=0, page_size=ATTENDANCE_LIST_PAGE_SIZE
     )
-    assert "Спортсменов в списке: <b>25</b>" in msg
-    assert "Строк в базе посещений" in msg
+    assert "04.04.2026 12:30" in msg
+    assert "Шаг 2 из 2" in msg
     # последняя строка перед «К тренировкам на сегодня» — навигация
     nav_found = any(
         any("attpg_100_1" in cd for _, cd in row) for row in rows[:-1]
@@ -100,7 +100,7 @@ def test_build_step2_no_nav_when_few_athletes():
     )
     athletes = [SimpleNamespace(id=1, full_name="Иванов Иван")]
     msg, rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
-    assert "Спортсменов в списке: <b>1</b>" in msg
+    assert "Шаг 2 из 2" in msg
     assert not any("attpg_" in str(row) for row in rows[:-1])
 
 

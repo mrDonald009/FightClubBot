@@ -16,12 +16,7 @@ from database.db_utils.training_slots import TRAINING_FORMAT_INDIVIDUAL
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow
-from utils.attendance_display import (
-    attendance_icon_for_training,
-    is_effective_absent_no_row,
-    is_effective_present,
-    is_pending_unmarked,
-)
+from utils.attendance_display import attendance_icon_for_training
 
 # Размер страницы списка спортсменов на шаге 2 (inline-кнопки Telegram)
 ATTENDANCE_LIST_PAGE_SIZE = 20
@@ -343,24 +338,6 @@ def build_step2_message_and_keyboard_rows(
     """
     total_count = len(athletes)
     now = now_moscow()
-    attended_count = sum(
-        1 for a in athletes if is_effective_present(attendance_map.get(a.id))
-    )
-    absent_count = sum(
-        1
-        for a in athletes
-        if is_effective_absent_no_row(
-            attendance_map.get(a.id), training.training_date, now=now
-        )
-    )
-    pending_count = sum(
-        1
-        for a in athletes
-        if is_pending_unmarked(
-            attendance_map.get(a.id), training.training_date, now=now
-        )
-    )
-    rows_in_db = len(attendance_map)
 
     age_group_ru = "детская группа" if training.age_group == "children" else "взрослая группа"
     parts = [
@@ -371,12 +348,7 @@ def build_step2_message_and_keyboard_rows(
     parts.extend(
         [
             f"📅 <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b> — "
-            f"{html.escape(training.sport_type)}, {age_group_ru}\n",
-            f"👥 Спортсменов в списке: <b>{total_count}</b> | "
-            f"Строк в базе посещений: <b>{rows_in_db}</b> | "
-            f"Не отмечено (в срок 24ч после пары): <b>{pending_count}</b>\n",
-            f"✅ Были: <b>{attended_count}</b> | ❌ Не были: <b>{absent_count}</b> "
-            f"<i>(включая без записи в срок)</i>\n\n",
+            f"{html.escape(training.sport_type)}, {age_group_ru}\n\n",
             "<b>Шаг 2 из 2</b> — нажмите на фамилию, затем «был» или «не был».",
         ]
     )
