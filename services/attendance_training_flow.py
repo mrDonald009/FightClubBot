@@ -382,7 +382,21 @@ def build_step2_message_and_keyboard_rows(
     start = page * page_size
     chunk = athletes[start : start + page_size]
 
-    age_group_ru = "детская группа" if training.age_group == "children" else "взрослая группа"
+    is_individual_slot = (
+        (getattr(training, "training_format", None) or "").strip().lower()
+        == TRAINING_FORMAT_INDIVIDUAL
+    )
+    if is_individual_slot:
+        slot_title = (
+            f"📅 <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b> — "
+            f"{html.escape(training.sport_type)} — Индивидуальная\n\n"
+        )
+    else:
+        age_group_ru = "детская группа" if training.age_group == "children" else "взрослая группа"
+        slot_title = (
+            f"📅 <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b> — "
+            f"{html.escape(training.sport_type)}, {age_group_ru}\n\n"
+        )
     parts = [
         "📝 <b>ОТМЕТКА ПОСЕЩЕНИЯ</b>\n\n",
     ]
@@ -390,8 +404,7 @@ def build_step2_message_and_keyboard_rows(
         parts.append(flash_html + "\n\n")
     parts.extend(
         [
-            f"📅 <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b> — "
-            f"{html.escape(training.sport_type)}, {age_group_ru}\n\n",
+            slot_title,
             "<b>Шаг 2 из 2</b> — у каждого из списка ниже нажмите «Был» или «Не был».",
         ]
     )

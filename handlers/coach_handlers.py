@@ -1994,10 +1994,16 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
             slot_end = training_end_time(slot_start)
             is_live = slot_start <= now <= slot_end
             prefix = "" if is_live else "🔒 "
-            button_text = (
-                f"{prefix}🕒 {slot.training_datetime.strftime('%H:%M')} | "
-                f"{slot.sport_type} ({age_group_ru}) — {format_label}"
-            )
+            if slot.is_individual_format:
+                button_text = (
+                    f"{prefix}🕒 {slot.training_datetime.strftime('%H:%M')} | "
+                    f"{slot.sport_type} — {format_label}"
+                )
+            else:
+                button_text = (
+                    f"{prefix}🕒 {slot.training_datetime.strftime('%H:%M')} | "
+                    f"{slot.sport_type} ({age_group_ru}) — {format_label}"
+                )
             if is_live:
                 callback_data = (
                     f"select_mark_training_virtual_{slot.virtual_token}"
@@ -2314,9 +2320,14 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     == TRAINING_FORMAT_INDIVIDUAL
                 )
                 slot_suffix = " — Индивидуальная" if is_individual_slot else " — Групповая"
-                message += (
-                    f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
-                )
+                if is_individual_slot:
+                    message += (
+                        f"• <b>{time_str}</b> - {training.sport_type}{slot_suffix}\n"
+                    )
+                else:
+                    message += (
+                        f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
+                    )
 
                 training_date_only = training.training_date.date()
                 subs_q = (
