@@ -408,3 +408,59 @@ def test_report_excludes_cancelled_training_attendance():
     assert rep.payment_count_single == 0
     assert rep.payment_count_individual == 0
     assert rep.estimated_revenue_if_current_env_rub == 0
+
+
+def test_report_deduplicates_payments_per_subscription_in_period():
+    """Активация = одна оплата: дубли строк оплаты одного абонемента не раздувают отчёт."""
+    s, coach = _coach_mma_session()
+    y, m = 2026, 5
+
+    a = Athlete(
+        full_name="Индивидуал",
+        sport_type="MMA",
+        age_group="adults",
+        created_by=coach.id,
+        created_at=datetime(2026, 4, 1),
+    )
+    s.add(a)
+    s.flush()
+    sub = Subscription(
+        athlete_id=a.id,
+        discipline_key="mma_ind_may",
+        sport_type="MMA",
+        subscription_type="individual",
+        is_active=True,
+        start_date=datetime(2026, 5, 11, 14, 0, 0),
+        end_date=datetime(2026, 5, 11, 15, 30, 0),
+        created_at=datetime(2026, 5, 11, 14, 0, 0),
+    )
+    s.add(sub)
+    s.flush()
+
+    # Исторический дубль одной и той же оплаты в пределах месяца.
+    s.add(
+        SubscriptionPayment(
+            subscription_id=sub.id,
+            amount_rubles=3000,
+            paid_at=datetime(2026, 5, 11, 14, 0, 0),
+            payment_kind="individual_training",
+        )
+    )
+    s.add(
+        SubscriptionPayment(
+            subscription_id=sub.id,
+            amount_rubles=3000,
+            paid_at=datetime(2026, 5, 11, 14, 0, 1),
+            payment_kind="individual_training",
+        )
+    )
+    s.commit()
+
+    rep = build_coach_period_report(s, coach, y, m)
+    s.close()
+
+    assert rep.revenue_rubles == 3000
+    assert rep.payment_records_in_period == 1
+    assert rep.payment_count_monthly == 0
+    assert rep.payment_count_single == 0
+    assert rep.payment_count_individual == 1
