@@ -12,6 +12,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session as OrmSession
 
 from database.db_utils import get_user_role
+from database.db_utils.training_slots import TRAINING_FORMAT_INDIVIDUAL
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow
@@ -48,6 +49,7 @@ class TodaySlotDisplay:
     sport_type: str
     age_group: str
     training_datetime: datetime
+    is_individual_format: bool = False
 
 
 def get_coach_sport_type_name(user: Any) -> Optional[str]:
@@ -140,6 +142,10 @@ def build_today_attendance_slots(
                     sport_type=t.sport_type,
                     age_group=t.age_group,
                     training_datetime=t.training_date,
+                    is_individual_format=(
+                        (getattr(t, "training_format", None) or "").strip().lower()
+                        == TRAINING_FORMAT_INDIVIDUAL
+                    ),
                 )
             )
         for sport_type_name, schedule_map in TrainingManager.TRAINING_SCHEDULE.items():
@@ -181,6 +187,10 @@ def build_today_attendance_slots(
                     sport_type=t.sport_type,
                     age_group=t.age_group,
                     training_datetime=t.training_date,
+                    is_individual_format=(
+                        (getattr(t, "training_format", None) or "").strip().lower()
+                        == TRAINING_FORMAT_INDIVIDUAL
+                    ),
                 )
             )
 

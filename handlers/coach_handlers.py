@@ -1948,9 +1948,10 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = []
         for slot in slot_rows:
             age_group_ru = "Дети" if slot.age_group == "children" else "Взрослые"
+            format_label = "Индивидуальная" if slot.is_individual_format else "Групповая"
             button_text = (
                 f"🕒 {slot.training_datetime.strftime('%H:%M')} | "
-                f"{slot.sport_type} ({age_group_ru})"
+                f"{slot.sport_type} ({age_group_ru}) — {format_label}"
             )
             callback_data = (
                 f"select_mark_training_virtual_{slot.virtual_token}"
