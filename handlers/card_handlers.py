@@ -2476,7 +2476,8 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                     Subscription.athlete_id == athlete_id,
                     Subscription.sport_type == Training.sport_type,
                     Subscription.subscription_type == "individual",
-                    Subscription.start_date == Training.training_date,
+                    func.strftime("%Y-%m-%d %H:%M", Subscription.start_date)
+                    == func.strftime("%Y-%m-%d %H:%M", Training.training_date),
                 )
             )
             trainings_indiv = (

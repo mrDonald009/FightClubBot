@@ -309,9 +309,10 @@ def fetch_athletes_for_training_slot(
     # Как в «Мой календарь»: индивидуальный слот — только абонемент individual с тем же началом;
     # групповой — без individual (иначе monthly попадает на все слоты дня).
     if is_individual_slot:
+        slot_key = training.training_date.strftime("%Y-%m-%d %H:%M")
         athletes_query = athletes_query.filter(
             Subscription.subscription_type == "individual",
-            Subscription.start_date == training.training_date,
+            func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
         )
     else:
         athletes_query = athletes_query.filter(
