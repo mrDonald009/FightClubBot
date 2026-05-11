@@ -2437,10 +2437,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         message = f"📅 <b>ИСТОРИЯ ПОСЕЩЕНИЙ</b>\n\n"
         message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
-        message += (
-            "<i>✅ Был · ❌ Не был · ⏳ Не отмечено (пара ещё не закончилась или нет строки в базе); "
-            "после окончания пары без отметки тренера — ❌ Не был (в т.ч. автоматически)</i>\n\n"
-        )
+        message += "\n"
 
         now = now_moscow()
         max_lines = 28
@@ -2536,7 +2533,11 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                     return None
 
                 history_changed = False
-                for t in visible_slots:
+                ordered_slots = sorted(visible_slots, key=lambda tr: tr.training_date)
+                if len(ordered_slots) > max_lines:
+                    ordered_slots = ordered_slots[-max_lines:]
+
+                for t in ordered_slots:
                     att = _attendance_for_slot(t)
                     training_date = t.training_date.strftime("%d.%m.%Y %H:%M")
                     icon = attendance_icon_for_training(att, t, now=now)
@@ -2585,56 +2586,35 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                             vh.updated_at = now
                             history_changed = True
 
-                    line = f"{icon} <b>{training_date}</b>\n   {label}\n"
-                    if att is not None:
-                        marked = att.created_at.strftime("%d.%m.%Y") if att.created_at else "—"
-                        line += f"   Отмечено в базе: {marked}\n"
-                        if att.was_restored:
-                            line += "   🔄 Восстановлено\n"
-                    rows.append(line + "\n")
+                    is_individual_slot = (
+                        (getattr(t, "training_format", None) or "").strip().lower()
+                        == TRAINING_FORMAT_INDIVIDUAL
+                    )
+                    if is_individual_slot:
+                        slot_desc = (
+                            f"{training_date} — {html.escape(t.sport_type)} — Индивидуальная"
+                        )
+                    else:
+                        age_group_ru = "Дети" if t.age_group == "children" else "Взрослые"
+                        slot_desc = (
+                            f"{training_date} — {html.escape(t.sport_type)} ({age_group_ru}) — Групповая"
+                        )
+
+                    if icon == "✅":
+                        status_text = "✅ Был"
+                    elif icon == "❌":
+                        status_text = "❌ Не был"
+                    else:
+                        status_text = "⏳ Не отмечено"
+
+                    rows.append(f"{slot_desc} — {status_text}\n")
                 if history_changed:
                     session.commit()
 
-        covered_tids = set()
-        for tr in visible_slots:
-            covered_tids.update(individual_slot_training_ids(session, tr))
-
-        # Старые записи вне окна слотов (другая группа/вид спорта или до lookback)
-        extra = (
-            session.query(Attendance)
-            .options(joinedload(Attendance.training))
-            .filter_by(athlete_id=athlete_id)
-            .order_by(Attendance.created_at.desc())
-            .limit(25)
-            .all()
-        )
-        archive_lines: List[str] = []
-        for att in extra:
-            tid = att.training_id
-            if tid and tid in covered_tids:
-                continue
-            if att.training:
-                training_date = att.training.training_date.strftime("%d.%m.%Y %H:%M")
-            else:
-                training_date = "—"
-            status = "✅" if att.attended else "❌"
-            marked = att.created_at.strftime("%d.%m.%Y") if att.created_at else "—"
-            line = f"{status} <b>{training_date}</b>\n   Отмечено: {marked}\n"
-            if att.was_restored:
-                line += "   🔄 Восстановлено\n"
-            archive_lines.append(line + "\n")
-        if archive_lines:
-            rows.append(
-                "\n<b>Другие записи в базе</b> "
-                "<i>(другая дисциплина/группа или старше окна 120 дней)</i>:\n\n"
-            )
-            rows.extend(archive_lines)
-
         if not rows:
-            message += "📭 Нет тренировок по текущему виду спорта и группе и нет сохранённых посещений.\n"
+            message += "📭 Нет записей посещений.\n"
         else:
-            message += f"Последние записи (до {max_lines} строк):\n\n"
-            for line in rows[:max_lines]:
+            for line in rows:
                 message += line
 
         keyboard = [
