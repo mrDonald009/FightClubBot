@@ -26,11 +26,14 @@ from database.db_utils import (
 from database.db_utils.training_slots import (
     INDIVIDUAL_TRAINING_AGE_GROUP_STORED,
     TRAINING_FORMAT_INDIVIDUAL,
+    dedupe_individual_trainings_by_slot,
     individual_slot_conflicts,
+    individual_slot_training_ids,
     iter_allowed_individual_starts,
 )
 from typing import List, Optional, Union
 
+from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import joinedload
 import html
 from utils.attendance_display import (
@@ -2446,7 +2449,9 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         if athlete.sport_type and athlete.age_group:
             lookback = now - timedelta(days=120)
-            trainings = (
+            _fit = TRAINING_FORMAT_INDIVIDUAL
+            # Групповые слоты: совпадение вида спорта и возрастной группы, без individual.
+            trainings_group = (
                 session.query(Training)
                 .filter(
                     Training.sport_type == athlete.sport_type,
@@ -2454,26 +2459,67 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                     Training.is_cancelled.is_(False),
                     Training.training_date >= lookback,
                     Training.training_date <= now,
+                    or_(
+                        Training.training_format.is_(None),
+                        func.trim(Training.training_format) == "",
+                        func.lower(func.trim(Training.training_format)) != _fit,
+                    ),
                 )
                 .order_by(Training.training_date.desc())
                 .limit(80)
                 .all()
             )
-            completed = [t for t in trainings if training_end_time(t.training_date) <= now][:45]
+            # Индивидуальные слоты: в trainings.age_group часто «adults» для всех;
+            # отбор по факту абонемента individual с тем же start_date, что у слота.
+            has_individual_sub = exists().where(
+                and_(
+                    Subscription.athlete_id == athlete_id,
+                    Subscription.sport_type == Training.sport_type,
+                    Subscription.subscription_type == "individual",
+                    Subscription.start_date == Training.training_date,
+                )
+            )
+            trainings_indiv = (
+                session.query(Training)
+                .filter(
+                    Training.sport_type == athlete.sport_type,
+                    Training.is_cancelled.is_(False),
+                    Training.training_date >= lookback,
+                    Training.training_date <= now,
+                    has_individual_sub,
+                    func.lower(func.coalesce(func.trim(Training.training_format), "")) == _fit,
+                )
+                .order_by(Training.training_date.desc())
+                .limit(80)
+                .all()
+            )
+            all_slots = dedupe_individual_trainings_by_slot(trainings_group + trainings_indiv)
+            completed = [t for t in all_slots if training_end_time(t.training_date) <= now]
+            completed.sort(key=lambda tr: tr.training_date, reverse=True)
+            completed = completed[:45]
             if completed:
-                tids = [t.id for t in completed]
+                tids_flat = set()
+                for tr in completed:
+                    tids_flat.update(individual_slot_training_ids(session, tr))
                 atts = (
                     session.query(Attendance)
                     .options(joinedload(Attendance.training))
                     .filter(
                         Attendance.athlete_id == athlete_id,
-                        Attendance.training_id.in_(tids),
+                        Attendance.training_id.in_(list(tids_flat)),
                     )
                     .all()
                 )
                 att_by_tid = {a.training_id: a for a in atts}
+
+                def _attendance_for_slot(tr: Training):
+                    for sid in individual_slot_training_ids(session, tr):
+                        if sid in att_by_tid:
+                            return att_by_tid[sid]
+                    return None
+
                 for t in completed:
-                    att = att_by_tid.get(t.id)
+                    att = _attendance_for_slot(t)
                     training_date = t.training_date.strftime("%d.%m.%Y %H:%M")
                     icon = attendance_icon_for_training(att, t, now=now)
                     label = attendance_label_ru_for_training(
@@ -2487,7 +2533,9 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                             line += "   🔄 Восстановлено\n"
                     rows.append(line + "\n")
 
-        covered_tids = {t.id for t in completed}
+        covered_tids = set()
+        for tr in completed:
+            covered_tids.update(individual_slot_training_ids(session, tr))
 
         # Старые записи вне окна слотов (другая группа/вид спорта или до lookback)
         extra = (
