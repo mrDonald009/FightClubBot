@@ -24,6 +24,7 @@ from database.db_utils import (
     training_end_time,
 )
 from database.db_utils.training_slots import (
+    INDIVIDUAL_TRAINING_AGE_GROUP_STORED,
     TRAINING_FORMAT_INDIVIDUAL,
     individual_slot_conflicts,
     iter_allowed_individual_starts,
@@ -181,17 +182,18 @@ async def _finalize_subscription_activation(
             session.query(Training)
             .filter(
                 Training.sport_type == sport_type,
-                Training.age_group == age_group,
                 Training.training_date == start_date,
                 Training.is_cancelled.is_(False),
                 Training.training_format == TRAINING_FORMAT_INDIVIDUAL,
+                Training.coach_id == coach_id,
             )
+            .order_by(Training.id.asc())
             .first()
         )
         if not training:
             training = Training(
                 sport_type=sport_type,
-                age_group=age_group,
+                age_group=INDIVIDUAL_TRAINING_AGE_GROUP_STORED,
                 training_date=start_date,
                 is_cancelled=False,
                 coach_id=coach_id,

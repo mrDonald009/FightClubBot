@@ -9,8 +9,11 @@ from database.db_utils import (
 )
 import database.db_utils as db_utils_pkg
 from database.db_utils.training_slots import (
+    INDIVIDUAL_TRAINING_AGE_GROUP_STORED,
     TRAINING_FORMAT_INDIVIDUAL,
+    dedupe_individual_trainings_by_slot,
     individual_slot_conflicts,
+    individual_slot_training_ids,
     iter_allowed_individual_starts,
 )
 from database.db_utils.subscription_activation_payment import (
@@ -1270,17 +1273,18 @@ async def _finalize_add_athlete_from_selected_date(
                 session.query(Training)
                 .filter(
                     Training.sport_type == sport_type,
-                    Training.age_group == age_group,
                     Training.training_date == start_date,
                     Training.is_cancelled.is_(False),
                     Training.training_format == TRAINING_FORMAT_INDIVIDUAL,
+                    Training.coach_id == coach_id,
                 )
+                .order_by(Training.id.asc())
                 .first()
             )
             if not training:
                 training = Training(
                     sport_type=sport_type,
-                    age_group=age_group,
+                    age_group=INDIVIDUAL_TRAINING_AGE_GROUP_STORED,
                     training_date=start_date,
                     is_cancelled=False,
                     coach_id=coach_id,
@@ -1978,7 +1982,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cnt = format_today_trainings_count_ru(len(slot_rows))
             message += (
                 f"Сегодня в списке: <b>{cnt}</b>.\n\n"
-                "<b>Шаг 1 из 2</b> — выберите тренировку по времени и группе:\n"
+                "<b>Шаг 1 из 2</b> — выберите тренировку по времени (групповая / индивидуальная):\n"
             )
         else:
             message += (
@@ -2111,6 +2115,7 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
         if sport_type_name:
             query = query.filter(Training.sport_type == sport_type_name)
         trainings = query.order_by(Training.training_date.asc()).all()
+        trainings = dedupe_individual_trainings_by_slot(trainings)
 
         # Группируем тренировки по датам
         trainings_by_date = {}
@@ -2306,6 +2311,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
         if sport_type_name:
             query_filter = query_filter.filter(Training.sport_type == sport_type_name)
         trainings = query_filter.order_by(Training.training_date.asc()).all()
+        trainings = dedupe_individual_trainings_by_slot(trainings)
 
         date_str = selected_date.strftime("%d.%m.%Y")
         message = f"<b>📅 {date_str}</b>\n\n"
@@ -2336,7 +2342,6 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     .filter(
                         Subscription.is_active == True,
                         Subscription.sport_type == training.sport_type,
-                        Athlete.age_group == training.age_group,
                         func.date(Subscription.start_date) <= training_date_only,
                         func.date(Subscription.end_date) >= training_date_only,
                     )
@@ -2349,7 +2354,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         Subscription.start_date == training.training_date,
                     )
                 else:
-                    subs_q = subs_q.filter(
+                    subs_q = subs_q.filter(Athlete.age_group == training.age_group).filter(
                         or_(
                             Subscription.subscription_type.is_(None),
                             Subscription.subscription_type != "individual",
@@ -2365,10 +2370,11 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
                     }
                     sub_ids = [s.id for s in subs]
+                    slot_training_ids = individual_slot_training_ids(session, training)
                     att_by_sub = {
                         a.subscription_id: a
                         for a in session.query(Attendance).filter(
-                            Attendance.training_id == training.id,
+                            Attendance.training_id.in_(slot_training_ids),
                             Attendance.subscription_id.in_(sub_ids),
                         ).all()
                     }

@@ -12,6 +12,7 @@ from database.db_utils import (
     is_training_in_athlete_personal_freeze,
     is_training_in_global_freeze,
 )
+from database.db_utils.training_slots import individual_slot_training_ids
 from utils.subscription_resolve import (
     active_subscriptions_all,
     active_subscription_for_training,
@@ -234,10 +235,15 @@ async def _run_attendance_mark_query(
         )
         return "__handled__"
 
-    existing_attendance = session.query(Attendance).filter(
-        Attendance.athlete_id == athlete_id,
-        Attendance.training_id == training_id,
-    ).first()
+    slot_training_ids = individual_slot_training_ids(session, training)
+    existing_attendance = (
+        session.query(Attendance)
+        .filter(
+            Attendance.athlete_id == athlete_id,
+            Attendance.training_id.in_(slot_training_ids),
+        )
+        .first()
+    )
 
     if existing_attendance:
         old_status = existing_attendance.attended
@@ -297,9 +303,10 @@ async def _run_attendance_mark_query(
             "present" if attended else "absent",
         )
     else:
+        canonical_training_id = min(slot_training_ids)
         attendance = Attendance(
             athlete_id=athlete_id,
-            training_id=training_id,
+            training_id=canonical_training_id,
             subscription_id=subscription.id,
             attended=attended,
             marked_by=query.from_user.id,

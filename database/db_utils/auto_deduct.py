@@ -5,7 +5,10 @@ from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow, training_end_time
 
 from .global_freeze import is_training_in_global_freeze
-from .training_slots import TRAINING_FORMAT_INDIVIDUAL
+from .training_slots import (
+    TRAINING_FORMAT_INDIVIDUAL,
+    individual_slot_training_ids,
+)
 
 
 def _deduct_individual_subscription(
@@ -15,19 +18,22 @@ def _deduct_individual_subscription(
     if not subscription.start_date or not subscription.end_date:
         return False
     sport = subscription.sport_type or athlete.sport_type
-    if not sport or not athlete.age_group:
+    if not sport:
         return False
-    training_row = (
+    coach_id = getattr(athlete, "created_by", None)
+    q = (
         session.query(Training)
         .filter(
             Training.training_format == TRAINING_FORMAT_INDIVIDUAL,
             Training.sport_type == sport,
-            Training.age_group == athlete.age_group,
             Training.training_date == subscription.start_date,
             Training.is_cancelled.is_(False),
         )
-        .first()
+        .order_by(Training.id.asc())
     )
+    if coach_id:
+        q = q.filter(Training.coach_id == coach_id)
+    training_row = q.first()
     if not training_row:
         return False
     t_end = training_end_time(training_row.training_date)
@@ -37,12 +43,14 @@ def _deduct_individual_subscription(
         return False
     if training_row.training_date < subscription.start_date or t_end > subscription.end_date:
         return False
+    slot_tids = individual_slot_training_ids(session, training_row)
+    canonical_tid = min(slot_tids)
     existing_attendance = (
         session.query(Attendance)
-        .filter_by(
-            athlete_id=athlete.id,
-            training_id=training_row.id,
-            subscription_id=subscription.id,
+        .filter(
+            Attendance.athlete_id == athlete.id,
+            Attendance.subscription_id == subscription.id,
+            Attendance.training_id.in_(slot_tids),
         )
         .first()
     )
@@ -51,7 +59,7 @@ def _deduct_individual_subscription(
     session.add(
         Attendance(
             athlete_id=athlete.id,
-            training_id=training_row.id,
+            training_id=canonical_tid,
             subscription_id=subscription.id,
             attended=False,
             marked_by=None,

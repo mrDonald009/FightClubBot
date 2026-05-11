@@ -284,3 +284,72 @@ def test_fetch_athletes_individual_slot_only_matching_subscription():
     assert "Морозов Егор Иванович" not in names_g
 
     session.close()
+
+
+@pytest.mark.db
+def test_fetch_athletes_individual_slot_lists_all_ages_same_start():
+    """Индивидуальный слот: спортсмены дети и взрослые с тем же start_date попадают в один список."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    st = SportType(name="MMA", display_name="MMA")
+    session.add(st)
+    session.flush()
+    coach = Coach(telegram_id=9002, sport_type_id=st.id, sport_type="MMA")
+    session.add(coach)
+    session.flush()
+
+    slot_start = datetime(2026, 5, 11, 14, 0, 0)
+    slot_end = slot_start + timedelta(hours=1, minutes=30)
+
+    adult = Athlete(
+        full_name="Попов Алексей Сергеевич",
+        age_group="adults",
+        sport_type="MMA",
+        created_by=coach.id,
+    )
+    child = Athlete(
+        full_name="Морозов Никита Иванович",
+        age_group="children",
+        sport_type="MMA",
+        created_by=coach.id,
+    )
+    session.add_all([adult, child])
+    session.flush()
+
+    for ath, dk in (
+        (adult, "mma_adults_ind_slot"),
+        (child, "mma_children_ind_slot"),
+    ):
+        session.add(
+            Subscription(
+                athlete_id=ath.id,
+                discipline_key=dk,
+                sport_type="MMA",
+                subscription_type="individual",
+                start_date=slot_start,
+                end_date=slot_end,
+                is_active=True,
+                trainings_total=1,
+                trainings_remaining=1,
+            )
+        )
+    session.flush()
+
+    training = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=slot_start,
+        coach_id=coach.id,
+        training_format="individual",
+        is_cancelled=False,
+    )
+    session.add(training)
+    session.commit()
+
+    athletes, _ = fetch_athletes_for_training_slot(session, training)
+    names = {a.full_name for a in athletes}
+    assert names == {"Попов Алексей Сергеевич", "Морозов Никита Иванович"}
+
+    session.close()

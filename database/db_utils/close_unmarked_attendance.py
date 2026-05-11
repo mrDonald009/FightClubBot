@@ -43,7 +43,11 @@ def lock_attendances_for_ended_trainings(session: Session) -> int:
 
 from .freeze_personal import is_training_in_athlete_personal_freeze
 from .global_freeze import is_training_in_global_freeze
-from .training_slots import TRAINING_FORMAT_INDIVIDUAL
+from .training_slots import (
+    TRAINING_FORMAT_INDIVIDUAL,
+    dedupe_individual_trainings_by_slot,
+    individual_slot_training_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +64,6 @@ def _close_unmarked_individual_training(
             Subscription.subscription_type == "individual",
             Subscription.start_date == training.training_date,
             Subscription.sport_type == training.sport_type,
-            Athlete.age_group == training.age_group,
             Athlete.created_by == training.coach_id,
         )
         .order_by(Subscription.id.asc())
@@ -68,11 +71,16 @@ def _close_unmarked_individual_training(
     )
     if not rows:
         return 0
+    slot_tids = individual_slot_training_ids(session, training)
+    canonical_tid = min(slot_tids)
     inserted = 0
     for athlete, subscription in rows:
         if (
             session.query(Attendance.id)
-            .filter_by(athlete_id=athlete.id, training_id=training.id)
+            .filter(
+                Attendance.athlete_id == athlete.id,
+                Attendance.training_id.in_(slot_tids),
+            )
             .first()
         ):
             continue
@@ -84,7 +92,7 @@ def _close_unmarked_individual_training(
         session.add(
             Attendance(
                 athlete_id=athlete.id,
-                training_id=training.id,
+                training_id=canonical_tid,
                 subscription_id=subscription.id,
                 attended=False,
                 marked_by=None,
@@ -97,7 +105,7 @@ def _close_unmarked_individual_training(
         inserted += 1
         logger.info(
             "implicit attendance (individual): training_id=%s athlete_id=%s sub_id=%s",
-            training.id,
+            canonical_tid,
             athlete.id,
             subscription.id,
         )
@@ -151,6 +159,7 @@ def close_unmarked_attendance_after_grace(
         .order_by(Training.id.asc())
         .all()
     )
+    trainings = dedupe_individual_trainings_by_slot(trainings)
 
     inserted = 0
     for training in trainings:

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,48 @@ TRAINING_FORMAT_GROUP = "group"
 TRAINING_FORMAT_INDIVIDUAL = "individual"
 
 MAX_INDIVIDUAL_SAME_SLOT = 4
+
+# Индивидуальный слот не делится на детей/взрослых: в trainings.age_group храним одно значение.
+INDIVIDUAL_TRAINING_AGE_GROUP_STORED = "adults"
+
+
+def individual_slot_training_ids(session: Session, training: Training) -> List[int]:
+    """Все id trainings одного индивидуального слота (тот же тренер, вид спорта, старт). Для групповых — [training.id]."""
+    fmt = (getattr(training, "training_format", None) or "").strip().lower()
+    if fmt != TRAINING_FORMAT_INDIVIDUAL:
+        return [training.id]
+    q = (
+        session.query(Training.id)
+        .filter(
+            Training.sport_type == training.sport_type,
+            Training.training_date == training.training_date,
+            Training.is_cancelled.is_(False),
+            Training.training_format == TRAINING_FORMAT_INDIVIDUAL,
+        )
+        .order_by(Training.id.asc())
+    )
+    cid = getattr(training, "coach_id", None)
+    if cid is not None:
+        q = q.filter(Training.coach_id == cid)
+    ids = [row[0] for row in q.all()]
+    return ids if ids else [training.id]
+
+
+def dedupe_individual_trainings_by_slot(trainings: List[Training]) -> List[Training]:
+    """Одна строка UI/логики на индивидуальный слот (coach_id + sport + момент старта)."""
+    individuals_by_key: Dict[Tuple[Optional[int], str, datetime], Training] = {}
+    non_ind: List[Training] = []
+    for t in sorted(trainings, key=lambda x: (x.training_date, x.id)):
+        fmt = (getattr(t, "training_format", None) or "").strip().lower()
+        if fmt != TRAINING_FORMAT_INDIVIDUAL:
+            non_ind.append(t)
+            continue
+        key = (getattr(t, "coach_id", None), t.sport_type, t.training_date)
+        prev = individuals_by_key.get(key)
+        if prev is None or t.id < prev.id:
+            individuals_by_key[key] = t
+    merged = list(individuals_by_key.values())
+    return sorted(non_ind + merged, key=lambda x: x.training_date)
 
 
 def _intervals_overlap(a0: datetime, a1: datetime, b0: datetime, b1: datetime) -> bool:

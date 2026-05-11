@@ -1,6 +1,7 @@
 """Выбор абонемента при нескольких активных направлениях у одного спортсмена."""
 from typing import List, Optional
 
+from database.db_utils.training_slots import TRAINING_FORMAT_INDIVIDUAL
 from database.models import Athlete, Subscription, Training
 
 
@@ -40,11 +41,16 @@ def active_subscription_for_sport(
 def active_subscription_for_training(
     athlete: Athlete, training: Optional[Training]
 ) -> Optional[Subscription]:
-    """Абонемент, соответствующий слоту тренировки (вид спорта и возрастная группа)."""
+    """Абонемент, соответствующий слоту тренировки (вид спорта; для групповых ещё возрастная группа)."""
     if not training:
         return None
-    if athlete.age_group and training.age_group and athlete.age_group != training.age_group:
-        return None
+    is_individual = (
+        (getattr(training, "training_format", None) or "").strip().lower()
+        == TRAINING_FORMAT_INDIVIDUAL
+    )
+    if not is_individual:
+        if athlete.age_group and training.age_group and athlete.age_group != training.age_group:
+            return None
     return active_subscription_for_sport(athlete, training.sport_type)
 
 

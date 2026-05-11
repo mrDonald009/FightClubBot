@@ -12,7 +12,11 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session as OrmSession
 
 from database.db_utils import get_user_role
-from database.db_utils.training_slots import TRAINING_FORMAT_INDIVIDUAL
+from database.db_utils.training_slots import (
+    TRAINING_FORMAT_INDIVIDUAL,
+    dedupe_individual_trainings_by_slot,
+    individual_slot_training_ids,
+)
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow, training_end_time
@@ -131,6 +135,7 @@ def build_today_attendance_slots(
             .order_by(Training.training_date.asc())
             .all()
         )
+        db_trainings = dedupe_individual_trainings_by_slot(db_trainings)
         existing_keys = {
             (t.sport_type, t.age_group, t.training_date.hour, t.training_date.minute)
             for t in db_trainings
@@ -176,6 +181,7 @@ def build_today_attendance_slots(
         if sport_type_name:
             trainings_query = trainings_query.filter(Training.sport_type == sport_type_name)
         db_trainings = trainings_query.order_by(Training.training_date.asc()).all()
+        db_trainings = dedupe_individual_trainings_by_slot(db_trainings)
 
         if not sport_type_name and db_trainings:
             sport_type_name = db_trainings[0].sport_type
@@ -296,7 +302,6 @@ def fetch_athletes_for_training_slot(
         .filter(
             Subscription.is_active == True,
             Subscription.sport_type == training.sport_type,
-            Athlete.age_group == training.age_group,
             func.date(Subscription.start_date) <= training_day,
             func.date(Subscription.end_date) >= training_day,
         )
@@ -310,20 +315,22 @@ def fetch_athletes_for_training_slot(
         )
     else:
         athletes_query = athletes_query.filter(
+            Athlete.age_group == training.age_group,
             or_(
                 Subscription.subscription_type.is_(None),
                 Subscription.subscription_type != "individual",
-            )
+            ),
         )
     athletes_query = athletes_query.order_by(Athlete.full_name.asc())
     athletes = athletes_query.all()
     athlete_ids = [a.id for a in athletes]
     attendance_map: Dict[int, Attendance] = {}
     if athlete_ids:
+        slot_tids = individual_slot_training_ids(session, training)
         existing = (
             session.query(Attendance)
             .filter(
-                Attendance.training_id == training.id,
+                Attendance.training_id.in_(slot_tids),
                 Attendance.athlete_id.in_(athlete_ids),
             )
             .all()
