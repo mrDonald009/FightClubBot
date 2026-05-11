@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from database.models import Training
+from database.models import Subscription, Training
 from utils.time_utils import ACTIVATION_GRACE_AFTER_START, training_end_time
 
 TRAINING_FORMAT_GROUP = "group"
@@ -52,14 +52,17 @@ def individual_slot_conflicts(
     ignore_training_id: Optional[int] = None,
 ) -> bool:
     """
-    True, если интервал [start, end) пересекается с групповым слотом этого тренера
-    или если кол-во индивидуальных тренировок в этом слоте >= MAX_INDIVIDUAL_SAME_SLOT.
+    True, если интервал [start, end) пересекается с групповым слотом этого тренера,
+    с индивидуальным слотом другого времени, или если кол-во активных индивидуальных
+    подписок на этот слот >= MAX_INDIVIDUAL_SAME_SLOT.
+
+    Training-запись для индивидуальных теперь переиспользуется (одна на слот),
+    поэтому лимит считается по подпискам (Subscription), а не по Training.
     """
     if not coach_id or not sport_type:
         return True
     end_dt = end if end is not None else training_end_time(start)
     day = start.date()
-    individual_overlaps = 0
     for t in coach_trainings_on_calendar_day(session, coach_id, sport_type, day):
         if ignore_training_id is not None and t.id == ignore_training_id:
             continue
@@ -70,8 +73,19 @@ def individual_slot_conflicts(
         fmt = (getattr(t, "training_format", None) or "").strip().lower()
         if fmt != TRAINING_FORMAT_INDIVIDUAL:
             return True
-        individual_overlaps += 1
-    return individual_overlaps >= MAX_INDIVIDUAL_SAME_SLOT
+        if t0 != start:
+            return True
+    booked = (
+        session.query(Subscription)
+        .filter(
+            Subscription.subscription_type == "individual",
+            Subscription.is_active.is_(True),
+            Subscription.sport_type == sport_type,
+            Subscription.start_date == start,
+        )
+        .count()
+    )
+    return booked >= MAX_INDIVIDUAL_SAME_SLOT
 
 
 def iter_allowed_individual_starts(

@@ -1266,16 +1266,31 @@ async def _finalize_add_athlete_from_selected_date(
             db_utils_pkg._create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
         elif subscription_type == "individual":
             coach_id = athlete.created_by or context.user_data.get("coach_id")
-            training = Training(
-                sport_type=sport_type,
-                age_group=age_group,
-                training_date=start_date,
-                is_cancelled=False,
-                coach_id=coach_id,
-                training_format=TRAINING_FORMAT_INDIVIDUAL,
+            training = (
+                session.query(Training)
+                .filter(
+                    Training.sport_type == sport_type,
+                    Training.age_group == age_group,
+                    Training.training_date == start_date,
+                    Training.is_cancelled.is_(False),
+                    Training.training_format == TRAINING_FORMAT_INDIVIDUAL,
+                )
+                .first()
             )
-            session.add(training)
-            session.flush()
+            if not training:
+                training = Training(
+                    sport_type=sport_type,
+                    age_group=age_group,
+                    training_date=start_date,
+                    is_cancelled=False,
+                    coach_id=coach_id,
+                    training_format=TRAINING_FORMAT_INDIVIDUAL,
+                )
+                session.add(training)
+                session.flush()
+            elif coach_id and not getattr(training, "coach_id", None):
+                training.coach_id = coach_id
+                session.flush()
         else:
             coach_id = athlete.created_by or context.user_data.get('coach_id')
             training = session.query(Training).filter_by(

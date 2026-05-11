@@ -177,16 +177,31 @@ async def _finalize_subscription_activation(
             session.flush()
     elif subscription.subscription_type == "individual":
         coach_id = subscription.responsible_coach_id or athlete.created_by
-        training = Training(
-            sport_type=sport_type,
-            age_group=age_group,
-            training_date=start_date,
-            is_cancelled=False,
-            coach_id=coach_id,
-            training_format=TRAINING_FORMAT_INDIVIDUAL,
+        training = (
+            session.query(Training)
+            .filter(
+                Training.sport_type == sport_type,
+                Training.age_group == age_group,
+                Training.training_date == start_date,
+                Training.is_cancelled.is_(False),
+                Training.training_format == TRAINING_FORMAT_INDIVIDUAL,
+            )
+            .first()
         )
-        session.add(training)
-        session.flush()
+        if not training:
+            training = Training(
+                sport_type=sport_type,
+                age_group=age_group,
+                training_date=start_date,
+                is_cancelled=False,
+                coach_id=coach_id,
+                training_format=TRAINING_FORMAT_INDIVIDUAL,
+            )
+            session.add(training)
+            session.flush()
+        elif coach_id and not getattr(training, "coach_id", None):
+            training.coach_id = coach_id
+            session.flush()
 
     sync_subscription_trainings_remaining(session, subscription)
     record_payment_on_subscription_activation(
