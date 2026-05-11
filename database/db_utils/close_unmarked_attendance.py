@@ -23,6 +23,7 @@ def lock_attendances_for_ended_trainings(session: Session) -> int:
     """
     Выставить locked_at у строк attendances, если пара уже закончилась.
     До этого тренер может менять «был/не был»; после — только просмотр.
+    При фиксации: для «Был» выполняется списание trainings_remaining (раньше это делалось при отметке).
     """
     now = now_moscow()
     boundary = now - TRAINING_DURATION
@@ -37,7 +38,15 @@ def lock_attendances_for_ended_trainings(session: Session) -> int:
     )
     n = 0
     for att in q:
+        tid = att.training_id
+        sid = att.subscription_id
         att.locked_at = now
+        training = session.query(Training).filter_by(id=tid).first()
+        subscription = session.query(Subscription).filter_by(id=sid).first()
+        if training and subscription:
+            apply_trainings_remaining_on_present_after_lock(
+                session, att, training, subscription
+            )
         n += 1
     return n
 
@@ -110,6 +119,38 @@ def _close_unmarked_individual_training(
             subscription.id,
         )
     return inserted
+
+
+def apply_trainings_remaining_on_present_after_lock(
+    session: Session,
+    attendance: Attendance,
+    training: Training,
+    subscription: Subscription,
+) -> None:
+    """
+    После выставления locked_at: если итог «Был», один раз списать остаток (как раньше при отметке во время пары).
+    Во время пары остаток не трогаем — только здесь и в ветках неявного «не был».
+    """
+    if not attendance.attended:
+        return
+    athlete_id = attendance.athlete_id
+    training_in_freeze = (
+        subscription.is_frozen
+        and subscription.frozen_from
+        and subscription.frozen_until
+        and subscription.frozen_from <= training.training_date <= subscription.frozen_until
+    ) or is_training_in_athlete_personal_freeze(session, athlete_id, training.training_date)
+    if training_in_freeze:
+        return
+    if subscription.trainings_remaining is None or subscription.trainings_remaining <= 0:
+        return
+    subscription.trainings_remaining -= 1
+    logger.info(
+        "post-lock deduct (присутствие): attendance_id=%s sub_id=%s остаток=%s",
+        attendance.id,
+        subscription.id,
+        subscription.trainings_remaining,
+    )
 
 
 def _should_deduct_on_system_absence(

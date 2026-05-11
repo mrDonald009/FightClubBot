@@ -9,7 +9,6 @@ from database.models import Session, Athlete, Training, Attendance
 from database.db_utils import (
     get_user_by_telegram_id,
     get_user_role,
-    is_training_in_athlete_personal_freeze,
     is_training_in_global_freeze,
 )
 from database.db_utils.training_slots import individual_slot_training_ids
@@ -261,15 +260,6 @@ async def _run_attendance_mark_query(
             # Повторное нажатие того же статуса: не перерисовываем (Telegram: message is not modified)
             return "__noop__"
 
-    # Списание «остатка» только при появлении «Был», если раньше не было «Был» на этой паре
-    need_present_quota = attended and (
-        existing_attendance is None or not existing_attendance.attended
-    )
-    if need_present_quota and (
-        subscription.trainings_remaining is not None and subscription.trainings_remaining <= 0
-    ):
-        return "❌ Нет доступных тренировок в абонементе"
-
     if existing_attendance:
         old_status = existing_attendance.attended
         if getattr(existing_attendance, "locked_at", None) is not None:
@@ -277,29 +267,7 @@ async def _run_attendance_mark_query(
                 "❌ Пара уже завершена, статус зафиксирован. "
                 "Для исправления обратитесь к администратору."
             )
-        training_in_freeze = (
-            subscription.is_frozen
-            and subscription.frozen_from
-            and subscription.frozen_until
-            and subscription.frozen_from <= training.training_date <= subscription.frozen_until
-        ) or is_training_in_athlete_personal_freeze(
-            session, athlete_id, training.training_date
-        )
-        # «Был» после «не был» — списание; обратно при «не был» после «был» — возврат остатка (передумал тренер).
-        if not old_status and attended:
-            if (
-                not training_in_freeze
-                and subscription.trainings_remaining is not None
-                and subscription.trainings_remaining > 0
-            ):
-                subscription.trainings_remaining -= 1
-        elif old_status and not attended:
-            if not training_in_freeze and subscription.trainings_remaining is not None:
-                cap = subscription.trainings_total
-                if cap is None:
-                    subscription.trainings_remaining += 1
-                elif subscription.trainings_remaining < cap:
-                    subscription.trainings_remaining += 1
+        # Остаток абонемента не меняем до окончания пары; списание — при выставлении locked_at (фоновая задача).
         existing_attendance.attended = attended
         existing_attendance.marked_by = query.from_user.id
         logger.info(
@@ -321,21 +289,6 @@ async def _run_attendance_mark_query(
             created_at=now_moscow(),
         )
 
-        training_in_freeze = (
-            subscription.is_frozen
-            and subscription.frozen_from
-            and subscription.frozen_until
-            and subscription.frozen_from <= training.training_date <= subscription.frozen_until
-        ) or is_training_in_athlete_personal_freeze(
-            session, athlete_id, training.training_date
-        )
-        if (
-            not training_in_freeze
-            and subscription.trainings_remaining is not None
-            and subscription.trainings_remaining > 0
-        ):
-            subscription.trainings_remaining -= 1
-
         session.add(attendance)
         logger.info(
             "attendance_created trainer_tg=%s athlete_id=%s training_id=%s status=%s",
@@ -350,9 +303,10 @@ async def _run_attendance_mark_query(
     page = context.user_data.get("attendance_slot_page", 0)
     name_esc = html.escape((athlete.full_name or "").strip())
     status_ru = "присутствовал" if attended else "не был"
-    flash = f"✅ <b>{name_esc}</b>: {status_ru}"
-    if subscription.trainings_remaining is not None:
-        flash += f"\n🎫 Осталось тренировок: <b>{subscription.trainings_remaining}</b>"
+    flash = (
+        f"✅ <b>{name_esc}</b>: {status_ru}\n"
+        "<i>Остаток абонемента обновится после окончания пары (при фиксации отметки).</i>"
+    )
 
     if clear_legacy_mark_flow_keys:
         context.user_data.pop("mark_attendance_athlete_id", None)
