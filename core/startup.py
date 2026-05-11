@@ -1,6 +1,6 @@
 """Модуль для инициализации и стартовых задач приложения."""
 import logging
-from datetime import time
+from datetime import time, timedelta
 from typing import Set
 
 from telegram.ext import Application
@@ -137,13 +137,13 @@ def initialize_app(config: Config) -> None:
     # Проверяем абонементы
     check_subscriptions_on_startup()
 
-    # Просроченные «не отмечено» → строки attendances в БД (как в UI после 24 ч)
+    # «Не отмечено» после конца пары → строки attendances в БД (как в UI)
     try:
         with get_db_session() as session:
             n_backfill = close_unmarked_attendance_after_grace(session)
         if n_backfill:
             logger.info(
-                "🧾 При старте создано записей посещений (просрочка 24ч): %s",
+                "🧾 При старте создано записей посещений (close_unmarked): %s",
                 n_backfill,
             )
     except Exception as e:
@@ -156,8 +156,19 @@ def initialize_app(config: Config) -> None:
     logger.info("✅ Инициализация завершена")
 
 
+async def _close_unmarked_interval_job(context) -> None:
+    """Частое закрытие слотов без отметки тренера (после конца пары)."""
+    try:
+        with get_db_session() as session:
+            n = close_unmarked_attendance_after_grace(session)
+        if n:
+            logger.info("🧾 close_unmarked (интервал 15 мин): создано записей: %s", n)
+    except Exception as e:  # pragma: no cover
+        logger.error("❌ Ошибка interval close_unmarked: %s", e, exc_info=True)
+
+
 async def _daily_attendance_maintenance_job(context) -> None:
-    """Авто-списание по расписанию + фиксация в БД просроченных без отметки (24 ч после пары)."""
+    """Авто-списание по расписанию + фиксация в БД без отметки после конца пары."""
     try:
         with get_db_session() as session:
             d0 = auto_deduct_daily_trainings(session)
@@ -200,6 +211,16 @@ def setup_scheduled_jobs(application: Application, config: Config) -> None:
     if not application.job_queue:
         logger.warning("⚠️ JobQueue недоступен: ежедневный аудит не запланирован")
         return
+
+    application.job_queue.run_repeating(
+        _close_unmarked_interval_job,
+        interval=timedelta(minutes=15),
+        first=timedelta(seconds=45),
+        name="close_unmarked_attendance_interval",
+    )
+    logger.info(
+        "🗓️ Запланировано закрытие посещений без отметки каждые 15 мин (после конца пары)"
+    )
 
     maintenance_time = time(hour=8, minute=5, tzinfo=APP_TZ)
     application.job_queue.run_daily(

@@ -188,14 +188,24 @@ async def _run_attendance_mark_query(
     if attended and subscription.trainings_remaining <= 0:
         return "❌ Нет доступных тренировок в абонементе"
 
-    training_end_datetime = training_end_time(training.training_date)
+    training_start = training.training_date
+    training_end_datetime = training_end_time(training_start)
     current_time = now_moscow()
-    if current_time < training_end_datetime:
+    if current_time < training_start:
         await query.edit_message_text(
-            "⏳ Пока рано ставить отметку.\n\n"
-            f"Начало занятия: {training.training_date.strftime('%d.%m.%Y %H:%M')}\n"
-            f"Ориентир «можно отмечать»: после {training_end_datetime.strftime('%d.%m.%Y %H:%M')}\n\n"
-            "<i>Так сделано, чтобы не отмечать людей до фактического окончания пары.</i>",
+            "⏳ Пара ещё не началась.\n\n"
+            f"Начало: {training_start.strftime('%d.%m.%Y %H:%M')}\n"
+            "Отметить можно <b>с начала</b> занятия до его <b>окончания</b>.",
+            parse_mode="HTML",
+        )
+        return "__handled__"
+    if current_time > training_end_datetime:
+        await query.edit_message_text(
+            "⏱ Время для ручной отметки истекло.\n\n"
+            f"Окончание пары: {training_end_datetime.strftime('%d.%m.%Y %H:%M')}\n"
+            "Если во время занятия статус не поставлен, в учёте фиксируется «не был» "
+            "(автоматически при обновлении данных).\n\n"
+            "<i>При ошибке обратитесь к администратору.</i>",
             parse_mode="HTML",
         )
         return "__handled__"

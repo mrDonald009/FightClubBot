@@ -1,6 +1,6 @@
 """
-Фиксация в БД просроченных «не отмечено»: после конца пары + 24 ч создаётся Attendance (attended=False),
-как в UI. Списание остатка — по тем же правилам, что при ручной отметке «не был».
+Фиксация в БД «не отмечено» после конца пары: создаётся Attendance (attended=False),
+как в UI после окончания слота (без дополнительной задержки). Списание остатка — как при ручном «не был».
 """
 import logging
 from datetime import datetime, timedelta
@@ -105,7 +105,7 @@ def close_unmarked_attendance_after_grace(
     lookback_days: int = 180,
 ) -> int:
     """
-    Для завершённых тренировок, у которых прошло >24 ч после окончания пары,
+    Для тренировок, у которых пара уже закончилась (конец слота <= now с учётом grace),
     для спортсменов с активным абонементом на этот день — вставить строку attendances,
     если её ещё нет (attended=False, marked_by=None).
 
@@ -114,7 +114,7 @@ def close_unmarked_attendance_after_grace(
     """
     now = now_moscow()
     start_floor = now - timedelta(days=lookback_days)
-    # Слот «можно закрыть», если: конец пары + 24 ч <= now  ⇔  начало <= now - длительность - 24 ч
+    # Слот «можно закрыть», если: конец пары + grace <= now  ⇔  начало <= now - длительность - grace
     latest_eligible_start = now - TRAINING_DURATION - ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END
 
     trainings = (

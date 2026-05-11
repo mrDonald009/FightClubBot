@@ -1,4 +1,4 @@
-"""Единые подписи и иконки посещения: Был / Не был / Не отмечено (до 24 ч после конца пары)."""
+"""Единые подписи и иконки посещения: Был / Не был / Не отмечено (до конца пары, дальше — «не был»)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -19,7 +19,7 @@ def attendance_icon_for_slot(
     *,
     now: Optional[datetime] = None,
 ) -> str:
-    """✅ был · ❌ не был · ⏳ ещё можно считать «не отмечено»."""
+    """✅ был · ❌ не был · ⏳ ещё нет записи и пара не закончилась (можно отметить во время пары)."""
     now = now or now_moscow()
     if attendance is not None:
         return "✅" if attendance.attended else "❌"
@@ -96,7 +96,7 @@ def is_pending_unmarked(
     *,
     now: Optional[datetime] = None,
 ) -> bool:
-    """Слот ещё в окне «не отмечено»."""
+    """Слот ещё без записи и не прошёл дедлайн «после конца пары» (grace из time_utils)."""
     if attendance is not None:
         return False
     now = now or now_moscow()
@@ -116,7 +116,7 @@ def count_implicit_absent_slots(
 ) -> int:
     """
     Слоты Training за период без строки Attendance у спортсмена,
-    если уже прошло 24 ч после окончания пары (считаем «не был»).
+    если уже прошло время после окончания пары с учётом grace (считаем «не был»).
     """
     now = now or now_moscow()
     past_slots = (

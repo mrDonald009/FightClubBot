@@ -1,4 +1,4 @@
-"""Логика иконок/подписей посещения (24 ч после конца пары)."""
+"""Логика иконок/подписей посещения (после конца пары без grace — «не был»)."""
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -18,10 +18,10 @@ from utils.time_utils import (
 pytestmark = pytest.mark.unit
 
 
-def test_icon_pending_within_grace_after_training_end():
+def test_icon_pending_before_training_end():
     start = datetime(2026, 6, 1, 10, 0)
     end = training_end_time(start)
-    now = end + timedelta(hours=12)
+    now = end - timedelta(minutes=5)
     assert attendance_icon_for_slot(None, start, now=now) == "⏳"
     assert "Не отмечено" in attendance_label_ru_for_slot(None, start, now=now)
 

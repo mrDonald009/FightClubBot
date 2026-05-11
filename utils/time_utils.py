@@ -31,7 +31,8 @@ except Exception:
 TRAINING_DURATION = timedelta(minutes=TRAINING_DURATION_MINUTES)
 
 # После окончания пары без строки в attendances в UI считаем «Не был», а не «Не отмечено».
-ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END = timedelta(hours=24)
+# 0 — сразу после конца слота (как только now > end); раньше было 24 ч.
+ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END = timedelta(0)
 
 try:
     _grace_raw = int(

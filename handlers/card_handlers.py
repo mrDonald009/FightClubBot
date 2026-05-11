@@ -2399,8 +2399,8 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
         message = f"📅 <b>ИСТОРИЯ ПОСЕЩЕНИЙ</b>\n\n"
         message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
         message += (
-            "<i>✅ Был · ❌ Не был · ⏳ Не отмечено (нет строки в базе и прошло ≤24 ч после окончания пары); "
-            "после 24 ч без записи — ❌ Не был</i>\n\n"
+            "<i>✅ Был · ❌ Не был · ⏳ Не отмечено (пара ещё не закончилась или нет строки в базе); "
+            "после окончания пары без отметки тренера — ❌ Не был (в т.ч. автоматически)</i>\n\n"
         )
 
         now = now_moscow()
@@ -2633,7 +2633,7 @@ async def show_athlete_stats(update: Update, context: ContextTypes.DEFAULT_TYPE)
         week_rate = round((week_attended / week_trainings * 100), 1) if week_trainings > 0 else 0
         message += f"• Посещаемость: {week_rate}%\n"
         if week_implicit:
-            message += f"• <i>Без записи в срок (24ч после пары): {week_implicit}</i>\n"
+            message += f"• <i>Без отметки тренера (учтено как не был): {week_implicit}</i>\n"
         message += "\n"
 
         message += f"<b>Месяц:</b>\n"
@@ -2641,7 +2641,7 @@ async def show_athlete_stats(update: Update, context: ContextTypes.DEFAULT_TYPE)
         month_rate = round((month_attended / month_trainings * 100), 1) if month_trainings > 0 else 0
         message += f"• Посещаемость: {month_rate}%\n"
         if month_implicit:
-            message += f"• <i>Без записи в срок (24ч после пары): {month_implicit}</i>\n"
+            message += f"• <i>Без отметки тренера (учтено как не был): {month_implicit}</i>\n"
         message += "\n"
 
         message += f"<b>3 месяца:</b>\n"
@@ -2649,7 +2649,7 @@ async def show_athlete_stats(update: Update, context: ContextTypes.DEFAULT_TYPE)
         three_months_rate = round((three_months_attended / three_months_trainings * 100), 1) if three_months_trainings > 0 else 0
         message += f"• Посещаемость: {three_months_rate}%\n"
         if three_implicit:
-            message += f"• <i>Без записи в срок (24ч после пары): {three_implicit}</i>\n"
+            message += f"• <i>Без отметки тренера (учтено как не был): {three_implicit}</i>\n"
         message += "\n"
         
         message += f"<b>📋 ОБЩАЯ СТАТИСТИКА</b>\n"

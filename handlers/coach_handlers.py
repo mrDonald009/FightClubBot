@@ -1930,8 +1930,8 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         message = "📝 <b>ОТМЕТИТЬ ПОСЕЩЕНИЯ</b>\n\n"
         message += (
-            "<i>Кто пришёл на занятие, отмечайте <b>после его окончания</b>: бот смотрит на время "
-            "тренировки и не даст поставить отметку слишком рано.</i>\n\n"
+            "<i>Отмечайте <b>во время пары</b> (с начала до окончания). Если не отметите — "
+            "после конца занятия в учёте появится «не был».</i>\n\n"
         )
         if slot_rows:
             cnt = format_today_trainings_count_ru(len(slot_rows))
