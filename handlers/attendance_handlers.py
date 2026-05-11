@@ -302,10 +302,11 @@ async def _run_attendance_mark_query(
 
     page = context.user_data.get("attendance_slot_page", 0)
     name_esc = html.escape((athlete.full_name or "").strip())
-    status_ru = "присутствовал" if attended else "не был"
+    status_ru = "на паре" if attended else "нет на паре"
+    flash_icon = "✅" if attended else "❌"
     flash = (
-        f"✅ <b>{name_esc}</b>: {status_ru}\n"
-        "<i>Остаток абонемента обновится после окончания пары (при фиксации отметки).</i>"
+        f"{flash_icon} <b>{name_esc}</b> — {status_ru}.\n"
+        "<i>Остаток по абонементу обновится сам после окончания занятия.</i>"
     )
 
     if clear_legacy_mark_flow_keys:

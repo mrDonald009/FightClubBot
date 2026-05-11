@@ -116,8 +116,7 @@ def test_build_step2_pagination_nav_when_many_athletes():
         training, athletes, {}, page=0, page_size=ATTENDANCE_LIST_PAGE_SIZE
     )
     assert "04.04.2026 12:30" in msg
-    assert "Шаг 2 из 2" in msg
-    assert "Спортсмен 0" in msg
+    assert "Отметьте присутствие" in msg
     assert any(
         any(cd == "atmark_100_0_1" for _, cd in row) for row in rows
     )
@@ -152,8 +151,7 @@ def test_build_step2_no_nav_when_few_athletes():
     )
     athletes = [SimpleNamespace(id=1, full_name="Иванов Иван Петрович")]
     msg, rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
-    assert "Шаг 2 из 2" in msg
-    assert "Иванов Иван Петрович" in msg
+    assert "Отметьте присутствие" in msg
     assert rows[0][0] == ("⏳ Иванов И.П.", "attnm_2_1")
     assert rows[0][1] == ("✅ Был", "atmark_2_1_1")
     assert rows[0][2] == ("❌ Не был", "atmark_2_1_0")
@@ -173,7 +171,8 @@ def test_build_step2_individual_slot_title_without_age_group():
     athletes = [SimpleNamespace(id=1, full_name="Тестов Тест Тестович")]
     msg, _rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
     assert "11.05.2026 14:00" in msg
-    assert "MMA — Индивидуальная" in msg
+    assert "Индивидуальная" in msg
+    assert "MMA" in msg
     assert "взрослая группа" not in msg
     assert "детская группа" not in msg
 

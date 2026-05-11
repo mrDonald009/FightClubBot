@@ -394,13 +394,13 @@ def build_step2_message_and_keyboard_rows(
     )
     if is_individual_slot:
         slot_title = (
-            f"📅 <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b> — "
+            f"{training.training_date.strftime('%d.%m.%Y %H:%M')} — "
             f"{html.escape(training.sport_type)} — Индивидуальная\n\n"
         )
     else:
         age_group_ru = "детская группа" if training.age_group == "children" else "взрослая группа"
         slot_title = (
-            f"📅 <b>{training.training_date.strftime('%d.%m.%Y %H:%M')}</b> — "
+            f"{training.training_date.strftime('%d.%m.%Y %H:%M')} — "
             f"{html.escape(training.sport_type)}, {age_group_ru}\n\n"
         )
     parts = [
@@ -411,19 +411,11 @@ def build_step2_message_and_keyboard_rows(
     parts.extend(
         [
             slot_title,
-            "<b>Шаг 2 из 2</b> — у каждого из списка ниже нажмите «Был» или «Не был».",
+            "Отметьте присутствие по списку.",
         ]
     )
     if not athletes:
         parts.append("\n\n📭 На это время нет спортсменов с подходящим абонементом.")
-    elif chunk:
-        parts.append("\n\n<b>Спортсмены на занятии</b>")
-        if total_count > page_size:
-            parts.append(f" <i>(стр. {page + 1}/{max_page + 1})</i>")
-        parts.append(":\n")
-        for a in chunk:
-            nm = (a.full_name or "").strip()
-            parts.append(f"• {html.escape(nm)}\n")
 
     message = "".join(parts)
 
