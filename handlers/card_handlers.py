@@ -2441,7 +2441,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         now = now_moscow()
         max_lines = 28
-        rows: List[str] = []
+        rows: List[tuple] = []
         visible_slots: List[Training] = []
 
         if athlete.sport_type and athlete.age_group:
@@ -2604,14 +2604,58 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                     else:
                         status_text = "❌ Не был"
 
-                    rows.append(f"{slot_desc} — {status_text}\n")
+                    rows.append((t.training_date, f"{slot_desc} — {status_text}\n"))
                 if history_changed:
                     session.commit()
+
+        covered_tids = set()
+        for tr in visible_slots:
+            covered_tids.update(individual_slot_training_ids(session, tr))
+
+        # Добавляем сохранённые отметки вне видимых слотов (другая дисциплина/группа/старше окна),
+        # чтобы не терялась история прежних записей.
+        extra = (
+            session.query(Attendance)
+            .options(joinedload(Attendance.training))
+            .filter_by(athlete_id=athlete_id)
+            .order_by(Attendance.created_at.asc())
+            .limit(80)
+            .all()
+        )
+        for att in extra:
+            tid = att.training_id
+            if tid and tid in covered_tids:
+                continue
+            tr = att.training
+            if tr and tr.training_date:
+                dt = tr.training_date
+                training_date = tr.training_date.strftime("%d.%m.%Y %H:%M")
+                is_individual_slot = (
+                    (getattr(tr, "training_format", None) or "").strip().lower()
+                    == TRAINING_FORMAT_INDIVIDUAL
+                )
+                if is_individual_slot:
+                    slot_desc = (
+                        f"{training_date} — {html.escape(tr.sport_type)} — Индивидуальная"
+                    )
+                else:
+                    age_group_ru = "Дети" if tr.age_group == "children" else "Взрослые"
+                    slot_desc = (
+                        f"{training_date} — {html.escape(tr.sport_type)} ({age_group_ru}) — Групповая"
+                    )
+            else:
+                dt = now
+                slot_desc = "—"
+            status_text = "✅ Был" if att.attended else "❌ Не был"
+            rows.append((dt, f"{slot_desc} — {status_text}\n"))
 
         if not rows:
             message += "📭 Нет записей посещений.\n"
         else:
-            for line in rows:
+            rows_sorted = sorted(rows, key=lambda x: x[0])
+            if len(rows_sorted) > max_lines:
+                rows_sorted = rows_sorted[-max_lines:]
+            for _dt, line in rows_sorted:
                 message += line
 
         keyboard = [
