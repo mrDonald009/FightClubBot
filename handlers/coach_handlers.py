@@ -79,22 +79,9 @@ def truncate_for_telegram_message(text: str, limit: int = TELEGRAM_MESSAGE_SAFE_
     return chunk + suffix
 
 
-def _coach_calendar_message_header(
-    *,
-    current_year: int,
-    current_month: int,
-    sport_type_name: Optional[str],
-) -> str:
+def _coach_calendar_message_header(*, current_year: int, current_month: int) -> str:
     title = _MONTH_NAMES_RU[current_month]
-    lines = [
-        f"📅 <b>{html.escape(title)} {current_year}</b>",
-        "",
-        "<i>[ ] — сегодня · + — в базе · ( ) — по графику зала (день недели).</i>",
-    ]
-    if sport_type_name:
-        lines.append(f"Вид спорта: {html.escape(sport_type_name)}")
-    lines.append("")
-    return "\n".join(lines)
+    return f"📅 <b>{html.escape(title)} {current_year}</b>"
 
 
 # Пагинация списка спортсменов (лимит Telegram на callback_data — 64 байта, префикс alpg_)
@@ -2123,7 +2110,6 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
         message = _coach_calendar_message_header(
             current_year=current_year,
             current_month=current_month,
-            sport_type_name=sport_type_name,
         )
 
         # Календарь (monthcalendar: недели с понедельника)
