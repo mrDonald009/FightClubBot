@@ -132,6 +132,35 @@ def _supports_individual_subscription_type(session) -> bool:
     return "individual" in ddl
 
 
+def _has_legacy_unique_athlete_constraint(session) -> bool:
+    """Проверка legacy-схемы: уникальность athlete_id в subscriptions (1 спортсмен = 1 абонемент)."""
+    try:
+        row = session.execute(
+            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='subscriptions'")
+        ).first()
+        ddl = ((row[0] if row else "") or "").lower()
+        if ddl:
+            if "unique (athlete_id)" in ddl or "unique(\"athlete_id\")" in ddl:
+                return True
+    except Exception:
+        return False
+
+    try:
+        idx_rows = session.execute(
+            text("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='subscriptions'")
+        ).fetchall()
+    except Exception:
+        return False
+
+    for r in idx_rows:
+        sql = ((r[0] if r else "") or "").lower()
+        if not sql or "unique" not in sql:
+            continue
+        if "athlete_id" in sql and "discipline_key" not in sql:
+            return True
+    return False
+
+
 def _format_dt(dt: datetime) -> str:
     """Единый формат даты/времени для UI."""
     return dt.strftime('%d.%m.%Y %H:%M') if dt else "—"
@@ -2144,6 +2173,15 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     "❌ Схема БД не поддерживает тип индивидуального абонемента.\n"
                     "Нужно выполнить миграцию БД (subscription_type='individual').\n"
                     "После миграции повторите действие."
+                )
+                return
+            if _has_legacy_unique_athlete_constraint(session):
+                await query.edit_message_text(
+                    "❌ Схема БД в legacy-режиме: действует UNIQUE по athlete_id "
+                    "(1 спортсмен = 1 абонемент).\n"
+                    "Для + индивидуальной тренировки нужно обновить схему БД "
+                    "(мульти-абонементы по discipline_key).\n"
+                    "Выполните миграцию и повторите действие."
                 )
                 return
 
