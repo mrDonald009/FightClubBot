@@ -1407,15 +1407,16 @@ async def show_subscription_card(
 async def handle_back_to_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Вернуться к списку спортсменов"""
     query = update.callback_query
-    await query.answer()
 
     # Возвращаемся в последний выбранный фильтр (если был), иначе в экран категорий
     filter_key = context.user_data.get("athletes_list_filter")
     if filter_key in ("all", "children", "adults", "inactive", "active_children", "active_adults", "inactive_children", "inactive_adults"):
+        await query.answer()
         from handlers.coach_handlers import show_athletes_list_by_filter
         page = int(context.user_data.get("athletes_list_page") or 0)
         await show_athletes_list_by_filter(update, context, filter_key, page=page)
     else:
+        # athletes_list сам вызовет query.answer() — не отвечать дважды
         from handlers.coach_handlers import athletes_list
         await athletes_list(update, context)
 
@@ -2373,7 +2374,17 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 )
                 return
         
-        # Если это активация существующего абонемента
+        # Если это активация существующего абонемента (activate_sub_<id> — только число)
+        if not callback_data.isdigit():
+            logger.warning(
+                "[activate_sub] unexpected_callback_data=%r raw=%r",
+                callback_data,
+                getattr(query, "data", None),
+            )
+            await query.edit_message_text(
+                "❌ Некорректная кнопка активации. Откройте абонемент заново из карточки спортсмена."
+            )
+            return
         subscription_id = int(callback_data)
         logger.info(f"[activate_sub] branch=activate_existing subscription_id={subscription_id}")
         subscription = session.query(Subscription).filter_by(id=subscription_id).first()

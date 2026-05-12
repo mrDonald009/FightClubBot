@@ -952,9 +952,8 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     # Сначала регистрируем обычные обработчики кнопок меню (они должны иметь приоритет)
     # Обработчики для кнопок меню
     logger.info("📝 Регистрируем обработчики кнопок меню...")
-    registrar.register(
-        MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list)
-    )
+    _list_pat = r"^\s*📋\s*Список\s*спортсменов\s*$"
+    registrar.register(MessageHandler(filters.Regex(_list_pat), athletes_list))
     logger.info("✅ Зарегистрирован обработчик: 📋 Список спортсменов")
     registrar.register(
         MessageHandler(
@@ -1011,7 +1010,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
             CallbackQueryHandler(handle_global_freeze_action_cancel, pattern="^gf_action_cancel$"),
             CallbackQueryHandler(handle_global_freeze_action_history, pattern="^gf_action_history$"),
             CommandHandler("cancel", cancel_global_freeze),
-            MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
+            MessageHandler(filters.Regex(_list_pat), athletes_list),
             MessageHandler(
                 filters.Regex(
                     "^(📅 Отметить посещение|📅 Отметить посещения|📝 Отметить посещения)$"
@@ -1086,7 +1085,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         },
         fallbacks=[
             CommandHandler("cancel", cancel_athlete_creation),
-            MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
+            MessageHandler(filters.Regex(_list_pat), athletes_list),
             MessageHandler(
                 filters.Regex(
                     "^(📅 Отметить посещение|📅 Отметить посещения|📝 Отметить посещения)$"
