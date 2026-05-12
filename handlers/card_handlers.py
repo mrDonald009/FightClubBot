@@ -2125,14 +2125,15 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 return
 
             dk_individual = discipline_key_for(sport_type_for_sub, format="individual")
+            coach_id_for_sub = user.id if isinstance(user, Coach) else None
             try:
                 subscription = prepare_individual_subscription_for_activation(
                     session,
                     athlete,
                     sport_type_for_sub,
-                    responsible_coach_id=user.id if isinstance(user, Coach) else None,
+                    responsible_coach_id=coach_id_for_sub,
                 )
-            except ValueError as e:
+            except Exception as e:
                 # На "грязных" старых данных могли остаться противоречивые записи.
                 # Пытаемся безопасно взять существующий individual по направлению.
                 logger.warning(
@@ -2141,6 +2142,11 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     dk_individual,
                     e,
                 )
+                # Для ошибок flush/commit очищаем транзакцию перед fallback-запросом.
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
                 subscription = (
                     session.query(Subscription)
                     .filter_by(athlete_id=athlete.id, discipline_key=dk_individual)
@@ -2148,7 +2154,14 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     .first()
                 )
                 if not subscription:
-                    raise
+                    await query.edit_message_text(
+                        "❌ Не удалось подготовить индивидуальную тренировку. "
+                        "Откройте абонемент заново и повторите."
+                    )
+                    return
+            if not getattr(subscription, "responsible_coach_id", None) and coach_id_for_sub:
+                subscription.responsible_coach_id = coach_id_for_sub
+                session.commit()
 
             # Если individual уже активен — не создаем дубли, просто открываем его карточку.
             # callback уже отвечен в начале handle_activate_subscription — не вызывать query.answer повторно.
