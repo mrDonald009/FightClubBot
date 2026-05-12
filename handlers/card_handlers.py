@@ -2163,8 +2163,9 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 subscription.responsible_coach_id = coach_id_for_sub
                 session.commit()
 
-            # Если individual уже активен — не создаем дубли, просто открываем его карточку.
-            # callback уже отвечен в начале handle_activate_subscription — не вызывать query.answer повторно.
+            # При нажатии "➕ Индивидуальная тренировка" всегда открываем календарь выбора слота.
+            # Даже если запись individual уже активна, тренер может выбрать новый слот
+            # (запись абонемента переиспользуется по текущей доменной модели).
             now = now_moscow()
             if (
                 subscription.is_active
@@ -2174,15 +2175,12 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 # Устаревший active у индивидуального не должен ломать сценарий "добавить новую".
                 subscription.is_active = False
                 session.commit()
-
-            if subscription.is_active:
-                await show_subscription_card(
-                    update,
-                    context,
-                    override_query_data=f"subscription_{subscription.id}",
-                    skip_callback_answer=True,
+            elif subscription.is_active:
+                logger.info(
+                    "[activate_sub] add_individual reuse active subscription_id=%s athlete_id=%s",
+                    subscription.id,
+                    athlete.id,
                 )
-                return
 
             reply_markup = _build_activation_calendar_individual(
                 subscription.id, now.year, now.month
