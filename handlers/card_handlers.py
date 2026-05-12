@@ -2191,9 +2191,28 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     .first()
                 )
                 if not subscription:
+                    # Доп. fallback для старых/грязных данных:
+                    # берем individual по спортсмену и виду спорта даже без корректного discipline_key.
+                    subscription = (
+                        session.query(Subscription)
+                        .filter(
+                            Subscription.athlete_id == athlete_id,
+                            Subscription.subscription_type == "individual",
+                            or_(
+                                Subscription.sport_type == sport_type_for_sub,
+                                Subscription.sport_type.is_(None),
+                            ),
+                        )
+                        .order_by(Subscription.is_active.desc(), Subscription.id.asc())
+                        .first()
+                    )
+                if not subscription:
+                    err_type = type(e).__name__
+                    err_msg = str(e).strip()
+                    err_tail = f" ({err_type}: {err_msg[:120]})" if err_msg else f" ({err_type})"
                     await query.edit_message_text(
                         "❌ Не удалось подготовить индивидуальную тренировку. "
-                        "Откройте абонемент заново и повторите."
+                        f"Откройте абонемент заново и повторите.{err_tail}"
                     )
                     return
             if not getattr(subscription, "responsible_coach_id", None) and coach_id_for_sub:
