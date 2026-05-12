@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 from pathlib import Path
 
 # Windows/PowerShell часто падает на emoji в выводе (cp1251/cp866).
@@ -24,6 +25,18 @@ import sqlite3
 from sqlalchemy.engine.url import make_url
 
 from utils.discipline_keys import default_group_key_for_subscription_sport
+
+
+def _rename_create_table_sql(sql: str, old_name: str, new_name: str) -> str:
+    """Переименовать CREATE TABLE old_name -> new_name c учетом кавычек и IF NOT EXISTS."""
+    pattern = rf'CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?(")?{re.escape(old_name)}(")?'
+    return re.sub(
+        pattern,
+        lambda m: f"CREATE TABLE {(m.group(1) or '')}{new_name}",
+        sql,
+        count=1,
+        flags=re.IGNORECASE,
+    )
 
 
 def _sqlite_database_path_for_migration() -> str:
@@ -555,10 +568,8 @@ def migrate_database():
                         "IN ('monthly', 'single', 'individual')",
                         1,
                     )
-                    new_sql = new_sql.replace(
-                        "CREATE TABLE subscriptions",
-                        "CREATE TABLE subscriptions_mig_nr",
-                        1,
+                    new_sql = _rename_create_table_sql(
+                        new_sql, "subscriptions", "subscriptions_mig_nr"
                     )
                     cursor.execute(new_sql)
                     cursor.execute(
@@ -615,10 +626,8 @@ def migrate_database():
                     )
                     new_sql = new_sql.replace("UNIQUE (athlete_id),", "", 1)
                     new_sql = new_sql.replace("UNIQUE(\"athlete_id\"),", "", 1)
-                    new_sql = new_sql.replace(
-                        "CREATE TABLE subscriptions",
-                        "CREATE TABLE subscriptions_mig_multi",
-                        1,
+                    new_sql = _rename_create_table_sql(
+                        new_sql, "subscriptions", "subscriptions_mig_multi"
                     )
                     cursor.execute(new_sql)
                     cursor.execute(
