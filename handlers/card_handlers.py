@@ -2284,7 +2284,6 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     return
                 
                 # Устанавливаем тип абонемента и рассчитываем количество тренировок
-                from utils.discipline_keys import discipline_key_for
 
                 subscription.subscription_type = subscription_type
                 st = (subscription.sport_type or athlete.sport_type or "").strip()
@@ -2358,7 +2357,6 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     if not sport_type_for_sub:
                         sport_type_for_sub = athlete.sport_type
                 
-                from utils.discipline_keys import discipline_key_for
                 from services.subscription_service import SubscriptionService
 
                 sub_fmt = "individual" if subscription_type == "individual" else "group"
