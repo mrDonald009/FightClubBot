@@ -33,7 +33,7 @@ from database.db_utils.training_slots import (
 )
 from typing import List, Optional, Union
 
-from sqlalchemy import and_, exists, func, or_
+from sqlalchemy import and_, exists, func, or_, text
 from sqlalchemy.orm import joinedload
 import html
 from utils.attendance_display import (
@@ -115,6 +115,21 @@ def _format_subscription_type_ru(subscription_type: Optional[str]) -> str:
     if subscription_type == "individual":
         return "Индивидуальный"
     return "Не указан"
+
+
+def _supports_individual_subscription_type(session) -> bool:
+    """Проверка схемы SQLite: допускает ли CHECK в subscriptions значение 'individual'."""
+    try:
+        row = session.execute(
+            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='subscriptions'")
+        ).first()
+    except Exception:
+        # В сомнительных случаях не блокируем флоу на проверке.
+        return True
+    ddl = ((row[0] if row else "") or "").lower()
+    if not ddl:
+        return True
+    return "individual" in ddl
 
 
 def _format_dt(dt: datetime) -> str:
@@ -2122,6 +2137,13 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             if not sport_type_for_sub:
                 await query.edit_message_text(
                     "❌ Не удалось определить вид спорта. Укажите вид спорта у спортсмена или абонемента."
+                )
+                return
+            if not _supports_individual_subscription_type(session):
+                await query.edit_message_text(
+                    "❌ Схема БД не поддерживает тип индивидуального абонемента.\n"
+                    "Нужно выполнить миграцию БД (subscription_type='individual').\n"
+                    "После миграции повторите действие."
                 )
                 return
 
