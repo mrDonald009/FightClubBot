@@ -2160,8 +2160,13 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     )
                     return
             if not getattr(subscription, "responsible_coach_id", None) and coach_id_for_sub:
-                subscription.responsible_coach_id = coach_id_for_sub
-                session.commit()
+                # На шаге открытия календаря не пишем в БД: только выбор слота.
+                # ID тренера берется далее из responsible_coach_id или athlete.created_by.
+                logger.info(
+                    "[activate_sub] add_individual missing responsible_coach_id subscription_id=%s athlete_id=%s",
+                    subscription.id,
+                    athlete.id,
+                )
 
             # При нажатии "➕ Индивидуальная тренировка" всегда открываем календарь выбора слота.
             # Даже если запись individual уже активна, тренер может выбрать новый слот
@@ -2181,9 +2186,13 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 is_expired_active = end_date < now_cmp
 
             if is_expired_active:
-                # Устаревший active у индивидуального не должен ломать сценарий "добавить новую".
-                subscription.is_active = False
-                session.commit()
+                # На шаге открытия календаря не деактивируем запись в БД.
+                # Факт "просрочки" не должен блокировать выбор нового слота.
+                logger.info(
+                    "[activate_sub] add_individual expired active subscription_id=%s athlete_id=%s",
+                    subscription.id,
+                    athlete.id,
+                )
             elif subscription.is_active:
                 logger.info(
                     "[activate_sub] add_individual reuse active subscription_id=%s athlete_id=%s",
@@ -2558,7 +2567,10 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
         
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ АКТИВАЦИИ АБОНЕМЕНТА: {e}", exc_info=True)
-        await query.edit_message_text("❌ Ошибка при активации абонемента")
+        err_type = type(e).__name__
+        err_msg = str(e).strip()
+        err_tail = f" ({err_type}: {err_msg[:120]})" if err_msg else f" ({err_type})"
+        await query.edit_message_text(f"❌ Ошибка при активации абонемента{err_tail}")
     finally:
         session.close()
 
