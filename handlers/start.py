@@ -75,7 +75,7 @@ async def show_coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "🏋️‍♂️ Меню тренера:\n\n"
-        "Выберите действие:",
+        "Выберите действие.",
         reply_markup=get_coach_main_menu()
     )
     print(f"✅ МЕНЮ ТРЕНЕРА ОТОБРАЖЕНО ДЛЯ {user_id}")

@@ -443,7 +443,7 @@ async def start_global_freeze_flow(update, context):
     main_status_block = "" if status_block.startswith("📭 ") else f"{status_block}\n\n"
 
     await update.message.reply_text(
-        "🌍 <b>МАССОВАЯ ЗАМОРОЗКА</b>\n\n"
+        "🌍 <b>Массовая заморозка</b>\n\n"
         f"{main_status_block}"
         "Выберите действие:",
         parse_mode="HTML",

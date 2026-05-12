@@ -81,7 +81,10 @@ def truncate_for_telegram_message(text: str, limit: int = TELEGRAM_MESSAGE_SAFE_
 
 def _coach_calendar_message_header(*, current_year: int, current_month: int) -> str:
     title = _MONTH_NAMES_RU[current_month]
-    return f"📅 <b>{html.escape(title)} {current_year}</b>"
+    return (
+        "📅 <b>Мой календарь</b>\n\n"
+        f"{html.escape(title)} {current_year}"
+    )
 
 
 # Пагинация списка спортсменов (лимит Telegram на callback_data — 64 байта, префикс alpg_)
@@ -150,10 +153,10 @@ def load_athletes_for_list(session, user) -> Tuple[List[Athlete], str]:
                 or_(Athlete.sport_type == sport_type_name, has_sub_for_sport)
             )
         athletes = q.all()
-        header = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
+        header = "🏃‍♂️ <b>Список спортсменов</b>\n\n"
     else:
         athletes = []
-        header = "🏃‍♂️ <b>СПИСОК ВАШИХ СПОРТСМЕНОВ</b>\n\n"
+        header = "🏃‍♂️ <b>Список спортсменов</b>\n\n"
     return athletes, header
 
 
@@ -295,7 +298,7 @@ async def coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             "🏋️‍♂️ Меню тренера:\n\n"
-            "Выберите действие:",
+            "Выберите действие.",
             reply_markup=reply_markup
         )
 
@@ -349,9 +352,9 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info("add_athlete_start ok user_id=%s sport=%s", user_id, sport_type_name)
 
             await update.message.reply_text(
-                f"👤 <b>Добавление нового спортсмена</b>\n\n"
-                f"<b>Вид спорта:</b> {sport_type_name}\n\n"
-                f"Введите ФИО спортсмена:",
+                f"👤 <b>Добавить спортсмена</b>\n\n"
+                f"Вид спорта: <b>{sport_type_name}</b>\n\n"
+                "Введите ФИО спортсмена:",
                 parse_mode='HTML'
             )
             return ATHLETE_FULL_NAME
@@ -1533,7 +1536,7 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         inactive_total = inactive_children + inactive_adults
 
         message = message_header
-        message += "<b>ВЫБЕРИТЕ КАТЕГОРИЮ:</b>"
+        message += "<b>Выберите категорию:</b>"
 
         # Меню категорий - сначала активные/неактивные
         keyboard = [
@@ -1653,9 +1656,9 @@ async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEF
                 else:
                     adults_count += 1
 
-        status_label = "✅ <b>АКТИВНЫЕ</b>" if status_type == "active" else "❌ <b>НЕАКТИВНЫЕ</b>"
+        status_label = "✅ <b>Активные</b>" if status_type == "active" else "❌ <b>Неактивные</b>"
         message = message_header + status_label + "\n\n"
-        message += "<b>ВЫБЕРИТЕ ВОЗРАСТНУЮ ГРУППУ:</b>"
+        message += "<b>Выберите возрастную группу:</b>"
 
         keyboard = [
             [
@@ -1741,33 +1744,33 @@ async def show_athletes_list_by_filter(
         # Фильтрация
         if filter_key == "active_children":
             filtered = [a for a in athletes if a.age_group == "children" and is_active_status(athlete_status(a))]
-            filter_title = "✅ <b>АКТИВНЫЕ - ДЕТСКАЯ ГРУППА</b>\n\n"
+            filter_title = "✅ <b>Активные — детская группа</b>\n\n"
         elif filter_key == "active_adults":
             filtered = [a for a in athletes if a.age_group != "children" and is_active_status(athlete_status(a))]
-            filter_title = "✅ <b>АКТИВНЫЕ - ВЗРОСЛАЯ ГРУППА</b>\n\n"
+            filter_title = "✅ <b>Активные — взрослая группа</b>\n\n"
         elif filter_key == "inactive_children":
             filtered = [a for a in athletes if a.age_group == "children" and not is_active_status(athlete_status(a))]
-            filter_title = "❌ <b>НЕАКТИВНЫЕ - ДЕТСКАЯ ГРУППА</b>\n\n"
+            filter_title = "❌ <b>Неактивные — детская группа</b>\n\n"
         elif filter_key == "inactive_adults":
             filtered = [a for a in athletes if a.age_group != "children" and not is_active_status(athlete_status(a))]
-            filter_title = "❌ <b>НЕАКТИВНЫЕ - ВЗРОСЛАЯ ГРУППА</b>\n\n"
+            filter_title = "❌ <b>Неактивные — взрослая группа</b>\n\n"
         elif filter_key == "all":
             filtered = list(athletes)
-            filter_title = "📋 <b>ВСЕ СПОРТСМЕНЫ</b>\n\n"
+            filter_title = "📋 <b>Все спортсмены</b>\n\n"
         else:
             # Старые фильтры для обратной совместимости
             if filter_key == "children":
                 filtered = [a for a in athletes if a.age_group == "children"]
-                filter_title = "👶 <b>ДЕТСКАЯ ГРУППА</b>\n\n"
+                filter_title = "👶 <b>Детская группа</b>\n\n"
             elif filter_key == "adults":
                 filtered = [a for a in athletes if a.age_group != "children"]
-                filter_title = "👨‍🦰 <b>ВЗРОСЛАЯ ГРУППА</b>\n\n"
+                filter_title = "👨‍🦰 <b>Взрослая группа</b>\n\n"
             elif filter_key == "inactive":
                 filtered = [a for a in athletes if not is_active_status(athlete_status(a))]
-                filter_title = "❌ <b>НЕАКТИВНЫЕ АБОНЕМЕНТЫ / НЕТ АБОНЕМЕНТА</b>\n\n"
+                filter_title = "❌ <b>Неактивные абонементы / нет абонемента</b>\n\n"
             else:
                 filtered = list(athletes)
-                filter_title = "📋 <b>ВСЕ СПОРТСМЕНЫ</b>\n\n"
+                filter_title = "📋 <b>Все спортсмены</b>\n\n"
 
         filtered.sort(key=lambda a: (a.full_name or "").strip().lower())
 
@@ -1893,7 +1896,7 @@ async def handle_back_to_menu_main(update: Update, context: ContextTypes.DEFAULT
     # Отправляем новое сообщение с меню тренера
     await query.message.reply_text(
         "🏋️‍♂️ Меню тренера:\n\n"
-        "Выберите действие:",
+        "Выберите действие.",
         reply_markup=get_coach_main_menu()
     )
 
@@ -1907,7 +1910,7 @@ async def cancel_athlete_creation(update: Update, context: ContextTypes.DEFAULT_
 
     await update.message.reply_text(
         "❌ Добавление спортсмена отменено.\n\n"
-        "Выберите действие из меню:",
+        "Выберите действие в меню.",
         reply_markup=get_coach_main_menu()
     )
 
@@ -1926,7 +1929,7 @@ async def cancel_global_freeze(update: Update, context: ContextTypes.DEFAULT_TYP
 
     await update.message.reply_text(
         "❌ Операция массовой заморозки отменена.\n\n"
-        "Выберите действие из меню:",
+        "Выберите действие в меню.",
         reply_markup=get_coach_main_menu(),
     )
     return ConversationHandler.END
@@ -1957,11 +1960,11 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         slot_rows, virtual_slots = build_today_attendance_slots(session, user, now)
         context.user_data["attendance_virtual_slots"] = virtual_slots
 
-        message = "📝 <b>ОТМЕТИТЬ ПОСЕЩЕНИЯ</b>\n\n"
+        message = "📝 <b>Отметить посещения</b>\n\n"
         if slot_rows:
             message += "Выберите тренировку.\n\n"
         else:
-            message += "Список пуст — «🔄 Обновить».\n\n"
+            message += "На сегодня тренировок нет. Нажмите «🔄 Обновить».\n\n"
 
         keyboard = []
         for slot in slot_rows:
