@@ -47,3 +47,65 @@ def test_active_subscription_for_training_group_still_matches_age():
     athlete = SimpleNamespace(age_group="children", subscriptions=[sub], sport_type="MMA")
     training = SimpleNamespace(sport_type="MMA", age_group="adults", training_format=None)
     assert active_subscription_for_training(athlete, training) is None
+
+
+def test_active_subscription_for_training_prefers_individual_for_individual_slot():
+    from utils.subscription_resolve import active_subscription_for_training
+
+    slot_dt = datetime(2026, 5, 11, 14, 0, 0)
+    group_sub = SimpleNamespace(
+        id=1,
+        sport_type="MMA",
+        is_active=True,
+        subscription_type="monthly",
+        start_date=datetime(2026, 5, 1, 0, 0, 0),
+    )
+    individual_sub = SimpleNamespace(
+        id=2,
+        sport_type="MMA",
+        is_active=True,
+        subscription_type="individual",
+        start_date=slot_dt,
+    )
+    athlete = SimpleNamespace(
+        age_group="adults",
+        subscriptions=[group_sub, individual_sub],
+        sport_type="MMA",
+    )
+    training = SimpleNamespace(
+        sport_type="MMA",
+        age_group="adults",
+        training_format="individual",
+        training_date=slot_dt,
+    )
+    assert active_subscription_for_training(athlete, training) is individual_sub
+
+
+def test_active_subscription_for_training_prefers_group_for_group_slot():
+    from utils.subscription_resolve import active_subscription_for_training
+
+    group_sub = SimpleNamespace(
+        id=10,
+        sport_type="MMA",
+        is_active=True,
+        subscription_type="monthly",
+    )
+    individual_sub = SimpleNamespace(
+        id=2,
+        sport_type="MMA",
+        is_active=True,
+        subscription_type="individual",
+        start_date=datetime(2026, 5, 11, 14, 0, 0),
+    )
+    athlete = SimpleNamespace(
+        age_group="adults",
+        subscriptions=[individual_sub, group_sub],
+        sport_type="MMA",
+    )
+    training = SimpleNamespace(
+        sport_type="MMA",
+        age_group="adults",
+        training_format=None,
+        training_date=datetime(2026, 5, 11, 20, 0, 0),
+    )
+    assert active_subscription_for_training(athlete, training) is group_sub

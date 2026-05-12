@@ -42,7 +42,7 @@ from utils.attendance_display import (
     count_implicit_absent_slots,
 )
 from utils.training_manager import TrainingManager
-from utils.discipline_keys import format_training_format_ru
+from utils.discipline_keys import discipline_key_for, format_training_format_ru
 from utils.subscription_checker import SubscriptionChecker
 from utils.subscription_resolve import (
     active_subscriptions_all,
@@ -66,6 +66,44 @@ def get_coach_sport_type(user: Union[Coach, Admin]) -> str:
         elif user.sport_type:
             return user.sport_type
     return None
+
+
+def prepare_individual_subscription_for_activation(
+    session,
+    athlete: Athlete,
+    sport_type: Optional[str],
+    *,
+    responsible_coach_id: Optional[int] = None,
+) -> Subscription:
+    """Подготовить запись individual-абонемента для активации.
+
+    - если active individual уже есть -> вернуть его;
+    - иначе создать/переиспользовать НЕактивную запись направления individual.
+    """
+    st = (sport_type or athlete.sport_type or "").strip()
+    if not st:
+        raise ValueError("Не указан вид спорта")
+
+    dk = discipline_key_for(st, format="individual")
+    existing_same = (
+        session.query(Subscription)
+        .filter_by(athlete_id=athlete.id, discipline_key=dk)
+        .first()
+    )
+    if existing_same and existing_same.is_active:
+        return existing_same
+
+    from services.subscription_service import SubscriptionService
+
+    return SubscriptionService.create_subscription(
+        session=session,
+        athlete_id=athlete.id,
+        subscription_type="individual",
+        sport_type=st,
+        discipline_key=dk,
+        subscription_format="individual",
+        responsible_coach_id=responsible_coach_id,
+    )
 
 
 def _format_subscription_type_ru(subscription_type: Optional[str]) -> str:
@@ -1299,6 +1337,15 @@ async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
             keyboard.append([
                 InlineKeyboardButton("✅ Активировать", callback_data=f"activate_sub_{subscription.id}")
             ])
+        elif (subscription.subscription_type or "").strip().lower() != "individual":
+            # Простой сценарий: из действующего группового/разового сразу открыть
+            # создание individual-направления без ручных деактиваций.
+            keyboard.append([
+                InlineKeyboardButton(
+                    "➕ Индивидуальная тренировка",
+                    callback_data=f"activate_sub_add_individual_{subscription.id}",
+                )
+            ])
         
         # Заморозка/разморозка — на уровне спортсмена (все активные абонементы)
         any_active_frozen = any(
@@ -2033,6 +2080,57 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             await query.edit_message_text("❌ У вас нет доступа")
             return
         
+        # Быстрый сценарий: из активного group/single сразу перейти к индивидуальной тренировке.
+        # callback: activate_sub_add_individual_{subscription_id}
+        if callback_data.startswith("add_individual_"):
+            base_subscription_id = int(callback_data.replace("add_individual_", ""))
+            base_subscription = session.query(Subscription).filter_by(id=base_subscription_id).first()
+            if not base_subscription:
+                await query.edit_message_text("❌ Базовый абонемент не найден")
+                return
+
+            athlete = base_subscription.athlete
+            if isinstance(user, Coach) and athlete.created_by != user.id:
+                await query.edit_message_text("❌ Вы не можете изменять этого спортсмена")
+                return
+
+            sport_type_for_sub = (base_subscription.sport_type or athlete.sport_type or "").strip()
+            if not sport_type_for_sub:
+                await query.edit_message_text(
+                    "❌ Не удалось определить вид спорта. Укажите вид спорта у спортсмена или абонемента."
+                )
+                return
+
+            subscription = prepare_individual_subscription_for_activation(
+                session,
+                athlete,
+                sport_type_for_sub,
+                responsible_coach_id=user.id if isinstance(user, Coach) else None,
+            )
+
+            # Если individual уже активен — не создаем дубли, просто открываем его карточку.
+            if subscription.is_active:
+                await query.answer("Индивидуальный абонемент уже активен", show_alert=False)
+                await show_subscription_card(
+                    update,
+                    context,
+                    override_query_data=f"subscription_{subscription.id}",
+                )
+                return
+
+            now = now_moscow()
+            reply_markup = _build_activation_calendar_individual(
+                subscription.id, now.year, now.month
+            )
+            await query.edit_message_text(
+                f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+                "🎫 <b>Индивидуальная тренировка</b>\n\n"
+                "Выберите дату <b>и время</b> первой индивидуальной тренировки:",
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            return
+
         # Если это создание нового абонемента (activate_sub_new_123)
         if callback_data.startswith("new_"):
             logger.info("[activate_sub] branch=new_subscription_choose_type")

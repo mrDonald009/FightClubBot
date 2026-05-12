@@ -645,3 +645,115 @@ def test_report_all_fields_snapshot_values():
     assert rep.payment_count_single == 1
     assert rep.payment_count_individual == 1
     assert rep.estimated_revenue_if_current_env_rub == 3550
+
+
+def test_report_same_athlete_group_and_individual_in_month():
+    """Один спортсмен с group+individual в одном месяце: агрегаты считаются корректно."""
+    s, coach = _coach_mma_session()
+    y, m = 2026, 5
+
+    athlete = Athlete(
+        full_name="Смешанный Формат",
+        sport_type="MMA",
+        age_group="adults",
+        created_by=coach.id,
+        created_at=datetime(2026, 5, 1, 10, 0, 0),
+    )
+    s.add(athlete)
+    s.flush()
+
+    sub_group = Subscription(
+        athlete_id=athlete.id,
+        discipline_key="mma_group_main",
+        sport_type="MMA",
+        subscription_type="monthly",
+        is_active=True,
+        start_date=datetime(2026, 5, 1, 0, 0, 0),
+        end_date=datetime(2026, 6, 1, 0, 0, 0),
+        created_at=datetime(2026, 5, 1, 10, 5, 0),
+    )
+    sub_individual = Subscription(
+        athlete_id=athlete.id,
+        discipline_key="mma_individual_20260511",
+        sport_type="MMA",
+        subscription_type="individual",
+        is_active=True,
+        start_date=datetime(2026, 5, 11, 14, 0, 0),
+        end_date=datetime(2026, 5, 11, 15, 30, 0),
+        created_at=datetime(2026, 5, 11, 10, 0, 0),
+    )
+    s.add_all([sub_group, sub_individual])
+    s.flush()
+
+    tr_group = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=datetime(2026, 5, 10, 18, 0, 0),
+        coach_id=coach.id,
+        is_cancelled=False,
+    )
+    tr_individual = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=datetime(2026, 5, 11, 14, 0, 0),
+        training_format="individual",
+        coach_id=coach.id,
+        is_cancelled=False,
+    )
+    s.add_all([tr_group, tr_individual])
+    s.flush()
+
+    s.add_all(
+        [
+            Attendance(
+                athlete_id=athlete.id,
+                training_id=tr_group.id,
+                subscription_id=sub_group.id,
+                attended=True,
+                created_at=datetime(2026, 5, 10, 19, 0, 0),
+            ),
+            Attendance(
+                athlete_id=athlete.id,
+                training_id=tr_individual.id,
+                subscription_id=sub_individual.id,
+                attended=True,
+                created_at=datetime(2026, 5, 11, 15, 31, 0),
+            ),
+        ]
+    )
+
+    s.add_all(
+        [
+            SubscriptionPayment(
+                subscription_id=sub_group.id,
+                amount_rubles=6500,
+                paid_at=datetime(2026, 5, 1, 11, 0, 0),
+                payment_kind="subscription_monthly",
+            ),
+            SubscriptionPayment(
+                subscription_id=sub_individual.id,
+                amount_rubles=3000,
+                paid_at=datetime(2026, 5, 11, 14, 0, 0),
+                payment_kind="individual_training",
+            ),
+        ]
+    )
+    s.commit()
+
+    rep = build_coach_period_report(s, coach, y, m)
+    s.close()
+
+    assert rep.roster_total == 1
+    assert rep.active_at_month_end == 1
+    assert rep.new_athletes_in_period == 1
+    assert rep.attendance_present == 2
+    assert rep.attendance_absent == 0
+    assert rep.athletes_present_distinct == 1
+    assert rep.athletes_absent_distinct == 0
+    assert rep.subscription_starts_in_period == 2
+    assert rep.new_subscription_rows_in_period == 2
+    assert rep.revenue_rubles == 9500
+    assert rep.payment_records_in_period == 2
+    assert rep.payment_count_monthly == 1
+    assert rep.payment_count_single == 0
+    assert rep.payment_count_individual == 1

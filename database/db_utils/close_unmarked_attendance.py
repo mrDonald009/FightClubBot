@@ -73,9 +73,10 @@ def _close_unmarked_individual_training(
         .filter(
             Subscription.is_active.is_(True),
             Subscription.subscription_type == "individual",
-            Subscription.start_date == training.training_date,
             Subscription.sport_type == training.sport_type,
             Athlete.created_by == training.coach_id,
+            func.strftime("%Y-%m-%d %H:%M", Subscription.start_date)
+            == func.strftime("%Y-%m-%d %H:%M", training.training_date),
         )
         .order_by(Subscription.id.asc())
         .all()
@@ -224,6 +225,9 @@ def close_unmarked_attendance_after_grace(
                 Athlete.age_group == training.age_group,
                 func.date(Subscription.start_date) <= training_day,
                 func.date(Subscription.end_date) >= training_day,
+                # На групповых слотах не используем individual-абонементы.
+                func.lower(func.coalesce(func.trim(Subscription.subscription_type), ""))
+                != "individual",
             )
             .order_by(Athlete.id.asc(), Subscription.id.asc())
             .all()
