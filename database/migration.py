@@ -592,6 +592,66 @@ def migrate_database():
                 finally:
                     cursor.execute("PRAGMA foreign_keys=ON")
 
+        # Снятие legacy-ограничения UNIQUE(athlete_id): нужно для мульти-абонементов
+        # (group + individual у одного спортсмена).
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='subscriptions'")
+        sub_sql_row = cursor.fetchone()
+        if sub_sql_row and sub_sql_row[0]:
+            sub_sql = sub_sql_row[0]
+            sub_sql_l = sub_sql.lower()
+            has_legacy_unique_athlete = (
+                "unique (athlete_id)" in sub_sql_l
+                or "unique(\"athlete_id\")" in sub_sql_l
+            )
+            if has_legacy_unique_athlete:
+                print("🔧 Пересоздаю subscriptions без legacy UNIQUE(athlete_id)...")
+                cursor.execute("PRAGMA foreign_keys=OFF")
+                try:
+                    new_sql = sub_sql
+                    new_sql = new_sql.replace(
+                        "IN ('monthly', 'single')",
+                        "IN ('monthly', 'single', 'individual')",
+                        1,
+                    )
+                    new_sql = new_sql.replace("UNIQUE (athlete_id),", "", 1)
+                    new_sql = new_sql.replace("UNIQUE(\"athlete_id\"),", "", 1)
+                    new_sql = new_sql.replace(
+                        "CREATE TABLE subscriptions",
+                        "CREATE TABLE subscriptions_mig_multi",
+                        1,
+                    )
+                    cursor.execute(new_sql)
+                    cursor.execute(
+                        "INSERT INTO subscriptions_mig_multi SELECT * FROM subscriptions"
+                    )
+                    cursor.execute("DROP TABLE subscriptions")
+                    cursor.execute(
+                        "ALTER TABLE subscriptions_mig_multi RENAME TO subscriptions"
+                    )
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS ix_subscriptions_active_end
+                        ON subscriptions (is_active, end_date)
+                    """)
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS ix_subscriptions_athlete_active
+                        ON subscriptions (athlete_id, is_active)
+                    """)
+                    cursor.execute("""
+                        SELECT athlete_id, discipline_key, COUNT(*) as cnt
+                        FROM subscriptions
+                        WHERE discipline_key IS NOT NULL AND discipline_key != ''
+                        GROUP BY athlete_id, discipline_key
+                        HAVING COUNT(*) > 1
+                    """)
+                    if not cursor.fetchall():
+                        cursor.execute("""
+                            CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_discipline
+                            ON subscriptions (athlete_id, discipline_key)
+                        """)
+                    print("✅ subscriptions: legacy UNIQUE(athlete_id) снят")
+                finally:
+                    cursor.execute("PRAGMA foreign_keys=ON")
+
         # Проверяем таблицу trainings
         cursor.execute("PRAGMA table_info(trainings)")
         columns = [row[1] for row in cursor.fetchall()]
