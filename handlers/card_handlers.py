@@ -2167,11 +2167,20 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             # Даже если запись individual уже активна, тренер может выбрать новый слот
             # (запись абонемента переиспользуется по текущей доменной модели).
             now = now_moscow()
-            if (
-                subscription.is_active
-                and subscription.end_date is not None
-                and subscription.end_date < now
-            ):
+            end_date = getattr(subscription, "end_date", None)
+            is_expired_active = False
+            if subscription.is_active and end_date is not None:
+                now_cmp = now
+                end_tz = getattr(end_date, "tzinfo", None)
+                now_tz = getattr(now, "tzinfo", None)
+                if end_tz is None and now_tz is not None:
+                    now_cmp = now.replace(tzinfo=None)
+                elif end_tz is not None and now_tz is None:
+                    # Сравнение aware end_date c naive now: приводим now к tz end_date.
+                    now_cmp = now.replace(tzinfo=end_tz)
+                is_expired_active = end_date < now_cmp
+
+            if is_expired_active:
                 # Устаревший active у индивидуального не должен ломать сценарий "добавить новую".
                 subscription.is_active = False
                 session.commit()
