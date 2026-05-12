@@ -255,7 +255,12 @@ async def _finalize_subscription_activation(
     )
     session.commit()
 
-    await show_subscription_card(update, context, override_query_data=f"subscription_{subscription.id}")
+    await show_subscription_card(
+        update,
+        context,
+        override_query_data=f"subscription_{subscription.id}",
+        skip_callback_answer=True,
+    )
 
 
 def _build_activation_calendar(
@@ -944,7 +949,10 @@ async def handle_activation_shift_cancel(update: Update, context: ContextTypes.D
             )
         else:
             await show_subscription_card(
-                update, context, override_query_data=f"subscription_{subscription.id}"
+                update,
+                context,
+                override_query_data=f"subscription_{subscription.id}",
+                skip_callback_answer=True,
             )
     except Exception as e:
         logger.error("❌ ОШИБКА ОТМЕНЫ СДВИГА АКТИВАЦИИ: %s", e, exc_info=True)
@@ -1086,10 +1094,17 @@ async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.close()
 
 
-async def show_subscription_card(update: Update, context: ContextTypes.DEFAULT_TYPE, override_query_data: str = None):
+async def show_subscription_card(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    override_query_data: str = None,
+    *,
+    skip_callback_answer: bool = False,
+):
     """Показать детальную информацию об абонементе или список абонементов"""
     query = update.callback_query
-    await query.answer()
+    if query and not skip_callback_answer:
+        await query.answer()
 
     # Парсим callback_data: subscription_athlete_123 или subscription_123
     query_data = override_query_data or query.data
@@ -2109,12 +2124,13 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
             )
 
             # Если individual уже активен — не создаем дубли, просто открываем его карточку.
+            # callback уже отвечен в начале handle_activate_subscription — не вызывать query.answer повторно.
             if subscription.is_active:
-                await query.answer("Индивидуальный абонемент уже активен", show_alert=False)
                 await show_subscription_card(
                     update,
                     context,
                     override_query_data=f"subscription_{subscription.id}",
+                    skip_callback_answer=True,
                 )
                 return
 
@@ -3152,7 +3168,10 @@ async def select_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
         if len(active_subs) == 1:
             only = active_subs[0]
             await show_subscription_card(
-                update, context, override_query_data=f"subscription_{only.id}"
+                update,
+                context,
+                override_query_data=f"subscription_{only.id}",
+                skip_callback_answer=True,
             )
             return
         
@@ -3539,7 +3558,10 @@ async def handle_freeze_date_pick(update: Update, context: ContextTypes.DEFAULT_
             return
 
         await show_subscription_card(
-            update, context, override_query_data=f"subscription_{back_subscription_id}"
+            update,
+            context,
+            override_query_data=f"subscription_{back_subscription_id}",
+            skip_callback_answer=True,
         )
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ ЗАМОРОЗКЕ: {e}", exc_info=True)
@@ -3590,10 +3612,11 @@ async def handle_unfreeze_subscription(update: Update, context: ContextTypes.DEF
             await query.edit_message_text(f"❌ {result['message']}")
             return
 
-        await query.answer("✅ Спортсмен разморожен", show_alert=True)
-
         await show_subscription_card(
-            update, context, override_query_data=f"subscription_{back_subscription_id}"
+            update,
+            context,
+            override_query_data=f"subscription_{back_subscription_id}",
+            skip_callback_answer=True,
         )
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ РАЗМОРОЗКЕ: {e}", exc_info=True)
