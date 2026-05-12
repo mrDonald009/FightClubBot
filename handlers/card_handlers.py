@@ -1221,6 +1221,53 @@ async def show_subscription_card(
             await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
             return
 
+        # Для маршрута subscription_athlete_* при одновременных активных
+        # group + individual показываем раздельный экран выбора, а не одну карточку.
+        if subscription_id is None:
+            coach_sport_type = get_coach_sport_type(user) if isinstance(user, Coach) else None
+            active_subs = [s for s in athlete.subscriptions if s.is_active]
+            if coach_sport_type:
+                active_subs = [s for s in active_subs if (s.sport_type or "").strip() == coach_sport_type]
+
+            def _is_individual_sub(s: Subscription) -> bool:
+                st = (getattr(s, "subscription_type", None) or "").strip().lower()
+                if st == "individual":
+                    return True
+                dk = (getattr(s, "discipline_key", None) or "").strip().lower()
+                return "individual" in dk
+
+            has_group = any(not _is_individual_sub(s) for s in active_subs)
+            has_individual = any(_is_individual_sub(s) for s in active_subs)
+            if has_group and has_individual:
+                def _sub_sort_key(s: Subscription):
+                    return (_is_individual_sub(s), -(s.id or 0))
+
+                scoped = sorted(active_subs, key=_sub_sort_key)
+                message = f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+                message += "🎫 <b>АБОНЕМЕНТЫ ПО НАПРАВЛЕНИЮ</b>\n\n"
+                message += "Выберите, какой абонемент открыть:\n\n"
+
+                keyboard = []
+                for sub in scoped:
+                    fmt = "Индивидуальные" if _is_individual_sub(sub) else "Групповые"
+                    stype = _format_subscription_type_ru(sub.subscription_type)
+                    status_icon = _status_icon_from_status_text(_format_subscription_status_ui(sub))
+                    keyboard.append([
+                        InlineKeyboardButton(
+                            f"{status_icon} {fmt} | {stype}",
+                            callback_data=f"subscription_{sub.id}",
+                        )
+                    ])
+                keyboard.append([
+                    InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete.id}")
+                ])
+                await query.edit_message_text(
+                    message,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML",
+                )
+                return
+
         # Если нет конкретного абонемента, показываем список всех абонементов
         if not subscription:
             from services.subscription_service import SubscriptionService
