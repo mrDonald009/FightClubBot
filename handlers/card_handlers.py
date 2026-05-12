@@ -2113,6 +2113,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 return
 
             athlete = base_subscription.athlete
+            athlete_id = athlete.id
             if isinstance(user, Coach) and athlete.created_by != user.id:
                 await query.edit_message_text("❌ Вы не можете изменять этого спортсмена")
                 return
@@ -2138,18 +2139,32 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 # Пытаемся безопасно взять существующий individual по направлению.
                 logger.warning(
                     "[activate_sub] add_individual prepare failed athlete_id=%s dk=%s err=%s",
-                    athlete.id,
+                    athlete_id,
                     dk_individual,
                     e,
                 )
                 # Для ошибок flush/commit очищаем транзакцию перед fallback-запросом.
+                rollback_ok = True
                 try:
                     session.rollback()
-                except Exception:
-                    pass
+                except Exception as rb_e:
+                    rollback_ok = False
+                    logger.error(
+                        "[activate_sub] add_individual rollback failed athlete_id=%s err=%s",
+                        athlete_id,
+                        rb_e,
+                        exc_info=True,
+                    )
+                if not rollback_ok:
+                    # На всякий случай поднимаем чистую сессию, чтобы избежать PendingRollbackError.
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
+                    session = Session()
                 subscription = (
                     session.query(Subscription)
-                    .filter_by(athlete_id=athlete.id, discipline_key=dk_individual)
+                    .filter_by(athlete_id=athlete_id, discipline_key=dk_individual)
                     .order_by(Subscription.is_active.desc(), Subscription.id.asc())
                     .first()
                 )
@@ -2165,7 +2180,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 logger.info(
                     "[activate_sub] add_individual missing responsible_coach_id subscription_id=%s athlete_id=%s",
                     subscription.id,
-                    athlete.id,
+                    athlete_id,
                 )
 
             # При нажатии "➕ Индивидуальная тренировка" всегда открываем календарь выбора слота.
@@ -2191,13 +2206,13 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 logger.info(
                     "[activate_sub] add_individual expired active subscription_id=%s athlete_id=%s",
                     subscription.id,
-                    athlete.id,
+                    athlete_id,
                 )
             elif subscription.is_active:
                 logger.info(
                     "[activate_sub] add_individual reuse active subscription_id=%s athlete_id=%s",
                     subscription.id,
-                    athlete.id,
+                    athlete_id,
                 )
 
             reply_markup = _build_activation_calendar_individual(
