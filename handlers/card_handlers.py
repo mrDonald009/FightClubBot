@@ -2099,7 +2099,14 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
         # Быстрый сценарий: из активного group/single сразу перейти к индивидуальной тренировке.
         # callback: activate_sub_add_individual_{subscription_id}
         if callback_data.startswith("add_individual_"):
-            base_subscription_id = int(callback_data.replace("add_individual_", ""))
+            sid_raw = callback_data.replace("add_individual_", "").strip()
+            if not sid_raw.isdigit():
+                await query.edit_message_text(
+                    "❌ Некорректная кнопка добавления индивидуальной тренировки. "
+                    "Откройте абонемент заново из карточки спортсмена."
+                )
+                return
+            base_subscription_id = int(sid_raw)
             base_subscription = session.query(Subscription).filter_by(id=base_subscription_id).first()
             if not base_subscription:
                 await query.edit_message_text("❌ Базовый абонемент не найден")
@@ -2117,15 +2124,44 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 )
                 return
 
-            subscription = prepare_individual_subscription_for_activation(
-                session,
-                athlete,
-                sport_type_for_sub,
-                responsible_coach_id=user.id if isinstance(user, Coach) else None,
-            )
+            dk_individual = discipline_key_for(sport_type_for_sub, format="individual")
+            try:
+                subscription = prepare_individual_subscription_for_activation(
+                    session,
+                    athlete,
+                    sport_type_for_sub,
+                    responsible_coach_id=user.id if isinstance(user, Coach) else None,
+                )
+            except ValueError as e:
+                # На "грязных" старых данных могли остаться противоречивые записи.
+                # Пытаемся безопасно взять существующий individual по направлению.
+                logger.warning(
+                    "[activate_sub] add_individual prepare failed athlete_id=%s dk=%s err=%s",
+                    athlete.id,
+                    dk_individual,
+                    e,
+                )
+                subscription = (
+                    session.query(Subscription)
+                    .filter_by(athlete_id=athlete.id, discipline_key=dk_individual)
+                    .order_by(Subscription.is_active.desc(), Subscription.id.asc())
+                    .first()
+                )
+                if not subscription:
+                    raise
 
             # Если individual уже активен — не создаем дубли, просто открываем его карточку.
             # callback уже отвечен в начале handle_activate_subscription — не вызывать query.answer повторно.
+            now = now_moscow()
+            if (
+                subscription.is_active
+                and subscription.end_date is not None
+                and subscription.end_date < now
+            ):
+                # Устаревший active у индивидуального не должен ломать сценарий "добавить новую".
+                subscription.is_active = False
+                session.commit()
+
             if subscription.is_active:
                 await show_subscription_card(
                     update,
@@ -2135,7 +2171,6 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 )
                 return
 
-            now = now_moscow()
             reply_markup = _build_activation_calendar_individual(
                 subscription.id, now.year, now.month
             )
