@@ -1396,9 +1396,17 @@ async def show_subscription_card(
             keyboard.append([
                 InlineKeyboardButton("✅ Активировать", callback_data=f"activate_sub_{subscription.id}")
             ])
-        elif (subscription.subscription_type or "").strip().lower() != "individual":
-            # Простой сценарий: из действующего группового/разового сразу открыть
-            # создание individual-направления без ручных деактиваций.
+        elif (subscription.subscription_type or "").strip().lower() == "individual":
+            # На карточке активного individual тоже даем быстрый переход к выбору нового слота.
+            keyboard.append([
+                InlineKeyboardButton(
+                    "➕ Новая индивидуальная тренировка",
+                    callback_data=f"activate_sub_add_individual_{subscription.id}",
+                )
+            ])
+        else:
+            # Из действующего группового/разового открываем создание individual-направления
+            # без ручных деактиваций.
             keyboard.append([
                 InlineKeyboardButton(
                     "➕ Индивидуальная тренировка",
