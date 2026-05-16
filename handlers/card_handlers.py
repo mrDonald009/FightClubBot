@@ -1475,6 +1475,11 @@ async def show_subscription_card(
 
         sub_type_display = _format_subscription_type_ru(subscription.subscription_type)
         message += f"• Тип абонемента: {sub_type_display}\n"
+        if (subscription.subscription_type or "").strip().lower() == "individual":
+            if subscription.is_active and subscription.start_date:
+                message += (
+                    f"• Слот тренировки: <b>{_format_dt(subscription.start_date)}</b>\n"
+                )
 
         # Статус
         status_display = _format_subscription_status_ui(subscription)
@@ -2328,65 +2333,33 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     sport_type_for_sub,
                     responsible_coach_id=coach_id_for_sub,
                 )
+                session.flush()
             except Exception as e:
-                # На "грязных" старых данных могли остаться противоречивые записи.
-                # Пытаемся безопасно взять существующий individual по направлению.
-                logger.warning(
-                    "[activate_sub] add_individual prepare failed athlete_id=%s dk=%s err=%s",
+                logger.error(
+                    "[activate_sub] add_individual prepare failed athlete_id=%s err=%s",
                     athlete_id,
-                    dk_individual,
                     e,
+                    exc_info=True,
                 )
-                # Для ошибок flush/commit очищаем транзакцию перед fallback-запросом.
-                rollback_ok = True
                 try:
                     session.rollback()
-                except Exception as rb_e:
-                    rollback_ok = False
-                    logger.error(
-                        "[activate_sub] add_individual rollback failed athlete_id=%s err=%s",
-                        athlete_id,
-                        rb_e,
-                        exc_info=True,
+                except Exception:
+                    pass
+                err_type = type(e).__name__
+                err_msg = str(e).strip()
+                err_tail = f" ({err_type}: {err_msg[:160]})" if err_msg else f" ({err_type})"
+                hint = ""
+                if "unique" in err_msg.lower() or "integrity" in err_type.lower():
+                    hint = (
+                        "\n\nВозможно, в БД осталось старое ограничение UNIQUE "
+                        "(athlete_id, discipline_key). Перезапустите бота для миграции "
+                        "или выполните обновление индексов subscriptions."
                     )
-                if not rollback_ok:
-                    # На всякий случай поднимаем чистую сессию, чтобы избежать PendingRollbackError.
-                    try:
-                        session.close()
-                    except Exception:
-                        pass
-                    session = Session()
-                subscription = (
-                    session.query(Subscription)
-                    .filter_by(athlete_id=athlete_id, discipline_key=dk_individual)
-                    .order_by(Subscription.is_active.desc(), Subscription.id.asc())
-                    .first()
+                await query.edit_message_text(
+                    "❌ Не удалось создать новую запись индивидуальной тренировки. "
+                    f"Повторите позже.{err_tail}{hint}"
                 )
-                if not subscription:
-                    # Доп. fallback для старых/грязных данных:
-                    # берем individual по спортсмену и виду спорта даже без корректного discipline_key.
-                    subscription = (
-                        session.query(Subscription)
-                        .filter(
-                            Subscription.athlete_id == athlete_id,
-                            Subscription.subscription_type == "individual",
-                            or_(
-                                Subscription.sport_type == sport_type_for_sub,
-                                Subscription.sport_type.is_(None),
-                            ),
-                        )
-                        .order_by(Subscription.is_active.desc(), Subscription.id.asc())
-                        .first()
-                    )
-                if not subscription:
-                    err_type = type(e).__name__
-                    err_msg = str(e).strip()
-                    err_tail = f" ({err_type}: {err_msg[:120]})" if err_msg else f" ({err_type})"
-                    await query.edit_message_text(
-                        "❌ Не удалось подготовить индивидуальную тренировку. "
-                        f"Откройте абонемент заново и повторите.{err_tail}"
-                    )
-                    return
+                return
             if not getattr(subscription, "responsible_coach_id", None) and coach_id_for_sub:
                 # На шаге открытия календаря не пишем в БД: только выбор слота.
                 # ID тренера берется далее из responsible_coach_id или athlete.created_by.
@@ -2564,27 +2537,36 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
 
                 sub_fmt = "individual" if subscription_type == "individual" else "group"
                 dk = discipline_key_for(sport_type_for_sub or "", format=sub_fmt)
-                existing_same = (
-                    session.query(Subscription)
-                    .filter_by(athlete_id=athlete_id, discipline_key=dk)
-                    .first()
-                )
-                if existing_same and existing_same.is_active:
-                    await query.edit_message_text(
-                        "❌ У спортсмена уже есть активный абонемент в этом направлении.\n"
-                        "Откройте существующий абонемент или завершите его."
+                if subscription_type != "individual":
+                    existing_same = (
+                        session.query(Subscription)
+                        .filter_by(athlete_id=athlete_id, discipline_key=dk)
+                        .first()
                     )
-                    return
+                    if existing_same and existing_same.is_active:
+                        await query.edit_message_text(
+                            "❌ У спортсмена уже есть активный абонемент в этом направлении.\n"
+                            "Откройте существующий абонемент или завершите его."
+                        )
+                        return
 
-                subscription = SubscriptionService.create_subscription(
-                    session=session,
-                    athlete_id=athlete_id,
-                    subscription_type=subscription_type,
-                    sport_type=sport_type_for_sub,
-                    discipline_key=dk,
-                    subscription_format=sub_fmt,
-                    responsible_coach_id=user.id if isinstance(user, Coach) else None,
-                )
+                if subscription_type == "individual":
+                    subscription = prepare_individual_subscription_for_activation(
+                        session,
+                        athlete,
+                        sport_type_for_sub,
+                        responsible_coach_id=user.id if isinstance(user, Coach) else None,
+                    )
+                else:
+                    subscription = SubscriptionService.create_subscription(
+                        session=session,
+                        athlete_id=athlete_id,
+                        subscription_type=subscription_type,
+                        sport_type=sport_type_for_sub,
+                        discipline_key=dk,
+                        subscription_format=sub_fmt,
+                        responsible_coach_id=user.id if isinstance(user, Coach) else None,
+                    )
 
                 subscription.subscription_type = subscription_type
                 if subscription_type == "monthly":

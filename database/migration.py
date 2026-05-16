@@ -67,19 +67,28 @@ STANDARD_SUBSCRIPTION_TARIFFS = (
 
 def _migrate_multi_individual_bookings(cursor) -> None:
     """Несколько individual-абонементов на спортсмена: partial UNIQUE вместо (athlete, discipline_key)."""
-    cursor.execute(
-        """
-        SELECT name FROM sqlite_master
-        WHERE type='index' AND name='uq_subscriptions_individual_slot'
-        """
-    )
-    if cursor.fetchone():
-        return
-
     cursor.execute("DROP INDEX IF EXISTS uq_subscriptions_athlete_discipline")
     cursor.execute(
         "DROP INDEX IF EXISTS uq_subscriptions_athlete_discipline_non_individual"
     )
+    cursor.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='subscriptions'"
+    )
+    for name, sql in cursor.fetchall():
+        if not name or not sql:
+            continue
+        name_s = str(name)
+        sql_l = sql.lower()
+        if "where" in sql_l:
+            continue
+        if name_s in (
+            "uq_subscriptions_individual_slot",
+            "uq_subscriptions_athlete_discipline_non_individual",
+        ):
+            continue
+        if "unique" in sql_l and "athlete_id" in sql_l and "discipline_key" in sql_l:
+            cursor.execute(f'DROP INDEX IF EXISTS "{name_s}"')
+            print(f"🔧 Снят legacy UNIQUE index subscriptions: {name_s}")
 
     cursor.execute(
         """
