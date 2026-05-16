@@ -7,7 +7,6 @@ from sqlalchemy.orm import sessionmaker
 from database.models import Athlete, Base, Subscription
 from handlers.card_handlers import prepare_individual_subscription_for_activation
 
-
 pytestmark = pytest.mark.db
 
 
@@ -59,7 +58,7 @@ def test_prepare_individual_from_active_group_creates_separate_inactive_individu
     s.close()
 
 
-def test_prepare_individual_reuses_existing_inactive_individual():
+def test_prepare_individual_creates_new_even_if_inactive_draft_exists():
     s = _session()
     athlete = Athlete(
         full_name="Тест Спортсмен 2",
@@ -87,17 +86,17 @@ def test_prepare_individual_reuses_existing_inactive_individual():
     sub = prepare_individual_subscription_for_activation(
         s, athlete, "MMA", responsible_coach_id=2
     )
-    assert sub.id == existing.id
+    assert sub.id != existing.id
     assert (
         s.query(Subscription)
         .filter_by(athlete_id=athlete.id, discipline_key="mma_individual")
         .count()
-        == 1
+        == 2
     )
     s.close()
 
 
-def test_prepare_individual_returns_existing_active_individual_without_duplicate():
+def test_prepare_individual_creates_new_when_active_exists():
     s = _session()
     athlete = Athlete(
         full_name="Тест Спортсмен 3",
@@ -114,7 +113,7 @@ def test_prepare_individual_returns_existing_active_individual_without_duplicate
         subscription_type="individual",
         is_active=True,
         start_date=datetime(2026, 5, 11, 14, 0, 0),
-        end_date=datetime(2026, 5, 11, 15, 30, 0),
+        end_date=datetime(2026, 5, 11, 15, 0, 0),
         trainings_total=1,
         trainings_remaining=1,
         created_at=datetime(2026, 5, 11, 10, 0, 0),
@@ -125,12 +124,13 @@ def test_prepare_individual_returns_existing_active_individual_without_duplicate
     sub = prepare_individual_subscription_for_activation(
         s, athlete, "MMA", responsible_coach_id=3
     )
-    assert sub.id == active_ind.id
-    assert sub.is_active is True
+    assert sub.id != active_ind.id
+    assert sub.is_active is False
+    assert active_ind.is_active is True
     assert (
         s.query(Subscription)
         .filter_by(athlete_id=athlete.id, discipline_key="mma_individual")
         .count()
-        == 1
+        == 2
     )
     s.close()

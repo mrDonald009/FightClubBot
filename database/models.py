@@ -1,4 +1,18 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text, and_, UniqueConstraint, Index, CheckConstraint
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    DateTime,
+    Boolean,
+    ForeignKey,
+    Text,
+    and_,
+    UniqueConstraint,
+    Index,
+    CheckConstraint,
+    text,
+)
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -167,7 +181,24 @@ class Subscription(Base):
     __table_args__ = (
         Index('ix_subscriptions_active_end', 'is_active', 'end_date'),
         Index('ix_subscriptions_athlete_active', 'athlete_id', 'is_active'),
-        UniqueConstraint('athlete_id', 'discipline_key', name='uq_subscriptions_athlete_discipline'),
+        # Групповые/месячные/разовые: одно направление на спортсмена.
+        Index(
+            'uq_subscriptions_athlete_discipline_non_individual',
+            'athlete_id',
+            'discipline_key',
+            unique=True,
+            sqlite_where=text("COALESCE(subscription_type, '') != 'individual'"),
+        ),
+        # Индивидуальные: несколько броней — уникальность пары (спортсмен, начало слота).
+        Index(
+            'uq_subscriptions_individual_slot',
+            'athlete_id',
+            'start_date',
+            unique=True,
+            sqlite_where=text(
+                "subscription_type = 'individual' AND start_date IS NOT NULL"
+            ),
+        ),
         CheckConstraint(
             "subscription_type IS NULL OR subscription_type IN ('monthly', 'single', 'individual')",
             name='ck_subscriptions_type'

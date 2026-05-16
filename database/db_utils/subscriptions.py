@@ -52,29 +52,31 @@ def create_subscription(
     else:
         raise ValueError(f"Неизвестный тип абонемента: {subscription_type}")
 
-    existing = (
-        session.query(Subscription)
-        .filter_by(athlete_id=athlete_id, discipline_key=dk)
-        .first()
-    )
-    if existing:
-        if existing.is_active:
-            raise ValueError(
-                f"У спортсмена уже есть активный абонемент по направлению {dk}"
-            )
-        existing.sport_type = sport_type
-        existing.subscription_type = subscription_type
-        existing.responsible_coach_id = rc
-        existing.trainings_total = trainings_total
-        existing.trainings_remaining = trainings_remaining
-        existing.start_date = None
-        existing.end_date = None
-        existing.is_active = False
-        existing.created_at = created_at
-        session.flush()
-        if commit:
-            session.commit()
-        return existing
+    # Индивидуальные брони — отдельная строка на каждую тренировку (слот в start_date).
+    if subscription_type != "individual":
+        existing = (
+            session.query(Subscription)
+            .filter_by(athlete_id=athlete_id, discipline_key=dk)
+            .first()
+        )
+        if existing:
+            if existing.is_active:
+                raise ValueError(
+                    f"У спортсмена уже есть активный абонемент по направлению {dk}"
+                )
+            existing.sport_type = sport_type
+            existing.subscription_type = subscription_type
+            existing.responsible_coach_id = rc
+            existing.trainings_total = trainings_total
+            existing.trainings_remaining = trainings_remaining
+            existing.start_date = None
+            existing.end_date = None
+            existing.is_active = False
+            existing.created_at = created_at
+            session.flush()
+            if commit:
+                session.commit()
+            return existing
 
     subscription = Subscription(
         athlete_id=athlete_id,

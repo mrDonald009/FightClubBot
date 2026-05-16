@@ -65,6 +65,71 @@ STANDARD_SUBSCRIPTION_TARIFFS = (
 )
 
 
+def _migrate_multi_individual_bookings(cursor) -> None:
+    """Несколько individual-абонементов на спортсмена: partial UNIQUE вместо (athlete, discipline_key)."""
+    cursor.execute(
+        """
+        SELECT name FROM sqlite_master
+        WHERE type='index' AND name='uq_subscriptions_individual_slot'
+        """
+    )
+    if cursor.fetchone():
+        return
+
+    cursor.execute("DROP INDEX IF EXISTS uq_subscriptions_athlete_discipline")
+    cursor.execute(
+        "DROP INDEX IF EXISTS uq_subscriptions_athlete_discipline_non_individual"
+    )
+
+    cursor.execute(
+        """
+        SELECT athlete_id, discipline_key, COUNT(*) as cnt
+        FROM subscriptions
+        WHERE COALESCE(subscription_type, '') != 'individual'
+        GROUP BY athlete_id, discipline_key
+        HAVING COUNT(*) > 1
+        """
+    )
+    if cursor.fetchall():
+        print(
+            "⚠️ Дубли (athlete_id, discipline_key) для group/monthly — "
+            "индексы multi-individual не созданы"
+        )
+        return
+
+    cursor.execute(
+        """
+        SELECT athlete_id, start_date, COUNT(*) as cnt
+        FROM subscriptions
+        WHERE subscription_type = 'individual' AND start_date IS NOT NULL
+        GROUP BY athlete_id, start_date
+        HAVING COUNT(*) > 1
+        """
+    )
+    if cursor.fetchall():
+        print(
+            "⚠️ Дубли individual (athlete_id, start_date) — "
+            "индекс uq_subscriptions_individual_slot не создан"
+        )
+        return
+
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_discipline_non_individual
+        ON subscriptions (athlete_id, discipline_key)
+        WHERE COALESCE(subscription_type, '') != 'individual'
+        """
+    )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_individual_slot
+        ON subscriptions (athlete_id, start_date)
+        WHERE subscription_type = 'individual' AND start_date IS NOT NULL
+        """
+    )
+    print("✅ Multi-individual: partial UNIQUE indexes (несколько броней на спортсмена)")
+
+
 def _sync_standard_subscription_tariffs(cursor) -> None:
     """Привести активные тарифы MMA / Тайский Бокс к эталонным суммам."""
     for sport, kind, amount in STANDARD_SUBSCRIPTION_TARIFFS:
@@ -812,6 +877,8 @@ def migrate_database():
             ON visit_history (status_code)
             """
         )
+
+        _migrate_multi_individual_bookings(cursor)
 
         connection.commit()
         print("🎉 Миграция завершена успешно!")

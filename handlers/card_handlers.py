@@ -70,6 +70,39 @@ def get_coach_sport_type(user: Union[Coach, Admin]) -> str:
     return None
 
 
+def _is_individual_subscription(sub: Subscription) -> bool:
+    st = (getattr(sub, "subscription_type", None) or "").strip().lower()
+    if st == "individual":
+        return True
+    dk = (getattr(sub, "discipline_key", None) or "").strip().lower()
+    return "individual" in dk
+
+
+def _individual_subscription_button_label(sub: Subscription) -> str:
+    """Подпись кнопки: индивидуальная бронь с датой/временем слота."""
+    status_icon = _status_icon_from_status_text(_format_subscription_status_ui(sub))
+    if sub.start_date:
+        slot = sub.start_date.strftime("%d.%m.%Y %H:%M")
+    else:
+        slot = "без даты"
+    sport = (sub.sport_type or "—").strip()
+    return f"{status_icon} Инд. {slot} ({sport})"
+
+
+def _supports_multi_individual_bookings(session) -> bool:
+    """Схема БД допускает несколько individual-строк на одного спортсмена."""
+    try:
+        row = session.execute(
+            text(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND name='uq_subscriptions_individual_slot'"
+            )
+        ).first()
+        return row is not None
+    except Exception:
+        return False
+
+
 def prepare_individual_subscription_for_activation(
     session,
     athlete: Athlete,
@@ -77,27 +110,15 @@ def prepare_individual_subscription_for_activation(
     *,
     responsible_coach_id: Optional[int] = None,
 ) -> Subscription:
-    """Подготовить запись individual-абонемента для активации.
-
-    - если active individual уже есть -> вернуть его;
-    - иначе создать/переиспользовать НЕактивную запись направления individual.
-    """
+    """Новая строка individual-абонемента под выбранный слот (без перезаписи прошлых броней)."""
     st = (sport_type or athlete.sport_type or "").strip()
     if not st:
         raise ValueError("Не указан вид спорта")
 
     dk = discipline_key_for(st, format="individual")
-    existing_same = (
-        session.query(Subscription)
-        .filter_by(athlete_id=athlete.id, discipline_key=dk)
-        .first()
-    )
-    if existing_same and existing_same.is_active:
-        return existing_same
+    from database.db_utils.subscriptions import create_subscription as db_create_subscription
 
-    from services.subscription_service import SubscriptionService
-
-    return SubscriptionService.create_subscription(
+    return db_create_subscription(
         session=session,
         athlete_id=athlete.id,
         subscription_type="individual",
@@ -105,6 +126,7 @@ def prepare_individual_subscription_for_activation(
         discipline_key=dk,
         subscription_format="individual",
         responsible_coach_id=responsible_coach_id,
+        commit=False,
     )
 
 
@@ -853,6 +875,32 @@ async def handle_activation_time_pick(update: Update, context: ContextTypes.DEFA
                 "❌ Выбранное время попадает в массовую заморозку. Выберите другое время."
             )
             return
+        dup_same_athlete = (
+            session.query(Subscription.id)
+            .filter(
+                Subscription.athlete_id == athlete.id,
+                Subscription.subscription_type == "individual",
+                Subscription.is_active.is_(True),
+                Subscription.start_date == start_date,
+                Subscription.id != subscription.id,
+            )
+            .first()
+        )
+        if dup_same_athlete:
+            await query.edit_message_text(
+                "❌ У спортсмена уже есть индивидуальная запись на это время. "
+                "Выберите другой слот.",
+                reply_markup=_build_individual_time_keyboard(
+                    session,
+                    subscription_id,
+                    coach_id,
+                    sport_type,
+                    start_date.year,
+                    start_date.month,
+                    start_date.day,
+                ),
+            )
+            return
         if individual_slot_conflicts(session, coach_id, sport_type, start_date):
             await query.edit_message_text(
                 "❌ Слот занят или пересекается с групповой/индивидуальной тренировкой. "
@@ -1233,37 +1281,49 @@ async def show_subscription_card(
             if coach_sport_type:
                 active_subs = [s for s in active_subs if (s.sport_type or "").strip() == coach_sport_type]
 
-            def _is_individual_sub(s: Subscription) -> bool:
-                st = (getattr(s, "subscription_type", None) or "").strip().lower()
-                if st == "individual":
-                    return True
-                dk = (getattr(s, "discipline_key", None) or "").strip().lower()
-                return "individual" in dk
-
-            has_group = any(not _is_individual_sub(s) for s in active_subs)
-            has_individual = any(_is_individual_sub(s) for s in active_subs)
-            if has_group and has_individual:
-                def _sub_sort_key(s: Subscription):
-                    return (_is_individual_sub(s), -(s.id or 0))
-
-                scoped = sorted(active_subs, key=_sub_sort_key)
+            individual_subs = sorted(
+                [s for s in active_subs if _is_individual_subscription(s)],
+                key=lambda s: (s.start_date or datetime.min, s.id or 0),
+            )
+            group_subs = sorted(
+                [s for s in active_subs if not _is_individual_subscription(s)],
+                key=lambda s: -(s.id or 0),
+            )
+            need_picker = len(group_subs) + len(individual_subs) > 1
+            if need_picker:
                 message = f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
-                message += "🎫 <b>АБОНЕМЕНТЫ ПО НАПРАВЛЕНИЮ</b>\n\n"
-                message += "Выберите, какой абонемент открыть:\n\n"
+                message += "🎫 <b>АБОНЕМЕНТЫ</b>\n\n"
+                if len(individual_subs) > 1:
+                    message += (
+                        f"Индивидуальных броней: <b>{len(individual_subs)}</b>. "
+                        "Выберите запись:\n\n"
+                    )
+                else:
+                    message += "Выберите, какой абонемент открыть:\n\n"
 
                 keyboard = []
-                for sub in scoped:
-                    fmt = "Индивидуальные" if _is_individual_sub(sub) else "Групповые"
+                for sub in group_subs:
                     stype = _format_subscription_type_ru(sub.subscription_type)
-                    status_icon = _status_icon_from_status_text(_format_subscription_status_ui(sub))
+                    status_icon = _status_icon_from_status_text(
+                        _format_subscription_status_ui(sub)
+                    )
                     keyboard.append([
                         InlineKeyboardButton(
-                            f"{status_icon} {fmt} | {stype}",
+                            f"{status_icon} Групповые | {stype}",
+                            callback_data=f"subscription_{sub.id}",
+                        )
+                    ])
+                for sub in individual_subs:
+                    keyboard.append([
+                        InlineKeyboardButton(
+                            _individual_subscription_button_label(sub),
                             callback_data=f"subscription_{sub.id}",
                         )
                     ])
                 keyboard.append([
-                    InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete.id}")
+                    InlineKeyboardButton(
+                        "🔙 Назад к карточке", callback_data=f"athlete_{athlete.id}"
+                    )
                 ])
                 await query.edit_message_text(
                     message,
@@ -1448,10 +1508,17 @@ async def show_subscription_card(
                 InlineKeyboardButton("✅ Активировать", callback_data=f"activate_sub_{subscription.id}")
             ])
         elif (subscription.subscription_type or "").strip().lower() == "individual":
-            # На карточке активного individual тоже даем быстрый переход к выбору нового слота.
+            n_ind = sum(
+                1
+                for s in athlete.subscriptions
+                if s.is_active and _is_individual_subscription(s)
+            )
+            btn_label = "➕ Ещё индивидуальная тренировка"
+            if n_ind > 1:
+                btn_label = f"➕ Ещё индивидуальная ({n_ind} активных)"
             keyboard.append([
                 InlineKeyboardButton(
-                    "➕ Новая индивидуальная тренировка",
+                    btn_label,
                     callback_data=f"activate_sub_add_individual_{subscription.id}",
                 )
             ])
@@ -2231,6 +2298,14 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     "Выполните миграцию и повторите действие."
                 )
                 return
+            if not _supports_multi_individual_bookings(session):
+                await query.edit_message_text(
+                    "❌ Схема БД не поддерживает несколько индивидуальных броней "
+                    "на одного спортсмена.\n"
+                    "Перезапустите бота после обновления кода (миграция БД) "
+                    "или выполните миграцию вручную."
+                )
+                return
 
             dk_individual = discipline_key_for(sport_type_for_sub, format="individual")
             coach_id_for_sub = user.id if isinstance(user, Coach) else None
@@ -2309,45 +2384,20 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     athlete_id,
                 )
 
-            # При нажатии "➕ Индивидуальная тренировка" всегда открываем календарь выбора слота.
-            # Даже если запись individual уже активна, тренер может выбрать новый слот
-            # (запись абонемента переиспользуется по текущей доменной модели).
             now = now_moscow()
-            end_date = getattr(subscription, "end_date", None)
-            is_expired_active = False
-            if subscription.is_active and end_date is not None:
-                now_cmp = now
-                end_tz = getattr(end_date, "tzinfo", None)
-                now_tz = getattr(now, "tzinfo", None)
-                if end_tz is None and now_tz is not None:
-                    now_cmp = now.replace(tzinfo=None)
-                elif end_tz is not None and now_tz is None:
-                    # Сравнение aware end_date c naive now: приводим now к tz end_date.
-                    now_cmp = now.replace(tzinfo=end_tz)
-                is_expired_active = end_date < now_cmp
-
-            if is_expired_active:
-                # На шаге открытия календаря не деактивируем запись в БД.
-                # Факт "просрочки" не должен блокировать выбор нового слота.
-                logger.info(
-                    "[activate_sub] add_individual expired active subscription_id=%s athlete_id=%s",
-                    subscription.id,
-                    athlete_id,
-                )
-            elif subscription.is_active:
-                logger.info(
-                    "[activate_sub] add_individual reuse active subscription_id=%s athlete_id=%s",
-                    subscription.id,
-                    athlete_id,
-                )
+            logger.info(
+                "[activate_sub] add_individual new booking subscription_id=%s athlete_id=%s",
+                subscription.id,
+                athlete_id,
+            )
 
             reply_markup = _build_activation_calendar_individual(
                 subscription.id, now.year, now.month
             )
             await query.edit_message_text(
                 f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
-                "🎫 <b>Индивидуальная тренировка</b>\n\n"
-                "Выберите дату <b>и время</b> первой индивидуальной тренировки:",
+                "🎫 <b>Новая индивидуальная тренировка</b>\n\n"
+                "Выберите дату и время слота.",
                 reply_markup=reply_markup,
                 parse_mode="HTML",
             )
