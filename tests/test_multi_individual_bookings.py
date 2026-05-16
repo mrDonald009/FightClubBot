@@ -7,7 +7,11 @@ from sqlalchemy.orm import sessionmaker
 
 from database.db_utils.subscriptions import create_subscription
 from database.models import Athlete, Base, Subscription
-from handlers.card_handlers import prepare_individual_subscription_for_activation
+from handlers.card_handlers import (
+    _has_legacy_unique_athlete_constraint,
+    _supports_multi_individual_bookings,
+    prepare_individual_subscription_for_activation,
+)
 
 pytestmark = pytest.mark.db
 
@@ -17,6 +21,14 @@ def _session():
     Base.metadata.create_all(engine)
     s = sessionmaker(bind=engine)()
     return s, engine
+
+
+def test_legacy_check_false_when_multi_individual_indexes_exist():
+    s, engine = _session()
+    assert _supports_multi_individual_bookings(s) is True
+    assert _has_legacy_unique_athlete_constraint(s) is False
+    s.close()
+    engine.dispose()
 
 
 def test_two_active_individual_subscriptions_same_athlete():
