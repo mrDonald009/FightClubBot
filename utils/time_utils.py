@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta
+from typing import Optional
 try:
     from zoneinfo import ZoneInfo  # py3.9+
 except Exception:  # pragma: no cover
@@ -14,6 +15,7 @@ except Exception:
 
 DEFAULT_TIMEZONE = "Europe/Moscow"
 DEFAULT_TRAINING_DURATION_MINUTES = 90
+DEFAULT_INDIVIDUAL_TRAINING_DURATION_MINUTES = 60
 DEFAULT_ACTIVATION_GRACE_AFTER_START_MINUTES = 30
 
 _timezone_name = os.getenv("APP_TIMEZONE", DEFAULT_TIMEZONE)
@@ -29,6 +31,21 @@ except Exception:
     TRAINING_DURATION_MINUTES = DEFAULT_TRAINING_DURATION_MINUTES
 
 TRAINING_DURATION = timedelta(minutes=TRAINING_DURATION_MINUTES)
+
+try:
+    _ind_dur_raw = int(
+        os.getenv(
+            "INDIVIDUAL_TRAINING_DURATION_MINUTES",
+            str(DEFAULT_INDIVIDUAL_TRAINING_DURATION_MINUTES),
+        )
+    )
+    INDIVIDUAL_TRAINING_DURATION_MINUTES = (
+        _ind_dur_raw if _ind_dur_raw > 0 else DEFAULT_INDIVIDUAL_TRAINING_DURATION_MINUTES
+    )
+except Exception:
+    INDIVIDUAL_TRAINING_DURATION_MINUTES = DEFAULT_INDIVIDUAL_TRAINING_DURATION_MINUTES
+
+INDIVIDUAL_TRAINING_DURATION = timedelta(minutes=INDIVIDUAL_TRAINING_DURATION_MINUTES)
 
 # После окончания пары без строки в attendances в UI считаем «Не был», а не «Не отмечено».
 # 0 — сразу после конца слота (как только now > end); раньше было 24 ч.
@@ -64,10 +81,20 @@ def today_moscow():
 
 
 def training_end_time(training_start: datetime) -> datetime:
-    """Время окончания тренировки по времени ее начала."""
+    """Время окончания групповой тренировки (TRAINING_DURATION, по умолчанию 1,5 ч)."""
     return training_start + TRAINING_DURATION
 
 
 def individual_training_end_time(training_start: datetime) -> datetime:
-    """Конец индивидуальной тренировки (по ТЗ — 1,5 ч; совпадает с TRAINING_DURATION)."""
+    """Конец индивидуальной тренировки (по умолчанию 1 ч)."""
+    return training_start + INDIVIDUAL_TRAINING_DURATION
+
+
+def training_slot_end_time(
+    training_start: datetime, training_format: Optional[str] = None
+) -> datetime:
+    """Конец слота по формату: individual — 1 ч, иначе групповая длительность."""
+    fmt = (training_format or "").strip().lower()
+    if fmt == "individual":
+        return individual_training_end_time(training_start)
     return training_end_time(training_start)

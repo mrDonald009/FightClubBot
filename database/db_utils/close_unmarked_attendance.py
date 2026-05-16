@@ -16,8 +16,10 @@ from database.models import Athlete, Attendance, Subscription, Training
 from utils.subscription_checker import SubscriptionChecker
 from utils.time_utils import (
     ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END,
+    INDIVIDUAL_TRAINING_DURATION,
     TRAINING_DURATION,
     now_moscow,
+    training_slot_end_time,
 )
 
 from .freeze_personal import is_training_in_athlete_personal_freeze
@@ -38,7 +40,8 @@ def lock_attendances_for_ended_trainings(session: Session) -> int:
     При фиксации: для «Был» выполняется списание trainings_remaining (после окончания пары).
     """
     now = now_moscow()
-    boundary = now - TRAINING_DURATION
+    min_duration = min(TRAINING_DURATION, INDIVIDUAL_TRAINING_DURATION)
+    boundary = now - min_duration
     q = (
         session.query(Attendance)
         .join(Training, Training.id == Attendance.training_id)
@@ -50,10 +53,16 @@ def lock_attendances_for_ended_trainings(session: Session) -> int:
     )
     n = 0
     for att in q:
+        training = session.query(Training).filter_by(id=att.training_id).first()
+        if training and now < training_slot_end_time(
+            training.training_date, getattr(training, "training_format", None)
+        ):
+            continue
         tid = att.training_id
         sid = att.subscription_id
         att.locked_at = now
-        training = session.query(Training).filter_by(id=tid).first()
+        if training is None:
+            training = session.query(Training).filter_by(id=tid).first()
         subscription = session.query(Subscription).filter_by(id=sid).first()
         if training and subscription:
             apply_trainings_remaining_on_present_after_lock(
@@ -190,8 +199,10 @@ def close_unmarked_attendance_after_grace(
     """
     now = now_moscow()
     start_floor = now - timedelta(days=lookback_days)
-    # Слот «можно закрыть», если: конец пары + grace <= now  ⇔  начало <= now - длительность - grace
-    latest_eligible_start = now - TRAINING_DURATION - ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END
+    min_duration = min(TRAINING_DURATION, INDIVIDUAL_TRAINING_DURATION)
+    latest_eligible_start = (
+        now - min_duration - ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END
+    )
 
     trainings = (
         session.query(Training)
@@ -207,6 +218,11 @@ def close_unmarked_attendance_after_grace(
 
     inserted = 0
     for training in trainings:
+        slot_end = training_slot_end_time(
+            training.training_date, getattr(training, "training_format", None)
+        )
+        if now <= slot_end + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END:
+            continue
         if is_training_in_global_freeze(session, training.training_date):
             continue
 

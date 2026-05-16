@@ -173,7 +173,9 @@ def test_iter_allowed_individual_blocks_group_times_on_tuesday():
         now_cutoff=datetime(2026, 4, 7, 0, 0),
     )
     labels = {s.strftime("%H:%M") for s in starts}
-    assert "09:00" in labels
+    assert "08:00" in labels
+    assert "16:00" in labels
+    assert "16:30" not in labels
     assert "17:00" not in labels
     assert "18:30" not in labels
     assert "20:00" not in labels
@@ -181,7 +183,46 @@ def test_iter_allowed_individual_blocks_group_times_on_tuesday():
     assert "19:00" not in labels
 
 
-def test_iter_allowed_individual_last_start_is_22_00():
+def test_iter_allowed_individual_saturday_thai_last_start_17_ends_18():
+    """Суббота: утренние группы тайского до 15:30; последний индивидуальный старт 17:00 → конец 18:00."""
+    from utils.time_utils import individual_training_end_time
+
+    day = date(2026, 4, 11)
+    assert day.weekday() == 5
+    session = _empty_session()
+    starts = iter_allowed_individual_starts(
+        session,
+        coach_id=1,
+        sport_type="Тайский Бокс",
+        day=day,
+        now_cutoff=datetime(2026, 4, 11, 0, 0),
+    )
+    labels = {s.strftime("%H:%M") for s in starts}
+    assert "17:00" in labels
+    last = max(starts)
+    assert last.strftime("%H:%M") == "17:00"
+    assert individual_training_end_time(last) == datetime(2026, 4, 11, 18, 0)
+
+
+def test_iter_allowed_individual_last_start_is_17_00_on_free_day():
+    """Воскресенье без групповых пар: последний старт 17:00 (слот 1 ч)."""
+    day = date(2026, 4, 5)
+    assert day.weekday() == 6
+    session = _empty_session()
+    starts = iter_allowed_individual_starts(
+        session,
+        coach_id=1,
+        sport_type="MMA",
+        day=day,
+        now_cutoff=datetime(2026, 4, 5, 0, 0),
+    )
+    assert starts
+    assert max(starts).strftime("%H:%M") == "17:00"
+    assert "17:30" not in {s.strftime("%H:%M") for s in starts}
+
+
+def test_iter_allowed_individual_last_start_before_evening_groups_monday():
+    """Понедельник: вечерние группы с 17:00 — последний старт 16:00 (слот 1 ч)."""
     day = date(2026, 4, 6)
     session = _empty_session()
     starts = iter_allowed_individual_starts(
@@ -192,8 +233,8 @@ def test_iter_allowed_individual_last_start_is_22_00():
         now_cutoff=datetime(2026, 4, 6, 0, 0),
     )
     assert starts
-    assert max(starts).strftime("%H:%M") == "22:00"
-    assert "22:30" not in {s.strftime("%H:%M") for s in starts}
+    assert max(starts).strftime("%H:%M") == "16:00"
+    assert "17:00" not in {s.strftime("%H:%M") for s in starts}
 
 
 def test_individual_slot_conflicts_with_schedule_without_db_rows():

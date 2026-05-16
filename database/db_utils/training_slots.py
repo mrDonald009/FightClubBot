@@ -7,7 +7,12 @@ from typing import Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from database.models import Subscription, Training
-from utils.time_utils import ACTIVATION_GRACE_AFTER_START, training_end_time
+from utils.time_utils import (
+    ACTIVATION_GRACE_AFTER_START,
+    individual_training_end_time,
+    training_end_time,
+    training_slot_end_time,
+)
 
 TRAINING_FORMAT_GROUP = "group"
 TRAINING_FORMAT_INDIVIDUAL = "individual"
@@ -15,8 +20,10 @@ TRAINING_FORMAT_INDIVIDUAL = "individual"
 MAX_INDIVIDUAL_SAME_SLOT = 4
 
 # Окно записи на индивидуальную тренировку (время начала слота, шаг 30 мин).
-INDIVIDUAL_DAY_START_HOUR = 9
-INDIVIDUAL_DAY_END_HOUR = 22
+# INDIVIDUAL_DAY_END_HOUR — последний допустимый старт (включительно); при длительности 1 ч
+# пара заканчивается в (END_HOUR + 1):00, напр. 17:00–18:00 в субботу после утренних групп тайского.
+INDIVIDUAL_DAY_START_HOUR = 8
+INDIVIDUAL_DAY_END_HOUR = 17
 INDIVIDUAL_SLOT_STEP_MINUTES = 30
 
 # Групповые занятия по расписанию клуба (блокируют индивидуальные слоты у любого тренера).
@@ -71,8 +78,8 @@ def _intervals_overlap(a0: datetime, a1: datetime, b0: datetime, b1: datetime) -
 
 def scheduled_group_training_intervals(day: date) -> List[Tuple[datetime, datetime]]:
     """
-    Интервалы групповых занятий MMA и тайского бокса (детская + взрослая группа)
-    на календарный день по TRAINING_SCHEDULE.
+    Интервалы групповых занятий MMA и тайского бокса (все возрастные группы)
+    на календарный день по TRAINING_SCHEDULE (длительность групповой пары).
     """
     from utils.training_manager import TrainingManager
 
@@ -138,7 +145,7 @@ def individual_slot_conflicts(
     """
     if not coach_id or not sport_type:
         return True
-    end_dt = end if end is not None else training_end_time(start)
+    end_dt = end if end is not None else individual_training_end_time(start)
     day = start.date()
 
     if _overlaps_any_interval(start, end_dt, scheduled_group_training_intervals(day)):
@@ -148,7 +155,7 @@ def individual_slot_conflicts(
         if ignore_training_id is not None and t.id == ignore_training_id:
             continue
         t0 = t.training_date
-        t1 = training_end_time(t0)
+        t1 = training_slot_end_time(t0, getattr(t, "training_format", None))
         if not _intervals_overlap(start, end_dt, t0, t1):
             continue
         fmt = (getattr(t, "training_format", None) or "").strip().lower()
@@ -182,7 +189,7 @@ def iter_allowed_individual_starts(
     now_cutoff: Optional[datetime] = None,
 ) -> List[datetime]:
     """
-    Старты индивидуальной тренировки (1,5 ч) в любой день недели:
+    Старты индивидуальной тренировки (1 ч) в любой день недели:
     с day_start_hour до day_end_hour включительно, шаг step_minutes,
     без пересечения с групповым расписанием MMA/тайского бокса и занятыми слотами тренера.
     Слот доступен до (начало + ACTIVATION_GRACE_AFTER_START), как у групповой активации.

@@ -11,6 +11,7 @@ from utils.time_utils import (
     ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END,
     now_moscow,
     training_end_time,
+    training_slot_end_time,
 )
 
 def attendance_icon_for_slot(
@@ -18,12 +19,13 @@ def attendance_icon_for_slot(
     training_start: datetime,
     *,
     now: Optional[datetime] = None,
+    training_format: Optional[str] = None,
 ) -> str:
     """✅ был · ❌ не был · ⏳ ещё нет записи и пара не закончилась (можно отметить во время пары)."""
     now = now or now_moscow()
     if attendance is not None:
         return "✅" if attendance.attended else "❌"
-    end = training_end_time(training_start)
+    end = training_slot_end_time(training_start, training_format)
     if now > end + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END:
         return "❌"
     return "⏳"
@@ -35,6 +37,7 @@ def attendance_label_ru_for_slot(
     *,
     now: Optional[datetime] = None,
     with_note: bool = False,
+    training_format: Optional[str] = None,
 ) -> str:
     """
     Короткая подпись для списков.
@@ -43,7 +46,7 @@ def attendance_label_ru_for_slot(
     now = now or now_moscow()
     if attendance is not None:
         return "Был" if attendance.attended else "Не был"
-    end = training_end_time(training_start)
+    end = training_slot_end_time(training_start, training_format)
     if now > end + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END:
         if with_note:
             return "Не был <i>(нет записи в срок)</i>"
@@ -57,7 +60,12 @@ def attendance_icon_for_training(
     *,
     now: Optional[datetime] = None,
 ) -> str:
-    return attendance_icon_for_slot(attendance, training.training_date, now=now)
+    return attendance_icon_for_slot(
+        attendance,
+        training.training_date,
+        now=now,
+        training_format=getattr(training, "training_format", None),
+    )
 
 
 def attendance_label_ru_for_training(
@@ -68,7 +76,11 @@ def attendance_label_ru_for_training(
     with_note: bool = False,
 ) -> str:
     return attendance_label_ru_for_slot(
-        attendance, training.training_date, now=now, with_note=with_note
+        attendance,
+        training.training_date,
+        now=now,
+        with_note=with_note,
+        training_format=getattr(training, "training_format", None),
     )
 
 
@@ -147,6 +159,8 @@ def count_implicit_absent_slots(
     for t in past_slots:
         if t.id in covered_tids:
             continue
-        if now > training_end_time(t.training_date) + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END:
+        if now > training_slot_end_time(
+            t.training_date, getattr(t, "training_format", None)
+        ) + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END:
             implicit += 1
     return implicit

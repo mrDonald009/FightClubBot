@@ -7,8 +7,10 @@
 from utils.time_utils import (
     ACTIVATION_GRACE_AFTER_START,
     TRAINING_DURATION,
+    individual_training_end_time,
     now_moscow,
     training_end_time,
+    training_slot_end_time,
 )
 
 from .remaining import (
@@ -80,6 +82,8 @@ __all__ = [
     "TRAINING_DURATION",
     "now_moscow",
     "training_end_time",
+    "individual_training_end_time",
+    "training_slot_end_time",
     "_active_global_freeze_covers_training_exists",
     "calculate_actual_trainings_remaining",
     "purge_auto_attendances_during_active_global_freeze",

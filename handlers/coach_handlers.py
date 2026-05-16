@@ -23,7 +23,12 @@ from typing import List, Optional, Tuple, Union
 from utils.training_manager import TrainingManager
 from utils.subscription_resolve import subscription_for_coach_sport
 from utils.attendance_display import attendance_icon_for_slot
-from utils.time_utils import now_moscow, ACTIVATION_GRACE_AFTER_START, training_end_time
+from utils.time_utils import (
+    now_moscow,
+    ACTIVATION_GRACE_AFTER_START,
+    individual_training_end_time,
+    training_end_time,
+)
 from keyboards.coach_kb import get_coach_main_menu
 from datetime import date, datetime, timedelta
 from sqlalchemy import and_, exists, func, or_
@@ -1041,7 +1046,7 @@ async def handle_add_athlete_calendar_date_pick(update: Update, context: Context
             )
             return ATHLETE_TRAINING_DATE
         await query.edit_message_text(
-            "⏰ Выберите <b>время начала</b> индивидуальной тренировки (1,5 ч):",
+            "⏰ Выберите <b>время начала</b> индивидуальной тренировки (1 ч):",
             parse_mode="HTML",
             reply_markup=time_kb,
         )
@@ -1230,6 +1235,8 @@ async def _finalize_add_athlete_from_selected_date(
 
         if subscription_type == "monthly":
             end_date = db_utils_pkg._calculate_12th_training_date(start_date, sport_type, age_group)
+        elif subscription_type == "individual":
+            end_date = db_utils_pkg.individual_training_end_time(start_date)
         else:
             end_date = db_utils_pkg.training_end_time(start_date)
 
@@ -1998,7 +2005,11 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
             age_group_ru = format_age_group_label(slot.age_group, short=True)
             format_label = "Индивидуальная" if slot.is_individual_format else "Групповая"
             slot_start = slot.training_datetime
-            slot_end = training_end_time(slot_start)
+            slot_end = (
+                individual_training_end_time(slot_start)
+                if slot.is_individual_format
+                else training_end_time(slot_start)
+            )
             is_live = slot_start <= now <= slot_end
             prefix = "" if is_live else "🔒 "
             if slot.is_individual_format:

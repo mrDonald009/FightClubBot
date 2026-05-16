@@ -54,6 +54,31 @@ def _sqlite_database_path_for_migration() -> str:
         return "database/club.db"
 
 
+# Эталонные цены (MMA и Тайский Бокс): месячный групповой, разовый, индивидуальная.
+STANDARD_SUBSCRIPTION_TARIFFS = (
+    ("MMA", "subscription_monthly", 6500),
+    ("MMA", "subscription_single", 550),
+    ("MMA", "individual_training", 3000),
+    ("Тайский Бокс", "subscription_monthly", 6500),
+    ("Тайский Бокс", "subscription_single", 550),
+    ("Тайский Бокс", "individual_training", 3000),
+)
+
+
+def _sync_standard_subscription_tariffs(cursor) -> None:
+    """Привести активные тарифы MMA / Тайский Бокс к эталонным суммам."""
+    for sport, kind, amount in STANDARD_SUBSCRIPTION_TARIFFS:
+        cursor.execute(
+            """
+            UPDATE subscription_tariffs
+            SET amount_rubles = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE sport_type_name = ? AND tariff_kind = ? AND is_active = 1
+            """,
+            (amount, sport, kind),
+        )
+    print("✅ Тарифы MMA / Тайский Бокс синхронизированы с эталоном (6500 / 550 / 3000)")
+
+
 def _seed_default_subscription_tariffs(cursor) -> None:
     """Тарифы по умолчанию: MMA и Тайский Бокс (как в TRAINING_SCHEDULE).
 
@@ -61,17 +86,10 @@ def _seed_default_subscription_tariffs(cursor) -> None:
     Одна сумма на взрослую и детскую группу (поле age_group в тарифах не используется).
 
     Вставка только если для пары (вид спорта, tariff_kind) ещё нет ни одной строки —
-    чтобы не затирать ручные правки при каждом запуске миграции.
+    затем активные строки приводятся к эталону (_sync_standard_subscription_tariffs).
     """
     note = "Групповые / разовое; взрослая и детская группа (единая цена)"
-    defaults = [
-        ("MMA", "subscription_monthly", 6500),
-        ("MMA", "subscription_single", 550),
-        ("MMA", "individual_training", 3000),
-        ("Тайский Бокс", "subscription_monthly", 6500),
-        ("Тайский Бокс", "subscription_single", 550),
-        ("Тайский Бокс", "individual_training", 3000),
-    ]
+    defaults = STANDARD_SUBSCRIPTION_TARIFFS
     for sport, kind, amount in defaults:
         cursor.execute(
             """
@@ -600,6 +618,7 @@ def migrate_database():
         )
         if cursor.fetchone():
             _seed_default_subscription_tariffs(cursor)
+            _sync_standard_subscription_tariffs(cursor)
 
         cursor.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='subscription_payments'"

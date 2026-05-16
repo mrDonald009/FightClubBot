@@ -21,6 +21,7 @@ from database.db_utils import (
     training_datetime_compact,
     parse_training_datetime_compact,
     now_moscow,
+    individual_training_end_time,
     training_end_time,
 )
 from database.db_utils.training_slots import (
@@ -229,8 +230,10 @@ async def _finalize_subscription_activation(
 
     if subscription.subscription_type == "monthly":
         end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
-    elif subscription.subscription_type in ("single", "individual"):
+    elif subscription.subscription_type == "single":
         end_date = training_end_time(start_date)
+    elif subscription.subscription_type == "individual":
+        end_date = individual_training_end_time(start_date)
     else:
         await query.edit_message_text("❌ Сначала выберите тип абонемента.")
         return
@@ -655,7 +658,7 @@ async def handle_activation_date_pick(update: Update, context: ContextTypes.DEFA
                 )
                 return
             await query.edit_message_text(
-                "⏰ Выберите <b>время начала</b> индивидуальной тренировки (длительность 1,5 ч):",
+                "⏰ Выберите <b>время начала</b> индивидуальной тренировки (длительность 1 ч):",
                 parse_mode="HTML",
                 reply_markup=time_kb,
             )
@@ -784,7 +787,7 @@ async def handle_activation_individual_shift_confirm(
             )
             return
         await query.edit_message_text(
-            "⏰ Выберите <b>время начала</b> индивидуальной тренировки (длительность 1,5 ч):",
+            "⏰ Выберите <b>время начала</b> индивидуальной тренировки (длительность 1 ч):",
             parse_mode="HTML",
             reply_markup=time_kb,
         )

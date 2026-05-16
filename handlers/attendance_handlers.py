@@ -17,7 +17,7 @@ from utils.subscription_resolve import (
     active_subscription_for_training,
     subscription_for_coach_sport,
 )
-from utils.time_utils import now_moscow, training_end_time
+from utils.time_utils import now_moscow, training_slot_end_time
 from utils.attendance_display import attendance_icon_for_training
 from services.attendance_training_flow import (
     build_step2_message_and_keyboard_rows,
@@ -213,7 +213,9 @@ async def _run_attendance_mark_query(
         return "❌ Абонемент не активен"
 
     training_start = training.training_date
-    training_end_datetime = training_end_time(training_start)
+    training_end_datetime = training_slot_end_time(
+        training_start, getattr(training, "training_format", None)
+    )
     current_time = now_moscow()
     if current_time < training_start:
         await query.edit_message_text(
