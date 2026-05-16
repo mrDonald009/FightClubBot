@@ -2334,6 +2334,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                     responsible_coach_id=coach_id_for_sub,
                 )
                 session.flush()
+                session.commit()
             except Exception as e:
                 logger.error(
                     "[activate_sub] add_individual prepare failed athlete_id=%s err=%s",
