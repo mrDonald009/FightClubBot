@@ -7,6 +7,7 @@ from utils.subscription_resolve import (
     subscription_for_coach_sport,
 )
 from utils.time_utils import now_moscow
+from utils.age_groups import format_age_group_label
 from utils.attendance_display import count_implicit_absent_slots
 
 from .users import get_coach_by_sport_type
@@ -105,6 +106,6 @@ def get_athlete_card_info(session: Session, athlete_id: int, preferred_sport_typ
             "has_telegram": bool(getattr(athlete, "telegram_id", None))
         },
         "medical_display": medical_display,
-        "age_group_display": "Детская" if athlete.age_group == "children" else "Взрослая",
+        "age_group_display": format_age_group_label(athlete.age_group),
         "status_display": status_display  # Добавляем отформатированный статус
     }

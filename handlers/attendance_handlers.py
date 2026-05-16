@@ -471,7 +471,9 @@ async def mark_attendance_start(update: Update, context: ContextTypes.DEFAULT_TY
         message = f"📅 <b>ОТМЕТКА ПОСЕЩЕНИЯ</b>\n\n"
         message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n"
         sub_ui = subscription_for_coach_sport(athlete, coach_sport)
-        message += f"🥊 {sport_for_slots} | {'Детская' if athlete.age_group == 'children' else 'Взрослая'}\n"
+        from utils.age_groups import format_age_group_label
+
+        message += f"🥊 {sport_for_slots} | {format_age_group_label(athlete.age_group)}\n"
         message += f"🎫 Абонемент #{sub_ui.id}\n"
         message += f"🏋️ Осталось тренировок: {sub_ui.trainings_remaining}\n\n"
         message += "<b>Выберите тренировку для отметки:</b>\n"

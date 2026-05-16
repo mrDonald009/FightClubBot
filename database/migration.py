@@ -93,6 +93,79 @@ def _seed_default_subscription_tariffs(cursor) -> None:
     print("✅ Тарифы по умолчанию (MMA / Тайский Бокс): проверены при необходимости добавлены")
 
 
+def _migrate_athletes_age_group_check_allow_middle(cursor, connection) -> None:
+    """SQLite: расширить CHECK athletes.age_group — добавить middle."""
+    cursor.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='athletes'"
+    )
+    row = cursor.fetchone()
+    if not row or not row[0]:
+        return
+    ddl = row[0]
+    if "'middle'" in ddl:
+        return
+
+    print("🔧 Пересоздаю таблицу athletes (CHECK age_group: children, middle, adults)...")
+    cursor.execute("PRAGMA foreign_keys=OFF")
+    cursor.execute(
+        """
+        CREATE TABLE athletes_new (
+            id INTEGER NOT NULL PRIMARY KEY,
+            telegram_id INTEGER UNIQUE,
+            full_name VARCHAR(200) NOT NULL,
+            phone VARCHAR(20),
+            birth_date DATETIME,
+            height INTEGER,
+            weight INTEGER,
+            medical_info TEXT,
+            sport_type VARCHAR(50),
+            age_group VARCHAR(20),
+            created_by INTEGER,
+            created_at DATETIME,
+            subscription_id INTEGER,
+            current_subscription_id INTEGER,
+            FOREIGN KEY(created_by) REFERENCES coaches (id),
+            CHECK (age_group IS NULL OR age_group IN ('children', 'middle', 'adults'))
+        )
+        """
+    )
+    cursor.execute("PRAGMA table_info(athletes)")
+    old_cols = [r[1] for r in cursor.fetchall()]
+    new_cols = [
+        c
+        for c in (
+            "id",
+            "telegram_id",
+            "full_name",
+            "phone",
+            "birth_date",
+            "height",
+            "weight",
+            "medical_info",
+            "sport_type",
+            "age_group",
+            "created_by",
+            "created_at",
+            "subscription_id",
+            "current_subscription_id",
+        )
+        if c in old_cols
+    ]
+    cols_csv = ", ".join(new_cols)
+    cursor.execute(f"INSERT INTO athletes_new ({cols_csv}) SELECT {cols_csv} FROM athletes")
+    cursor.execute("DROP TABLE athletes")
+    cursor.execute("ALTER TABLE athletes_new RENAME TO athletes")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS ix_athletes_created_by ON athletes (created_by)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS ix_athletes_sport_age ON athletes (sport_type, age_group)"
+    )
+    cursor.execute("PRAGMA foreign_keys=ON")
+    connection.commit()
+    print("✅ CHECK age_group обновлён (добавлена middle)")
+
+
 def migrate_database():
     """Миграция базы данных для добавления новых полей"""
 
@@ -146,14 +219,17 @@ def migrate_database():
         cursor.execute("""
             UPDATE athletes
             SET age_group = CASE
-                WHEN age_group IN ('children', 'adults') THEN age_group
+                WHEN age_group IN ('children', 'middle', 'adults') THEN age_group
                 WHEN age_group IN ('Детская', 'детская', 'child', 'kids') THEN 'children'
-                WHEN age_group IN ('Взрослая', 'взрослая', 'adult') THEN 'adults'
+                WHEN age_group IN ('Средняя', 'средняя') THEN 'middle'
+                WHEN age_group IN ('Взрослая', 'взрослая', 'adult', 'adults') THEN 'adults'
                 ELSE age_group
             END
             WHERE age_group IS NOT NULL
         """)
         print("✅ Нормализованы значения age_group (если были legacy-значения)")
+
+        _migrate_athletes_age_group_check_allow_middle(cursor, connection)
 
         # Проверяем таблицу subscriptions
         cursor.execute("PRAGMA table_info(subscriptions)")

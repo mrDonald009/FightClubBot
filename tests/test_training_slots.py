@@ -127,24 +127,38 @@ def test_active_subscription_for_training_prefers_group_for_group_slot():
 
 
 def test_scheduled_group_intervals_tuesday_thai_only():
-    """Вторник: тайский (дети 18:00, взрослые 20:00), MMA в этот день нет."""
+    """Вторник: тайский 17:00 / 18:30 / 20:00; MMA в этот день нет."""
     day = date(2026, 4, 7)
     assert day.weekday() == 1
     starts = sorted(t[0] for t in scheduled_group_training_intervals(day))
     assert starts == [
-        datetime(2026, 4, 7, 18, 0),
+        datetime(2026, 4, 7, 17, 0),
+        datetime(2026, 4, 7, 18, 30),
         datetime(2026, 4, 7, 20, 0),
     ]
 
 
 def test_scheduled_group_intervals_monday_mma():
-    """Понедельник: MMA дети 18:00, взрослые 20:00; тайского в этот день нет."""
+    """Понедельник: MMA 17:00 / 18:30 / 20:00; тайского в этот день нет."""
     day = date(2026, 4, 6)
     assert day.weekday() == 0
     starts = sorted(t[0] for t in scheduled_group_training_intervals(day))
     assert starts == [
-        datetime(2026, 4, 6, 18, 0),
+        datetime(2026, 4, 6, 17, 0),
+        datetime(2026, 4, 6, 18, 30),
         datetime(2026, 4, 6, 20, 0),
+    ]
+
+
+def test_scheduled_group_intervals_saturday_thai():
+    """Суббота: тайский 11:00 / 12:30 / 14:00."""
+    day = date(2026, 4, 11)
+    assert day.weekday() == 5
+    starts = sorted(t[0] for t in scheduled_group_training_intervals(day))
+    assert starts == [
+        datetime(2026, 4, 11, 11, 0),
+        datetime(2026, 4, 11, 12, 30),
+        datetime(2026, 4, 11, 14, 0),
     ]
 
 
@@ -160,10 +174,11 @@ def test_iter_allowed_individual_blocks_group_times_on_tuesday():
     )
     labels = {s.strftime("%H:%M") for s in starts}
     assert "09:00" in labels
-    assert "18:00" not in labels
+    assert "17:00" not in labels
+    assert "18:30" not in labels
     assert "20:00" not in labels
     assert "17:30" not in labels
-    assert "19:30" not in labels
+    assert "19:00" not in labels
 
 
 def test_iter_allowed_individual_last_start_is_22_00():
@@ -184,7 +199,7 @@ def test_iter_allowed_individual_last_start_is_22_00():
 def test_individual_slot_conflicts_with_schedule_without_db_rows():
     session = _empty_session()
     assert individual_slot_conflicts(
-        session, 1, "MMA", datetime(2026, 4, 7, 18, 0)
+        session, 1, "MMA", datetime(2026, 4, 7, 18, 30)
     )
     assert not individual_slot_conflicts(
         session, 1, "MMA", datetime(2026, 4, 7, 10, 0)

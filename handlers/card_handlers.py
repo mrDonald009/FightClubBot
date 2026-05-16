@@ -36,6 +36,7 @@ from typing import List, Optional, Union
 from sqlalchemy import and_, exists, func, or_, text
 from sqlalchemy.orm import joinedload
 import html
+from utils.age_groups import format_age_group_label
 from utils.attendance_display import (
     attendance_icon_for_training,
     attendance_label_ru_for_training,
@@ -1383,7 +1384,7 @@ async def show_subscription_card(
             auto_deduct_daily_trainings(session)
 
         # Получаем возрастную группу спортсмена
-        age_group_display = "Детская" if athlete.age_group == "children" else "Взрослая" if athlete.age_group else "Не указана"
+        age_group_display = format_age_group_label(athlete.age_group)
 
         # Формируем сообщение (только необходимая информация)
         message = f"🎫 <b>АБОНЕМЕНТ</b>\n\n"
@@ -1632,13 +1633,7 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
             filled = int(usage_percent * progress_length / 100)
             progress_bar = "█" * filled + "░" * (progress_length - filled)
 
-            age_group_display = (
-                "Детская"
-                if athlete.age_group == "children"
-                else "Взрослая"
-                if athlete.age_group
-                else "Не указана"
-            )
+            age_group_display = format_age_group_label(athlete.age_group)
             dk = getattr(subscription, "discipline_key", None)
 
             message_text += f"<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
@@ -2070,13 +2065,7 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
         message = f"🎫 <b>АБОНЕМЕНТ #{subscription.id}</b>\n\n"
         message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
         
-        age_group_display = (
-            "Детская"
-            if athlete.age_group == "children"
-            else "Взрослая"
-            if athlete.age_group
-            else "Не указана"
-        )
+        age_group_display = format_age_group_label(athlete.age_group)
         dk = getattr(subscription, "discipline_key", None)
 
         message += f"<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
@@ -2933,7 +2922,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                             f"{training_date} — {html.escape(t.sport_type)} — Индивидуальная"
                         )
                     else:
-                        age_group_ru = "Дети" if t.age_group == "children" else "Взрослые"
+                        age_group_ru = format_age_group_label(t.age_group, short=True)
                         slot_desc = (
                             f"{training_date} — {html.escape(t.sport_type)} ({age_group_ru}) — Групповая"
                         )
@@ -2978,7 +2967,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                         f"{training_date} — {html.escape(tr.sport_type)} — Индивидуальная"
                     )
                 else:
-                    age_group_ru = "Дети" if tr.age_group == "children" else "Взрослые"
+                    age_group_ru = format_age_group_label(tr.age_group, short=True)
                     slot_desc = (
                         f"{training_date} — {html.escape(tr.sport_type)} ({age_group_ru}) — Групповая"
                     )

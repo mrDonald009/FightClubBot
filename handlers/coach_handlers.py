@@ -91,11 +91,14 @@ def _coach_calendar_message_header(*, current_year: int, current_month: int) -> 
 ATHLETE_LIST_PAGE_SIZE = 20
 _ATHLETE_LIST_FILTER_CODES = {
     "active_children": "ac",
+    "active_middle": "am",
     "active_adults": "aa",
     "inactive_children": "ic",
+    "inactive_middle": "im",
     "inactive_adults": "ia",
     "all": "al",
     "children": "ch",
+    "middle": "md",
     "adults": "ad",
     "inactive": "in",
 }
@@ -606,7 +609,10 @@ async def add_athlete_medical(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data['medical_info'] = medical_info
     logger.debug("add_athlete_medical user_id=%s ok -> age_group", user_id)
 
-    keyboard = [[KeyboardButton("Детская"), KeyboardButton("Взрослая")]]
+    keyboard = [
+        [KeyboardButton("Детская"), KeyboardButton("Средняя")],
+        [KeyboardButton("Взрослая")],
+    ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
         "👦👨 Выберите возрастную группу:",
@@ -627,16 +633,18 @@ async def add_athlete_age_group(update: Update, context: ContextTypes.DEFAULT_TY
         await cancel_athlete_creation(update, context)
         return ConversationHandler.END
 
-    # Только кнопки "Детская" / "Взрослая"
-    if user_text not in ("Детская", "Взрослая"):
+    # Только кнопки «Детская» / «Средняя» / «Взрослая»
+    from utils.age_groups import BUTTON_LABELS, parse_age_group_button
+
+    if user_text not in BUTTON_LABELS:
         await update.message.reply_text(
-            "❌ Выберите возрастную группу кнопкой: <b>Детская</b> или <b>Взрослая</b>.",
+            "❌ Выберите возрастную группу кнопкой: <b>Детская</b>, <b>Средняя</b> или <b>Взрослая</b>.",
             parse_mode="HTML"
         )
         return ATHLETE_AGE_GROUP
 
     age_group_ru = user_text
-    age_group = "children" if age_group_ru == "Детская" else "adults"
+    age_group = parse_age_group_button(age_group_ru)
     context.user_data['age_group'] = age_group
     logger.debug("add_athlete_age_group user_id=%s group=%s -> subscription", user_id, age_group)
 
@@ -1319,7 +1327,9 @@ async def _finalize_add_athlete_from_selected_date(
 
         session.commit()
 
-        age_group_display = "Детская" if athlete.age_group == "children" else "Взрослая"
+        from utils.age_groups import format_age_group_label
+
+        age_group_display = format_age_group_label(athlete.age_group)
         subscription_type_ru = context.user_data['subscription_type_ru']
         context.user_data.clear()
 
@@ -1507,11 +1517,11 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_athletes = len(athletes)
         
         # Подсчет активных/неактивных с разбивкой на детей/взрослых
-        active_children = 0
-        active_adults = 0
-        inactive_children = 0
-        inactive_adults = 0
-        
+        from utils.age_groups import AGE_GROUP_ADULTS, AGE_GROUP_CODES
+
+        active_by_group = {g: 0 for g in AGE_GROUP_CODES}
+        inactive_by_group = {g: 0 for g in AGE_GROUP_CODES}
+
         coach_sport = resolve_coach_sport_type_name(user)
 
         for a in athletes:
@@ -1520,20 +1530,16 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
             )
             is_active = is_active_status(status)
-
-            if a.age_group == "children":
-                if is_active:
-                    active_children += 1
-                else:
-                    inactive_children += 1
+            grp = (a.age_group or "").strip() or AGE_GROUP_ADULTS
+            if grp not in active_by_group:
+                grp = AGE_GROUP_ADULTS
+            if is_active:
+                active_by_group[grp] += 1
             else:
-                if is_active:
-                    active_adults += 1
-                else:
-                    inactive_adults += 1
+                inactive_by_group[grp] += 1
 
-        active_total = active_children + active_adults
-        inactive_total = inactive_children + inactive_adults
+        active_total = sum(active_by_group.values())
+        inactive_total = sum(inactive_by_group.values())
 
         message = message_header
         message += "<b>Выберите категорию:</b>"
@@ -1598,11 +1604,14 @@ async def athletes_list_filtered(update: Update, context: ContextTypes.DEFAULT_T
         return
     if filter_key in (
         "active_children",
+        "active_middle",
         "active_adults",
         "inactive_children",
+        "inactive_middle",
         "inactive_adults",
         "all",
         "children",
+        "middle",
         "adults",
         "inactive",
     ):
@@ -1633,9 +1642,10 @@ async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEF
             return status in ("active", "expiring_soon")
 
         # Подсчет детей и взрослых в выбранной категории
-        children_count = 0
-        adults_count = 0
-        
+        from utils.age_groups import AGE_GROUP_ADULTS, AGE_GROUP_CODES, SHORT_LABELS
+
+        counts = {g: 0 for g in AGE_GROUP_CODES}
+
         coach_sport = resolve_coach_sport_type_name(user)
 
         for a in athletes:
@@ -1644,27 +1654,28 @@ async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEF
                 SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
             )
             is_active = is_active_status(status)
+            grp = (a.age_group or "").strip() or AGE_GROUP_ADULTS
+            if grp not in counts:
+                grp = AGE_GROUP_ADULTS
 
             if status_type == "active" and is_active:
-                if a.age_group == "children":
-                    children_count += 1
-                else:
-                    adults_count += 1
+                counts[grp] += 1
             elif status_type == "inactive" and not is_active:
-                if a.age_group == "children":
-                    children_count += 1
-                else:
-                    adults_count += 1
+                counts[grp] += 1
 
         status_label = "✅ <b>Активные</b>" if status_type == "active" else "❌ <b>Неактивные</b>"
         message = message_header + status_label + "\n\n"
         message += "<b>Выберите возрастную группу:</b>"
 
+        group_buttons = [
+            InlineKeyboardButton(
+                f"{SHORT_LABELS[g]} ({counts[g]})",
+                callback_data=f"athletes_{status_type}_{g}",
+            )
+            for g in AGE_GROUP_CODES
+        ]
         keyboard = [
-            [
-                InlineKeyboardButton(f"👶 Дети ({children_count})", callback_data=f"athletes_{status_type}_children"),
-                InlineKeyboardButton(f"👨‍🦰 Взрослые ({adults_count})", callback_data=f"athletes_{status_type}_adults"),
-            ],
+            group_buttons,
             [
                 InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories"),
                 InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main"),
@@ -1742,17 +1753,28 @@ async def show_athletes_list_by_filter(
             )
 
         # Фильтрация
+        from utils.age_groups import format_age_group_label
+
+        def _matches_group(athlete: Athlete, group_code: str) -> bool:
+            return (athlete.age_group or "").strip() == group_code
+
         if filter_key == "active_children":
-            filtered = [a for a in athletes if a.age_group == "children" and is_active_status(athlete_status(a))]
+            filtered = [a for a in athletes if _matches_group(a, "children") and is_active_status(athlete_status(a))]
             filter_title = "✅ <b>Активные — детская группа</b>\n\n"
+        elif filter_key == "active_middle":
+            filtered = [a for a in athletes if _matches_group(a, "middle") and is_active_status(athlete_status(a))]
+            filter_title = "✅ <b>Активные — средняя группа</b>\n\n"
         elif filter_key == "active_adults":
-            filtered = [a for a in athletes if a.age_group != "children" and is_active_status(athlete_status(a))]
+            filtered = [a for a in athletes if _matches_group(a, "adults") and is_active_status(athlete_status(a))]
             filter_title = "✅ <b>Активные — взрослая группа</b>\n\n"
         elif filter_key == "inactive_children":
-            filtered = [a for a in athletes if a.age_group == "children" and not is_active_status(athlete_status(a))]
+            filtered = [a for a in athletes if _matches_group(a, "children") and not is_active_status(athlete_status(a))]
             filter_title = "❌ <b>Неактивные — детская группа</b>\n\n"
+        elif filter_key == "inactive_middle":
+            filtered = [a for a in athletes if _matches_group(a, "middle") and not is_active_status(athlete_status(a))]
+            filter_title = "❌ <b>Неактивные — средняя группа</b>\n\n"
         elif filter_key == "inactive_adults":
-            filtered = [a for a in athletes if a.age_group != "children" and not is_active_status(athlete_status(a))]
+            filtered = [a for a in athletes if _matches_group(a, "adults") and not is_active_status(athlete_status(a))]
             filter_title = "❌ <b>Неактивные — взрослая группа</b>\n\n"
         elif filter_key == "all":
             filtered = list(athletes)
@@ -1760,10 +1782,13 @@ async def show_athletes_list_by_filter(
         else:
             # Старые фильтры для обратной совместимости
             if filter_key == "children":
-                filtered = [a for a in athletes if a.age_group == "children"]
+                filtered = [a for a in athletes if _matches_group(a, "children")]
                 filter_title = "👶 <b>Детская группа</b>\n\n"
+            elif filter_key == "middle":
+                filtered = [a for a in athletes if _matches_group(a, "middle")]
+                filter_title = "🧒 <b>Средняя группа</b>\n\n"
             elif filter_key == "adults":
-                filtered = [a for a in athletes if a.age_group != "children"]
+                filtered = [a for a in athletes if _matches_group(a, "adults")]
                 filter_title = "👨‍🦰 <b>Взрослая группа</b>\n\n"
             elif filter_key == "inactive":
                 filtered = [a for a in athletes if not is_active_status(athlete_status(a))]
@@ -1968,7 +1993,9 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for slot in slot_rows:
-            age_group_ru = "Дети" if slot.age_group == "children" else "Взрослые"
+            from utils.age_groups import format_age_group_label
+
+            age_group_ru = format_age_group_label(slot.age_group, short=True)
             format_label = "Индивидуальная" if slot.is_individual_format else "Групповая"
             slot_start = slot.training_datetime
             slot_end = training_end_time(slot_start)
@@ -2294,7 +2321,9 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
         if trainings:
             message += f"<b>Тренировок: {len(trainings)}</b>\n\n"
             for training in trainings:
-                age_group_ru = "Дети" if training.age_group == "children" else "Взрослые"
+                from utils.age_groups import format_age_group_label
+
+                age_group_ru = format_age_group_label(training.age_group, short=True)
                 time_str = training.training_date.strftime("%H:%M")
                 is_individual_slot = (
                     (getattr(training, "training_format", None) or "").strip().lower()
@@ -2406,7 +2435,9 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
 
             if sport_type_name:
                 schedule_info = {}
-                for age_group in ['children', 'adults']:
+                from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
+
+                for age_group in AGE_GROUP_CODES:
                     schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {}).get(age_group)
                     if schedule and weekday in schedule['days']:
                         schedule_info[age_group] = schedule
@@ -2415,7 +2446,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     message += "<b>По расписанию:</b>\n\n"
 
                     for age_group, schedule in schedule_info.items():
-                        age_group_ru = "Дети" if age_group == "children" else "Взрослые"
+                        age_group_ru = format_age_group_label(age_group, short=True)
                         time_str = TrainingManager.get_time_str_for_weekday(schedule, weekday)
                         hour, minute = TrainingManager.get_hour_minute_for_weekday(
                             schedule, weekday

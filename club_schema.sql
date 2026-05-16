@@ -65,7 +65,7 @@ CREATE TABLE athletes (
 	created_by INTEGER, 
 	created_at DATETIME, subscription_id INTEGER, current_subscription_id INTEGER, 
 	PRIMARY KEY (id), 
-	CONSTRAINT ck_athletes_age_group CHECK (age_group IS NULL OR age_group IN ('children', 'adults')), 
+	CONSTRAINT ck_athletes_age_group CHECK (age_group IS NULL OR age_group IN ('children', 'middle', 'adults')), 
 	UNIQUE (telegram_id), 
 	FOREIGN KEY(created_by) REFERENCES coaches (id)
 );

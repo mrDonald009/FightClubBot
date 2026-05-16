@@ -80,3 +80,11 @@ def test_age_group_adults():
     state = _run(ch.add_athlete_age_group(update, context))
     assert state == ch.ATHLETE_SUBSCRIPTION
     assert context.user_data["age_group"] == "adults"
+
+
+def test_age_group_middle():
+    update = _update_with_message("Средняя")
+    context = _ctx({})
+    state = _run(ch.add_athlete_age_group(update, context))
+    assert state == ch.ATHLETE_SUBSCRIPTION
+    assert context.user_data["age_group"] == "middle"

@@ -106,7 +106,7 @@ class Athlete(Base):
         Index('ix_athletes_created_by', 'created_by'),  # частые выборки по тренеру
         Index('ix_athletes_sport_age', 'sport_type', 'age_group'),  # календарь/фильтры
         CheckConstraint(
-            "age_group IS NULL OR age_group IN ('children', 'adults')",
+            "age_group IS NULL OR age_group IN ('children', 'middle', 'adults')",
             name='ck_athletes_age_group'
         ),
         {'extend_existing': True}
@@ -121,7 +121,7 @@ class Athlete(Base):
     weight = Column(Integer)  # вес в кг
     medical_info = Column(Text)
     sport_type = Column(String(50))
-    age_group = Column(String(20))  # children, adults
+    age_group = Column(String(20))  # children, middle, adults
     created_by = Column(Integer, ForeignKey('coaches.id'), nullable=True)  # Тренер, который добавил
     created_at = Column(DateTime, default=datetime.utcnow)  # Дата регистрации в зале
 
@@ -276,7 +276,7 @@ class Training(Base):
 
     id = Column(Integer, primary_key=True)
     sport_type = Column(String(50))  # MMA, Thai
-    age_group = Column(String(20))  # children, adults
+    age_group = Column(String(20))  # children, middle, adults
     training_date = Column(DateTime)
     is_cancelled = Column(Boolean, default=False)
     coach_id = Column(Integer, ForeignKey('coaches.id'), nullable=True)  # Тренер, проводящий тренировку

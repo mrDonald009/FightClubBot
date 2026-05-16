@@ -26,8 +26,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 SCHEDULE = {
-    "MMA": {"children": [0, 2, 4], "adults": [0, 2, 4]},
-    "Тайский Бокс": {"children": [1, 3, 5], "adults": [1, 3, 5]},
+    "MMA": {"children": [0, 2, 4], "middle": [0, 2, 4], "adults": [0, 2, 4]},
+    "Тайский Бокс": {"children": [1, 3, 5], "middle": [1, 3, 5], "adults": [1, 3, 5]},
 }
 
 

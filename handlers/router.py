@@ -1114,7 +1114,13 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(athletes_categories, pattern="^athletes_categories$")
     )
     registrar.register(
-        CallbackQueryHandler(athletes_list_filtered, pattern="^athletes_(all|active|inactive|active_children|active_adults|inactive_children|inactive_adults|children|adults)$")
+        CallbackQueryHandler(
+            athletes_list_filtered,
+            pattern=(
+                "^athletes_(all|active|inactive|active_children|active_middle|active_adults|"
+                "inactive_children|inactive_middle|inactive_adults|children|middle|adults)$"
+            ),
+        )
     )
     registrar.register(
         CallbackQueryHandler(athletes_list_page, pattern=r"^alpg_[a-z]{2}_\d+$")

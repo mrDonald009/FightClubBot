@@ -18,6 +18,7 @@ from database.db_utils.training_slots import (
     individual_slot_training_ids,
 )
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
+from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow, training_end_time
 
@@ -156,7 +157,7 @@ def build_today_attendance_slots(
                 )
             )
         for sport_type_name, schedule_map in TrainingManager.TRAINING_SCHEDULE.items():
-            for age_group in ("children", "adults"):
+            for age_group in AGE_GROUP_CODES:
                 schedule = schedule_map.get(age_group)
                 if not schedule or weekday not in schedule.get("days", []):
                     continue
@@ -245,7 +246,7 @@ def resolve_training_from_attendance_callback(
         coach_id = slot.get("coach_id")
         if (
             not sport_type
-            or age_group not in ("children", "adults")
+            or age_group not in AGE_GROUP_CODES
             or not isinstance(hour, int)
             or not isinstance(minute, int)
         ):
@@ -399,7 +400,7 @@ def build_step2_message_and_keyboard_rows(
             f"{html.escape(training.sport_type)} — Индивидуальная\n\n"
         )
     else:
-        age_group_ru = "детская группа" if training.age_group == "children" else "взрослая группа"
+        age_group_ru = f"{format_age_group_label(training.age_group).lower()} группа"
         slot_title = (
             f"{training.training_date.strftime('%d.%m.%Y %H:%M')} — "
             f"{html.escape(training.sport_type)}, {age_group_ru}\n\n"
