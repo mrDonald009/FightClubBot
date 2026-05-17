@@ -3037,9 +3037,11 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                         )
                         if att is not None and att.attended:
                             status_code = "present"
+                            history_source = "attendance_mark"
                         else:
                             # В истории не используем «не отмечено»: отсутствие отметки считаем «не был».
                             status_code = "absent"
+                            history_source = "attendance_mark" if att is not None else "calendar_derived"
                         upsert_visit_history_for_training(
                             session,
                             athlete_id=athlete_id,
@@ -3047,7 +3049,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                             attendance=att,
                             status_code=status_code,
                             status_label=label,
-                            source="derived",
+                            source=history_source,
                             recorded_at=now,
                         )
 
@@ -3124,6 +3126,16 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
             keyboard = [
                 [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")]
             ]
+            if isinstance(user, Coach):
+                keyboard.insert(
+                    0,
+                    [
+                        InlineKeyboardButton(
+                            "📅 К календарю тренера",
+                            callback_data=f"calendar_{now.year}_{now.month}",
+                        )
+                    ],
+                )
             reply_markup = InlineKeyboardMarkup(keyboard)
         
             await query.edit_message_text(
