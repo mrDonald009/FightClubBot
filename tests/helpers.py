@@ -1,6 +1,7 @@
 """Переиспользуемые тестовые хелперы для сценариев handlers."""
 
 import asyncio
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 
@@ -58,3 +59,28 @@ def update_with_message(text, user_id=777):
 def update_with_query(data, user_id=777):
     query = FakeCallbackQuery(data=data)
     return SimpleNamespace(callback_query=query, effective_user=SimpleNamespace(id=user_id))
+
+
+@contextmanager
+def fake_get_db_session(session):
+    """Подмена core.database.get_db_session в тестах handlers."""
+    try:
+        yield session
+    finally:
+        if hasattr(session, "close"):
+            session.close()
+
+
+def patch_get_db_session(monkeypatch, module, session_factory):
+    """module — импортированный handlers.*; session_factory — callable -> session."""
+
+    @contextmanager
+    def _cm():
+        s = session_factory()
+        try:
+            yield s
+        finally:
+            if hasattr(s, "close"):
+                s.close()
+
+    monkeypatch.setattr(module, "get_db_session", _cm)

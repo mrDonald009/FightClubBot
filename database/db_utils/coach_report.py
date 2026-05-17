@@ -28,14 +28,7 @@ from database.models import (
     SubscriptionPayment,
     Training,
 )
-
-
-def coach_sport_type_name(coach: Coach) -> Optional[str]:
-    if getattr(coach, "sport_type_rel", None) is not None:
-        return coach.sport_type_rel.name
-    if coach.sport_type:
-        return coach.sport_type
-    return None
+from utils.coach_sport import coach_sport_type_name
 
 
 def coach_roster_athlete_ids(session: OrmSession, coach: Coach) -> List[int]:

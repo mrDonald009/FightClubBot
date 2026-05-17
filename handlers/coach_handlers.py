@@ -1,7 +1,8 @@
 import logging
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
-from database.models import Session, Coach, Athlete, Subscription, Training, Attendance, GlobalFreeze
+from database.models import Coach, Athlete, Subscription, Training, Attendance, GlobalFreeze
+from core.database import get_db_session
 from database.db_utils import (
     get_user_by_telegram_id,
     get_user_role,
@@ -20,6 +21,7 @@ from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
 )
 from typing import List, Optional, Tuple, Union
+from utils.coach_sport import coach_sport_type_name
 from utils.training_manager import TrainingManager
 from utils.subscription_resolve import subscription_for_coach_sport
 from utils.attendance_display import attendance_icon_for_slot
@@ -58,17 +60,6 @@ _MONTH_NAMES_RU = (
     "Ноябрь",
     "Декабрь",
 )
-
-
-def resolve_coach_sport_type_name(user) -> Optional[str]:
-    """Имя вида спорта для тренера: связь sport_types приоритетнее legacy-строки. У админа — None."""
-    if isinstance(user, Coach):
-        if user.sport_type_rel:
-            return user.sport_type_rel.name
-        if user.sport_type:
-            return user.sport_type
-        return None
-    return None
 
 
 def truncate_for_telegram_message(text: str, limit: int = TELEGRAM_MESSAGE_SAFE_LEN) -> str:
@@ -293,28 +284,26 @@ async def coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     print(f"🏠 ПОЛЬЗОВАТЕЛЬ {user_id} ОТКРЫЛ МЕНЮ ТРЕНЕРА")
 
-    session = Session()
     try:
-        user = get_user_by_telegram_id(session, user_id)
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, user_id)
 
-        if not user or get_user_role(user) != "coach":
-            print(f"❌ У ПОЛЬЗОВАТЕЛЬ {user_id} НЕТ ДОСТУПА К МЕНЮ ТРЕНЕРА")
-            await update.message.reply_text("❌ У вас нет доступа к этому меню")
-            return
+            if not user or get_user_role(user) != "coach":
+                print(f"❌ У ПОЛЬЗОВАТЕЛЬ {user_id} НЕТ ДОСТУПА К МЕНЮ ТРЕНЕРА")
+                await update.message.reply_text("❌ У вас нет доступа к этому меню")
+                return
 
-        reply_markup = get_coach_main_menu()
+            reply_markup = get_coach_main_menu()
 
-        await update.message.reply_text(
-            "🏋️‍♂️ Меню тренера:\n\n"
-            "Выберите действие.",
-            reply_markup=reply_markup
-        )
+            await update.message.reply_text(
+                "🏋️‍♂️ Меню тренера:\n\n"
+                "Выберите действие.",
+                reply_markup=reply_markup
+            )
 
     except Exception as e:
         print(f"❌ ОШИБКА В МЕНЮ ТРЕНЕРА: {e}")
         await update.message.reply_text("❌ Произошла ошибка")
-    finally:
-        session.close()
 
 
 async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -325,58 +314,56 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Очищаем данные предыдущего процесса
     context.user_data.clear()
 
-    session = Session()
     try:
-        user = get_user_by_telegram_id(session, user_id)
-        logger.debug("add_athlete_start user_id=%s found=%s type=%s", user_id, bool(user), type(user).__name__ if user else None)
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, user_id)
+            logger.debug("add_athlete_start user_id=%s found=%s type=%s", user_id, bool(user), type(user).__name__ if user else None)
 
-        if not user:
-            logger.info("add_athlete_start denied: user not in DB user_id=%s", user_id)
-            await update.message.reply_text("❌ Пользователь не найден в базе данных. Используйте /start для регистрации.")
-            return ConversationHandler.END
+            if not user:
+                logger.info("add_athlete_start denied: user not in DB user_id=%s", user_id)
+                await update.message.reply_text("❌ Пользователь не найден в базе данных. Используйте /start для регистрации.")
+                return ConversationHandler.END
 
-        user_role = get_user_role(user)
-        logger.debug("add_athlete_start user_id=%s role=%s", user_id, user_role)
+            user_role = get_user_role(user)
+            logger.debug("add_athlete_start user_id=%s role=%s", user_id, user_role)
 
-        if user_role != "coach":
-            logger.info("add_athlete_start denied: wrong role user_id=%s role=%s", user_id, user_role)
+            if user_role != "coach":
+                logger.info("add_athlete_start denied: wrong role user_id=%s role=%s", user_id, user_role)
+                await update.message.reply_text(
+                    "❌ Добавление спортсменов доступно только тренерам. Администратор использует своё меню."
+                )
+                return ConversationHandler.END
+
+            if not isinstance(user, Coach):
+                await update.message.reply_text("❌ У вас нет прав для добавления спортсменов")
+                return ConversationHandler.END
+
+            sport_type_name = None
+            if user.sport_type_rel:
+                sport_type_name = user.sport_type_rel.name
+            elif user.sport_type:
+                sport_type_name = user.sport_type
+            if sport_type_name:
+                context.user_data['sport_type'] = sport_type_name
+                context.user_data['coach_id'] = user.id
+                logger.info("add_athlete_start ok user_id=%s sport=%s", user_id, sport_type_name)
+
+                await update.message.reply_text(
+                    f"👤 <b>Добавить спортсмена</b>\n\n"
+                    f"Вид спорта: <b>{sport_type_name}</b>\n\n"
+                    "Введите ФИО спортсмена:",
+                    parse_mode='HTML'
+                )
+                return ATHLETE_FULL_NAME
             await update.message.reply_text(
-                "❌ Добавление спортсменов доступно только тренерам. Администратор использует своё меню."
+                "❌ У вас не указана спортивная специализация в профиле. Обратитесь к администратору."
             )
             return ConversationHandler.END
-
-        if not isinstance(user, Coach):
-            await update.message.reply_text("❌ У вас нет прав для добавления спортсменов")
-            return ConversationHandler.END
-
-        sport_type_name = None
-        if user.sport_type_rel:
-            sport_type_name = user.sport_type_rel.name
-        elif user.sport_type:
-            sport_type_name = user.sport_type
-        if sport_type_name:
-            context.user_data['sport_type'] = sport_type_name
-            context.user_data['coach_id'] = user.id
-            logger.info("add_athlete_start ok user_id=%s sport=%s", user_id, sport_type_name)
-
-            await update.message.reply_text(
-                f"👤 <b>Добавить спортсмена</b>\n\n"
-                f"Вид спорта: <b>{sport_type_name}</b>\n\n"
-                "Введите ФИО спортсмена:",
-                parse_mode='HTML'
-            )
-            return ATHLETE_FULL_NAME
-        await update.message.reply_text(
-            "❌ У вас не указана спортивная специализация в профиле. Обратитесь к администратору."
-        )
-        return ConversationHandler.END
 
     except Exception as e:
         logger.exception("add_athlete_start error user_id=%s", user_id)
         await update.message.reply_text("❌ Произошла ошибка")
         return ConversationHandler.END
-    finally:
-        session.close()
 
 
 async def add_athlete_full_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -480,8 +467,7 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     full_phone = f"+7-{cleaned_input}"
     
     # Проверяем на дубликаты телефона
-    session = Session()
-    try:
+    with get_db_session() as session:
         existing_athlete = session.query(Athlete).filter_by(phone=full_phone).first()
         if existing_athlete:
             await update.message.reply_text(
@@ -508,8 +494,6 @@ async def add_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
                 return ATHLETE_PHONE
-    finally:
-        session.close()
     
     context.user_data['phone'] = full_phone
     logger.debug("add_athlete_phone user_id=%s ok -> birth_date step", user_id)
@@ -1031,13 +1015,10 @@ async def handle_add_athlete_calendar_date_pick(update: Update, context: Context
             await query.answer()
             await query.edit_message_text("❌ Не найден coach_id в сессии добавления.")
             return ConversationHandler.END
-        session = Session()
-        try:
+        with get_db_session() as session:
             time_kb = _coach_add_athlete_individual_time_keyboard(
                 session, coach_id, sport_type, year, month, day
             )
-        finally:
-            session.close()
         await query.answer()
         if not time_kb:
             await query.edit_message_text(
@@ -1085,8 +1066,7 @@ async def handle_add_athlete_individual_time_pick(
     now = now_moscow()
     if now > start_dt + ACTIVATION_GRACE_AFTER_START:
         grace_min = int(ACTIVATION_GRACE_AFTER_START.total_seconds() // 60)
-        session = Session()
-        try:
+        with get_db_session() as session:
             coach_id = context.user_data.get("coach_id")
             sport_type = context.user_data.get("sport_type")
             if not coach_id or not sport_type:
@@ -1105,16 +1085,13 @@ async def handle_add_athlete_individual_time_pick(
                     start_dt.day,
                 ),
             )
-        finally:
-            session.close()
         return ATHLETE_TRAINING_DATE
     coach_id = context.user_data.get("coach_id")
     sport_type = context.user_data.get("sport_type")
     if not coach_id or not sport_type:
         await query.edit_message_text("❌ Недостаточно данных в сессии.")
         return ConversationHandler.END
-    session = Session()
-    try:
+    with get_db_session() as session:
         if db_utils_pkg.is_training_in_global_freeze(session, start_dt):
             await query.edit_message_text(
                 "❌ Выбранное время в периоде массовой заморозки. Выберите другое время.",
@@ -1141,8 +1118,6 @@ async def handle_add_athlete_individual_time_pick(
                 ),
             )
             return ATHLETE_TRAINING_DATE
-    finally:
-        session.close()
     return await _finalize_add_athlete_from_selected_date(
         query, context, start_dt.replace(hour=0, minute=0, second=0, microsecond=0),
         exact_start=start_dt,
@@ -1189,200 +1164,194 @@ async def _finalize_add_athlete_from_selected_date(
             sport_type,
             age_group,
         )
-    session = Session()
     try:
-        # Если первая тренировка попала в активную массовую заморозку,
-        # просим подтверждение с автоматическим сдвигом.
-        if (
-            exact_start is None
-            and db_utils_pkg.is_training_in_global_freeze(session, start_date)
-            and not skip_freeze_confirm
-        ):
-            freeze = session.query(GlobalFreeze).filter(
-                GlobalFreeze.is_active == True,
-                GlobalFreeze.start_date <= start_date,
-                GlobalFreeze.end_date >= start_date
-            ).order_by(GlobalFreeze.end_date.desc()).first()
+        with get_db_session() as session:
+            # Если первая тренировка попала в активную массовую заморозку,
+            # просим подтверждение с автоматическим сдвигом.
+            if (
+                exact_start is None
+                and db_utils_pkg.is_training_in_global_freeze(session, start_date)
+                and not skip_freeze_confirm
+            ):
+                freeze = session.query(GlobalFreeze).filter(
+                    GlobalFreeze.is_active == True,
+                    GlobalFreeze.start_date <= start_date,
+                    GlobalFreeze.end_date >= start_date
+                ).order_by(GlobalFreeze.end_date.desc()).first()
 
-            shifted_start = db_utils_pkg.find_next_non_frozen_training_date(
-                session,
-                (freeze.end_date + timedelta(seconds=1)) if freeze else (start_date + timedelta(days=1)),
-                sport_type,
-                age_group,
-            )
-            context.user_data["pending_shifted_start_date"] = shifted_start.isoformat()
-
-            confirm_cb = f"addath_shift_confirm_{db_utils_pkg.training_datetime_compact(shifted_start)}"
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Подтвердить сдвиг", callback_data=confirm_cb),
-                    InlineKeyboardButton("❌ Выбрать другую дату", callback_data="addath_shift_cancel"),
-                ]
-            ])
-            freeze_label = (
-                f"{freeze.start_date.strftime('%d.%m.%Y')} — {freeze.end_date.strftime('%d.%m.%Y')}"
-                if freeze else "активной массовой заморозки"
-            )
-            await query.edit_message_text(
-                "⚠️ Выбранная первая тренировка попадает в период массовой заморозки.\n\n"
-                f"Период заморозки: <b>{freeze_label}</b>\n"
-                f"Предлагаемая новая дата старта: <b>{shifted_start.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
-                "Подтвердить сдвиг и продолжить создание?",
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-            return ATHLETE_TRAINING_DATE
-
-        if subscription_type == "monthly":
-            end_date = db_utils_pkg._calculate_12th_training_date(start_date, sport_type, age_group)
-        elif subscription_type == "individual":
-            end_date = db_utils_pkg.individual_training_end_time(start_date)
-        else:
-            end_date = db_utils_pkg.training_end_time(start_date)
-
-        from utils.discipline_keys import discipline_key_for
-
-        sub_fmt = "individual" if subscription_type == "individual" else "group"
-        dk = discipline_key_for(sport_type, format=sub_fmt)
-
-        athlete = create_athlete(
-            session=session,
-            telegram_id=None,
-            full_name=context.user_data['full_name'],
-            phone=context.user_data['phone'],
-            birth_date=context.user_data.get('birth_date'),
-            medical_info=context.user_data['medical_info'],
-            sport_type=sport_type,
-            age_group=age_group,
-            created_by=context.user_data.get("coach_id"),
-            commit=False,
-        )
-        subscription = db_utils_pkg.create_subscription(
-            session=session,
-            athlete_id=athlete.id,
-            subscription_type=subscription_type,
-            sport_type=sport_type,
-            discipline_key=dk,
-            subscription_format=sub_fmt,
-            commit=False,
-        )
-        subscription.start_date = start_date
-        subscription.end_date = end_date
-        subscription.is_active = True
-
-        if subscription_type == "monthly":
-            db_utils_pkg._create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
-        elif subscription_type == "individual":
-            coach_id = athlete.created_by or context.user_data.get("coach_id")
-            training = (
-                session.query(Training)
-                .filter(
-                    Training.sport_type == sport_type,
-                    Training.training_date == start_date,
-                    Training.is_cancelled.is_(False),
-                    Training.training_format == TRAINING_FORMAT_INDIVIDUAL,
-                    Training.coach_id == coach_id,
+                shifted_start = db_utils_pkg.find_next_non_frozen_training_date(
+                    session,
+                    (freeze.end_date + timedelta(seconds=1)) if freeze else (start_date + timedelta(days=1)),
+                    sport_type,
+                    age_group,
                 )
-                .order_by(Training.id.asc())
-                .first()
-            )
-            if not training:
-                training = Training(
-                    sport_type=sport_type,
-                    age_group=INDIVIDUAL_TRAINING_AGE_GROUP_STORED,
-                    training_date=start_date,
-                    is_cancelled=False,
-                    coach_id=coach_id,
-                    training_format=TRAINING_FORMAT_INDIVIDUAL,
+                context.user_data["pending_shifted_start_date"] = shifted_start.isoformat()
+
+                confirm_cb = f"addath_shift_confirm_{db_utils_pkg.training_datetime_compact(shifted_start)}"
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Подтвердить сдвиг", callback_data=confirm_cb),
+                        InlineKeyboardButton("❌ Выбрать другую дату", callback_data="addath_shift_cancel"),
+                    ]
+                ])
+                freeze_label = (
+                    f"{freeze.start_date.strftime('%d.%m.%Y')} — {freeze.end_date.strftime('%d.%m.%Y')}"
+                    if freeze else "активной массовой заморозки"
                 )
-                session.add(training)
-                session.flush()
-            elif coach_id and not getattr(training, "coach_id", None):
-                training.coach_id = coach_id
-                session.flush()
-        else:
-            coach_id = athlete.created_by or context.user_data.get('coach_id')
-            training = session.query(Training).filter_by(
+                await query.edit_message_text(
+                    "⚠️ Выбранная первая тренировка попадает в период массовой заморозки.\n\n"
+                    f"Период заморозки: <b>{freeze_label}</b>\n"
+                    f"Предлагаемая новая дата старта: <b>{shifted_start.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+                    "Подтвердить сдвиг и продолжить создание?",
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                return ATHLETE_TRAINING_DATE
+
+            if subscription_type == "monthly":
+                end_date = db_utils_pkg._calculate_12th_training_date(start_date, sport_type, age_group)
+            elif subscription_type == "individual":
+                end_date = db_utils_pkg.individual_training_end_time(start_date)
+            else:
+                end_date = db_utils_pkg.training_end_time(start_date)
+
+            from utils.discipline_keys import discipline_key_for
+
+            sub_fmt = "individual" if subscription_type == "individual" else "group"
+            dk = discipline_key_for(sport_type, format=sub_fmt)
+
+            athlete = create_athlete(
+                session=session,
+                telegram_id=None,
+                full_name=context.user_data['full_name'],
+                phone=context.user_data['phone'],
+                birth_date=context.user_data.get('birth_date'),
+                medical_info=context.user_data['medical_info'],
                 sport_type=sport_type,
                 age_group=age_group,
-                training_date=start_date,
-                is_cancelled=False
-            ).first()
-            if not training:
-                training = Training(
+                created_by=context.user_data.get("coach_id"),
+                commit=False,
+            )
+            subscription = db_utils_pkg.create_subscription(
+                session=session,
+                athlete_id=athlete.id,
+                subscription_type=subscription_type,
+                sport_type=sport_type,
+                discipline_key=dk,
+                subscription_format=sub_fmt,
+                commit=False,
+            )
+            subscription.start_date = start_date
+            subscription.end_date = end_date
+            subscription.is_active = True
+
+            if subscription_type == "monthly":
+                db_utils_pkg._create_and_deduct_scheduled_trainings(session, subscription, athlete, start_date, end_date)
+            elif subscription_type == "individual":
+                coach_id = athlete.created_by or context.user_data.get("coach_id")
+                training = (
+                    session.query(Training)
+                    .filter(
+                        Training.sport_type == sport_type,
+                        Training.training_date == start_date,
+                        Training.is_cancelled.is_(False),
+                        Training.training_format == TRAINING_FORMAT_INDIVIDUAL,
+                        Training.coach_id == coach_id,
+                    )
+                    .order_by(Training.id.asc())
+                    .first()
+                )
+                if not training:
+                    training = Training(
+                        sport_type=sport_type,
+                        age_group=INDIVIDUAL_TRAINING_AGE_GROUP_STORED,
+                        training_date=start_date,
+                        is_cancelled=False,
+                        coach_id=coach_id,
+                        training_format=TRAINING_FORMAT_INDIVIDUAL,
+                    )
+                    session.add(training)
+                    session.flush()
+                elif coach_id and not getattr(training, "coach_id", None):
+                    training.coach_id = coach_id
+                    session.flush()
+            else:
+                coach_id = athlete.created_by or context.user_data.get('coach_id')
+                training = session.query(Training).filter_by(
                     sport_type=sport_type,
                     age_group=age_group,
                     training_date=start_date,
-                    is_cancelled=False,
-                    coach_id=coach_id
-                )
-                session.add(training)
-                session.flush()
-            elif coach_id and not getattr(training, "coach_id", None):
-                training.coach_id = coach_id
-                session.flush()
+                    is_cancelled=False
+                ).first()
+                if not training:
+                    training = Training(
+                        sport_type=sport_type,
+                        age_group=age_group,
+                        training_date=start_date,
+                        is_cancelled=False,
+                        coach_id=coach_id
+                    )
+                    session.add(training)
+                    session.flush()
+                elif coach_id and not getattr(training, "coach_id", None):
+                    training.coach_id = coach_id
+                    session.flush()
 
-        # Защитная синхронизация после установки дат/типа.
-        db_utils_pkg.sync_subscription_trainings_remaining(session, subscription)
+            # Защитная синхронизация после установки дат/типа.
+            db_utils_pkg.sync_subscription_trainings_remaining(session, subscription)
 
-        record_payment_on_subscription_activation(
-            session,
-            subscription,
-            start_date,
-            recorded_by_telegram_id=query.from_user.id,
-        )
+            record_payment_on_subscription_activation(
+                session,
+                subscription,
+                start_date,
+                recorded_by_telegram_id=query.from_user.id,
+            )
 
-        session.commit()
+            session.commit()
 
-        from utils.age_groups import format_age_group_label
+            from utils.age_groups import format_age_group_label
 
-        age_group_display = format_age_group_label(athlete.age_group)
-        subscription_type_ru = context.user_data['subscription_type_ru']
-        context.user_data.clear()
+            age_group_display = format_age_group_label(athlete.age_group)
+            subscription_type_ru = context.user_data['subscription_type_ru']
+            context.user_data.clear()
 
-        logger.info(
-            "add_athlete done athlete_id=%s name=%s subscription=%s first_training=%s",
-            athlete.id,
-            athlete.full_name,
-            subscription_type_ru,
-            start_date,
-        )
+            logger.info(
+                "add_athlete done athlete_id=%s name=%s subscription=%s first_training=%s",
+                athlete.id,
+                athlete.full_name,
+                subscription_type_ru,
+                start_date,
+            )
 
-        birth_date_display = (
-            athlete.birth_date.strftime('%d.%m.%Y')
-            if getattr(athlete, "birth_date", None) else "Не указана"
-        )
-        success_text = (
-            f"✅ Спортсмен успешно добавлен!\n\n"
-            f"📝 ФИО: {athlete.full_name}\n"
-            f"📞 Телефон: {athlete.phone}\n"
-            f"🎂 Дата рождения: {birth_date_display}\n"
-            f"🥊 Вид спорта: {athlete.sport_type}\n"
-            f"👥 Группа: {age_group_display}\n"
-            f"🎫 Абонемент: {subscription_type_ru}\n"
-            f"📅 Первая тренировка: {start_date.strftime('%d.%m.%Y %H:%M')}\n"
-            f"🏥 Мед. информация: {athlete.medical_info}\n"
-            f"💪 Осталось тренировок: {subscription.trainings_remaining}"
-        )
-        # Отправляем единое итоговое сообщение сразу с главным меню:
-        # так не нужны служебные "тихие" сообщения и не появляется лишний вывод.
-        await query.message.reply_text(
-            success_text,
-            reply_markup=get_coach_main_menu()
-        )
-        try:
-            await query.message.delete()
-        except Exception:
-            pass
+            birth_date_display = (
+                athlete.birth_date.strftime('%d.%m.%Y')
+                if getattr(athlete, "birth_date", None) else "Не указана"
+            )
+            success_text = (
+                f"✅ Спортсмен успешно добавлен!\n\n"
+                f"📝 ФИО: {athlete.full_name}\n"
+                f"📞 Телефон: {athlete.phone}\n"
+                f"🎂 Дата рождения: {birth_date_display}\n"
+                f"🥊 Вид спорта: {athlete.sport_type}\n"
+                f"👥 Группа: {age_group_display}\n"
+                f"🎫 Абонемент: {subscription_type_ru}\n"
+                f"📅 Первая тренировка: {start_date.strftime('%d.%m.%Y %H:%M')}\n"
+                f"🏥 Мед. информация: {athlete.medical_info}\n"
+                f"💪 Осталось тренировок: {subscription.trainings_remaining}"
+            )
+            # Отправляем единое итоговое сообщение сразу с главным меню:
+            # так не нужны служебные "тихие" сообщения и не появляется лишний вывод.
+            await query.message.reply_text(
+                success_text,
+                reply_markup=get_coach_main_menu()
+            )
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
     except Exception as e:
-        try:
-            session.rollback()
-        except Exception:
-            pass
         logger.error("add_athlete finalize failed: %s", e, exc_info=True)
         await query.edit_message_text("❌ Ошибка при добавлении спортсмена")
-    finally:
-        session.close()
 
     return ConversationHandler.END
 
@@ -1486,99 +1455,99 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.debug("athletes_list user_id=%s", user_id)
 
-    session = Session()
     try:
-        user = get_user_by_telegram_id(session, user_id)
-        logger.debug("athletes_list user_id=%s found=%s type=%s", user_id, bool(user), type(user).__name__ if user else None)
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, user_id)
+            logger.debug("athletes_list user_id=%s found=%s type=%s", user_id, bool(user), type(user).__name__ if user else None)
 
-        if not user or get_user_role(user) != 'coach':
-            if update.callback_query:
-                await update.callback_query.answer("❌ У вас нет доступа")
-            else:
-                await update.message.reply_text("❌ У вас нет доступа к этому меню")
-            return
+            if not user or get_user_role(user) != 'coach':
+                if update.callback_query:
+                    await update.callback_query.answer("❌ У вас нет доступа")
+                else:
+                    await update.message.reply_text("❌ У вас нет доступа к этому меню")
+                return
 
-        athletes, message_header = load_athletes_for_list(session, user)
+            athletes, message_header = load_athletes_for_list(session, user)
 
-        if not athletes:
+            if not athletes:
+                if update.callback_query:
+                    await update.callback_query.answer()
+                    await update.callback_query.edit_message_text(
+                        "📭 У вас пока нет спортсменов.\n\n"
+                        "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
+                    )
+                else:
+                    await update.message.reply_text(
+                        "📭 У вас пока нет спортсменов.\n\n"
+                        "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
+                    )
+                return
+
+            # Считаем статистику по категориям
+            from utils.subscription_checker import SubscriptionChecker
+
+            def is_active_status(status: str) -> bool:
+                # expiring_soon всё еще считаем активным
+                return status in ("active", "expiring_soon")
+
+            total_athletes = len(athletes)
+        
+            # Подсчет активных/неактивных с разбивкой на детей/взрослых
+            from utils.age_groups import AGE_GROUP_ADULTS, AGE_GROUP_CODES
+
+            active_by_group = {g: 0 for g in AGE_GROUP_CODES}
+            inactive_by_group = {g: 0 for g in AGE_GROUP_CODES}
+
+            coach_sport = coach_sport_type_name(user)
+
+            for a in athletes:
+                sub = subscription_for_coach_sport(a, coach_sport)
+                status = (
+                    SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
+                )
+                is_active = is_active_status(status)
+                grp = (a.age_group or "").strip() or AGE_GROUP_ADULTS
+                if grp not in active_by_group:
+                    grp = AGE_GROUP_ADULTS
+                if is_active:
+                    active_by_group[grp] += 1
+                else:
+                    inactive_by_group[grp] += 1
+
+            active_total = sum(active_by_group.values())
+            inactive_total = sum(inactive_by_group.values())
+
+            message = message_header
+            message += "<b>Выберите категорию:</b>"
+
+            # Меню категорий - сначала активные/неактивные
+            keyboard = [
+                [
+                    InlineKeyboardButton(f"✅ Активные ({active_total})", callback_data="athletes_active"),
+                    InlineKeyboardButton(f"❌ Неактивные ({inactive_total})", callback_data="athletes_inactive"),
+                ],
+                [
+                    InlineKeyboardButton(f"📋 Все ({total_athletes})", callback_data="athletes_all"),
+                ],
+                [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")],
+            ]
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            # Отправляем или редактируем сообщение
             if update.callback_query:
                 await update.callback_query.answer()
                 await update.callback_query.edit_message_text(
-                    "📭 У вас пока нет спортсменов.\n\n"
-                    "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
+                    message,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
                 )
             else:
                 await update.message.reply_text(
-                    "📭 У вас пока нет спортсменов.\n\n"
-                    "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
+                    message,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
                 )
-            return
-
-        # Считаем статистику по категориям
-        from utils.subscription_checker import SubscriptionChecker
-
-        def is_active_status(status: str) -> bool:
-            # expiring_soon всё еще считаем активным
-            return status in ("active", "expiring_soon")
-
-        total_athletes = len(athletes)
-        
-        # Подсчет активных/неактивных с разбивкой на детей/взрослых
-        from utils.age_groups import AGE_GROUP_ADULTS, AGE_GROUP_CODES
-
-        active_by_group = {g: 0 for g in AGE_GROUP_CODES}
-        inactive_by_group = {g: 0 for g in AGE_GROUP_CODES}
-
-        coach_sport = resolve_coach_sport_type_name(user)
-
-        for a in athletes:
-            sub = subscription_for_coach_sport(a, coach_sport)
-            status = (
-                SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
-            )
-            is_active = is_active_status(status)
-            grp = (a.age_group or "").strip() or AGE_GROUP_ADULTS
-            if grp not in active_by_group:
-                grp = AGE_GROUP_ADULTS
-            if is_active:
-                active_by_group[grp] += 1
-            else:
-                inactive_by_group[grp] += 1
-
-        active_total = sum(active_by_group.values())
-        inactive_total = sum(inactive_by_group.values())
-
-        message = message_header
-        message += "<b>Выберите категорию:</b>"
-
-        # Меню категорий - сначала активные/неактивные
-        keyboard = [
-            [
-                InlineKeyboardButton(f"✅ Активные ({active_total})", callback_data="athletes_active"),
-                InlineKeyboardButton(f"❌ Неактивные ({inactive_total})", callback_data="athletes_inactive"),
-            ],
-            [
-                InlineKeyboardButton(f"📋 Все ({total_athletes})", callback_data="athletes_all"),
-            ],
-            [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")],
-        ]
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        # Отправляем или редактируем сообщение
-        if update.callback_query:
-            await update.callback_query.answer()
-            await update.callback_query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-        else:
-            await update.message.reply_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
 
     except Exception as e:
         import traceback
@@ -1591,8 +1560,6 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.callback_query.answer(error_msg)
         else:
             await update.message.reply_text(error_msg)
-    finally:
-        session.close()
 
 
 async def athletes_list_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1632,77 +1599,75 @@ async def athletes_list_filtered(update: Update, context: ContextTypes.DEFAULT_T
 async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEFAULT_TYPE, status_type: str):
     """Показать подменю с детьми/взрослыми для активных или неактивных"""
     user_id = update.effective_user.id
-    session = Session()
     try:
-        user = get_user_by_telegram_id(session, user_id)
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, user_id)
 
-        if not user or get_user_role(user) != 'coach':
+            if not user or get_user_role(user) != 'coach':
+                if update.callback_query:
+                    await update.callback_query.answer("❌ У вас нет доступа")
+                return
+
+            athletes, message_header = load_athletes_for_list(session, user)
+
+            from utils.subscription_checker import SubscriptionChecker
+
+            def is_active_status(status: str) -> bool:
+                return status in ("active", "expiring_soon")
+
+            # Подсчет детей и взрослых в выбранной категории
+            from utils.age_groups import AGE_GROUP_ADULTS, AGE_GROUP_CODES, SHORT_LABELS
+
+            counts = {g: 0 for g in AGE_GROUP_CODES}
+
+            coach_sport = coach_sport_type_name(user)
+
+            for a in athletes:
+                sub = subscription_for_coach_sport(a, coach_sport)
+                status = (
+                    SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
+                )
+                is_active = is_active_status(status)
+                grp = (a.age_group or "").strip() or AGE_GROUP_ADULTS
+                if grp not in counts:
+                    grp = AGE_GROUP_ADULTS
+
+                if status_type == "active" and is_active:
+                    counts[grp] += 1
+                elif status_type == "inactive" and not is_active:
+                    counts[grp] += 1
+
+            status_label = "✅ <b>Активные</b>" if status_type == "active" else "❌ <b>Неактивные</b>"
+            message = message_header + status_label + "\n\n"
+            message += "<b>Выберите возрастную группу:</b>"
+
+            group_buttons = [
+                InlineKeyboardButton(
+                    f"{SHORT_LABELS[g]} ({counts[g]})",
+                    callback_data=f"athletes_{status_type}_{g}",
+                )
+                for g in AGE_GROUP_CODES
+            ]
+            keyboard = [
+                group_buttons,
+                [
+                    InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories"),
+                    InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main"),
+                ],
+            ]
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
             if update.callback_query:
-                await update.callback_query.answer("❌ У вас нет доступа")
-            return
-
-        athletes, message_header = load_athletes_for_list(session, user)
-
-        from utils.subscription_checker import SubscriptionChecker
-
-        def is_active_status(status: str) -> bool:
-            return status in ("active", "expiring_soon")
-
-        # Подсчет детей и взрослых в выбранной категории
-        from utils.age_groups import AGE_GROUP_ADULTS, AGE_GROUP_CODES, SHORT_LABELS
-
-        counts = {g: 0 for g in AGE_GROUP_CODES}
-
-        coach_sport = resolve_coach_sport_type_name(user)
-
-        for a in athletes:
-            sub = subscription_for_coach_sport(a, coach_sport)
-            status = (
-                SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
-            )
-            is_active = is_active_status(status)
-            grp = (a.age_group or "").strip() or AGE_GROUP_ADULTS
-            if grp not in counts:
-                grp = AGE_GROUP_ADULTS
-
-            if status_type == "active" and is_active:
-                counts[grp] += 1
-            elif status_type == "inactive" and not is_active:
-                counts[grp] += 1
-
-        status_label = "✅ <b>Активные</b>" if status_type == "active" else "❌ <b>Неактивные</b>"
-        message = message_header + status_label + "\n\n"
-        message += "<b>Выберите возрастную группу:</b>"
-
-        group_buttons = [
-            InlineKeyboardButton(
-                f"{SHORT_LABELS[g]} ({counts[g]})",
-                callback_data=f"athletes_{status_type}_{g}",
-            )
-            for g in AGE_GROUP_CODES
-        ]
-        keyboard = [
-            group_buttons,
-            [
-                InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories"),
-                InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main"),
-            ],
-        ]
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        if update.callback_query:
-            await update.callback_query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
+                await update.callback_query.edit_message_text(
+                    message,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
     except Exception as e:
         print(f"❌ ОШИБКА ПРИ ПОКАЗЕ ПОДМЕНЮ: {e}")
         if update.callback_query:
             await update.callback_query.answer("❌ Ошибка при загрузке меню")
-    finally:
-        session.close()
 
 
 async def athletes_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1730,176 +1695,176 @@ async def show_athletes_list_by_filter(
 ):
     """Отрисовать список спортсменов в зависимости от фильтра (all/children/adults/inactive)."""
     user_id = update.effective_user.id
-    session = Session()
     try:
-        user = get_user_by_telegram_id(session, user_id)
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, user_id)
 
-        if not user or get_user_role(user) != 'coach':
-            if update.callback_query:
-                await update.callback_query.answer("❌ У вас нет доступа")
-            else:
-                await update.message.reply_text("❌ У вас нет доступа к этому меню")
-            return
+            if not user or get_user_role(user) != 'coach':
+                if update.callback_query:
+                    await update.callback_query.answer("❌ У вас нет доступа")
+                else:
+                    await update.message.reply_text("❌ У вас нет доступа к этому меню")
+                return
 
-        # Запоминаем фильтр, чтобы возврат «📋 К списку» из карточки работал ожидаемо
-        context.user_data["athletes_list_filter"] = filter_key
+            # Запоминаем фильтр, чтобы возврат «📋 К списку» из карточки работал ожидаемо
+            context.user_data["athletes_list_filter"] = filter_key
 
-        athletes, header_base = load_athletes_for_list(session, user)
+            athletes, header_base = load_athletes_for_list(session, user)
 
-        from utils.subscription_checker import SubscriptionChecker
+            from utils.subscription_checker import SubscriptionChecker
 
-        def is_active_status(status: str) -> bool:
-            return status in ("active", "expiring_soon")
+            def is_active_status(status: str) -> bool:
+                return status in ("active", "expiring_soon")
 
-        coach_sport = resolve_coach_sport_type_name(user)
+            coach_sport = coach_sport_type_name(user)
 
-        def athlete_status(a: Athlete) -> str:
-            sub = subscription_for_coach_sport(a, coach_sport)
-            return (
-                SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
-            )
+            def athlete_status(a: Athlete) -> str:
+                sub = subscription_for_coach_sport(a, coach_sport)
+                return (
+                    SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
+                )
 
-        # Фильтрация
-        from utils.age_groups import format_age_group_label
+            # Фильтрация
+            from utils.age_groups import format_age_group_label
 
-        def _matches_group(athlete: Athlete, group_code: str) -> bool:
-            return (athlete.age_group or "").strip() == group_code
+            def _matches_group(athlete: Athlete, group_code: str) -> bool:
+                return (athlete.age_group or "").strip() == group_code
 
-        if filter_key == "active_children":
-            filtered = [a for a in athletes if _matches_group(a, "children") and is_active_status(athlete_status(a))]
-            filter_title = "✅ <b>Активные — детская группа</b>\n\n"
-        elif filter_key == "active_middle":
-            filtered = [a for a in athletes if _matches_group(a, "middle") and is_active_status(athlete_status(a))]
-            filter_title = "✅ <b>Активные — средняя группа</b>\n\n"
-        elif filter_key == "active_adults":
-            filtered = [a for a in athletes if _matches_group(a, "adults") and is_active_status(athlete_status(a))]
-            filter_title = "✅ <b>Активные — взрослая группа</b>\n\n"
-        elif filter_key == "inactive_children":
-            filtered = [a for a in athletes if _matches_group(a, "children") and not is_active_status(athlete_status(a))]
-            filter_title = "❌ <b>Неактивные — детская группа</b>\n\n"
-        elif filter_key == "inactive_middle":
-            filtered = [a for a in athletes if _matches_group(a, "middle") and not is_active_status(athlete_status(a))]
-            filter_title = "❌ <b>Неактивные — средняя группа</b>\n\n"
-        elif filter_key == "inactive_adults":
-            filtered = [a for a in athletes if _matches_group(a, "adults") and not is_active_status(athlete_status(a))]
-            filter_title = "❌ <b>Неактивные — взрослая группа</b>\n\n"
-        elif filter_key == "all":
-            filtered = list(athletes)
-            filter_title = "📋 <b>Все спортсмены</b>\n\n"
-        else:
-            # Старые фильтры для обратной совместимости
-            if filter_key == "children":
-                filtered = [a for a in athletes if _matches_group(a, "children")]
-                filter_title = "👶 <b>Детская группа</b>\n\n"
-            elif filter_key == "middle":
-                filtered = [a for a in athletes if _matches_group(a, "middle")]
-                filter_title = "🧒 <b>Средняя группа</b>\n\n"
-            elif filter_key == "adults":
-                filtered = [a for a in athletes if _matches_group(a, "adults")]
-                filter_title = "👨‍🦰 <b>Взрослая группа</b>\n\n"
-            elif filter_key == "inactive":
-                filtered = [a for a in athletes if not is_active_status(athlete_status(a))]
-                filter_title = "❌ <b>Неактивные абонементы / нет абонемента</b>\n\n"
-            else:
+            if filter_key == "active_children":
+                filtered = [a for a in athletes if _matches_group(a, "children") and is_active_status(athlete_status(a))]
+                filter_title = "✅ <b>Активные — детская группа</b>\n\n"
+            elif filter_key == "active_middle":
+                filtered = [a for a in athletes if _matches_group(a, "middle") and is_active_status(athlete_status(a))]
+                filter_title = "✅ <b>Активные — средняя группа</b>\n\n"
+            elif filter_key == "active_adults":
+                filtered = [a for a in athletes if _matches_group(a, "adults") and is_active_status(athlete_status(a))]
+                filter_title = "✅ <b>Активные — взрослая группа</b>\n\n"
+            elif filter_key == "inactive_children":
+                filtered = [a for a in athletes if _matches_group(a, "children") and not is_active_status(athlete_status(a))]
+                filter_title = "❌ <b>Неактивные — детская группа</b>\n\n"
+            elif filter_key == "inactive_middle":
+                filtered = [a for a in athletes if _matches_group(a, "middle") and not is_active_status(athlete_status(a))]
+                filter_title = "❌ <b>Неактивные — средняя группа</b>\n\n"
+            elif filter_key == "inactive_adults":
+                filtered = [a for a in athletes if _matches_group(a, "adults") and not is_active_status(athlete_status(a))]
+                filter_title = "❌ <b>Неактивные — взрослая группа</b>\n\n"
+            elif filter_key == "all":
                 filtered = list(athletes)
                 filter_title = "📋 <b>Все спортсмены</b>\n\n"
+            else:
+                # Старые фильтры для обратной совместимости
+                if filter_key == "children":
+                    filtered = [a for a in athletes if _matches_group(a, "children")]
+                    filter_title = "👶 <b>Детская группа</b>\n\n"
+                elif filter_key == "middle":
+                    filtered = [a for a in athletes if _matches_group(a, "middle")]
+                    filter_title = "🧒 <b>Средняя группа</b>\n\n"
+                elif filter_key == "adults":
+                    filtered = [a for a in athletes if _matches_group(a, "adults")]
+                    filter_title = "👨‍🦰 <b>Взрослая группа</b>\n\n"
+                elif filter_key == "inactive":
+                    filtered = [a for a in athletes if not is_active_status(athlete_status(a))]
+                    filter_title = "❌ <b>Неактивные абонементы / нет абонемента</b>\n\n"
+                else:
+                    filtered = list(athletes)
+                    filter_title = "📋 <b>Все спортсмены</b>\n\n"
 
-        filtered.sort(key=lambda a: (a.full_name or "").strip().lower())
+            filtered.sort(key=lambda a: (a.full_name or "").strip().lower())
 
-        if not filtered:
-            message = header_base + filter_title + "📭 В этой категории пока нет спортсменов."
-            keyboard = [
-                [InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories")],
-                [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")],
-            ]
+            if not filtered:
+                message = header_base + filter_title + "📭 В этой категории пока нет спортсменов."
+                keyboard = [
+                    [InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories")],
+                    [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")],
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                if update.callback_query:
+                    await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
+                else:
+                    await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="HTML")
+                return
+
+            # Определяем вид спорта для заголовка (берем первый найденный)
+            sport_type = None
+            for a in filtered:
+                if a.sport_type:
+                    sport_type = a.sport_type
+                    break
+        
+            # Добавляем вид спорта в заголовок, если он есть
+            if sport_type:
+                filter_title = filter_title.replace("</b>", f" - {sport_type}</b>")
+
+            total_count = len(filtered)
+            total_pages = max(1, (total_count + ATHLETE_LIST_PAGE_SIZE - 1) // ATHLETE_LIST_PAGE_SIZE)
+            page = max(0, min(int(page), total_pages - 1))
+            context.user_data["athletes_list_page"] = page
+            start = page * ATHLETE_LIST_PAGE_SIZE
+            page_slice = filtered[start : start + ATHLETE_LIST_PAGE_SIZE]
+
+            # Формируем текст
+            message = header_base + filter_title
+            if total_pages > 1:
+                message += f"\n📄 Страница <b>{page + 1}</b> из <b>{total_pages}</b> · всего <b>{total_count}</b>\n"
+
+            # Клавиатура спортсменов (текущая страница, по 2 в ряд)
+            keyboard = []
+            for i in range(0, len(page_slice), 2):
+                row = []
+                for j in range(2):
+                    if i + j < len(page_slice):
+                        a = page_slice[i + j]
+
+                        status = athlete_status(a)
+                        icons = []
+                        if status == "active":
+                            icons.append("✅")
+                        elif status == "expiring_soon":
+                            icons.append("🟡")
+                        elif status == "expired":
+                            icons.append("🔴")
+                        else:
+                            icons.append("❌")
+
+                        name = a.full_name.strip() if a.full_name else ""
+                        if len(name) > 12:
+                            name = name[:10] + "..."
+                    
+                        button_text = f"{''.join(icons)} {name}"
+
+                        row.append(InlineKeyboardButton(button_text, callback_data=f"athlete_{a.id}"))
+                if row:
+                    keyboard.append(row)
+
+            if total_pages > 1:
+                nav_row = []
+                if page > 0:
+                    nav_row.append(
+                        InlineKeyboardButton(
+                            "◀️ Назад",
+                            callback_data=encode_athlete_list_page(filter_key, page - 1),
+                        )
+                    )
+                remaining = total_count - (page + 1) * ATHLETE_LIST_PAGE_SIZE
+                if page < total_pages - 1:
+                    label = f"▶️ Ещё ({remaining})" if remaining <= 99 else "▶️ Ещё"
+                    nav_row.append(
+                        InlineKeyboardButton(
+                            label,
+                            callback_data=encode_athlete_list_page(filter_key, page + 1),
+                        )
+                    )
+                keyboard.append(nav_row)
+
+            keyboard.append([InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories")])
+            keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")])
+
             reply_markup = InlineKeyboardMarkup(keyboard)
+
             if update.callback_query:
                 await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
             else:
                 await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="HTML")
-            return
-
-        # Определяем вид спорта для заголовка (берем первый найденный)
-        sport_type = None
-        for a in filtered:
-            if a.sport_type:
-                sport_type = a.sport_type
-                break
-        
-        # Добавляем вид спорта в заголовок, если он есть
-        if sport_type:
-            filter_title = filter_title.replace("</b>", f" - {sport_type}</b>")
-
-        total_count = len(filtered)
-        total_pages = max(1, (total_count + ATHLETE_LIST_PAGE_SIZE - 1) // ATHLETE_LIST_PAGE_SIZE)
-        page = max(0, min(int(page), total_pages - 1))
-        context.user_data["athletes_list_page"] = page
-        start = page * ATHLETE_LIST_PAGE_SIZE
-        page_slice = filtered[start : start + ATHLETE_LIST_PAGE_SIZE]
-
-        # Формируем текст
-        message = header_base + filter_title
-        if total_pages > 1:
-            message += f"\n📄 Страница <b>{page + 1}</b> из <b>{total_pages}</b> · всего <b>{total_count}</b>\n"
-
-        # Клавиатура спортсменов (текущая страница, по 2 в ряд)
-        keyboard = []
-        for i in range(0, len(page_slice), 2):
-            row = []
-            for j in range(2):
-                if i + j < len(page_slice):
-                    a = page_slice[i + j]
-
-                    status = athlete_status(a)
-                    icons = []
-                    if status == "active":
-                        icons.append("✅")
-                    elif status == "expiring_soon":
-                        icons.append("🟡")
-                    elif status == "expired":
-                        icons.append("🔴")
-                    else:
-                        icons.append("❌")
-
-                    name = a.full_name.strip() if a.full_name else ""
-                    if len(name) > 12:
-                        name = name[:10] + "..."
-                    
-                    button_text = f"{''.join(icons)} {name}"
-
-                    row.append(InlineKeyboardButton(button_text, callback_data=f"athlete_{a.id}"))
-            if row:
-                keyboard.append(row)
-
-        if total_pages > 1:
-            nav_row = []
-            if page > 0:
-                nav_row.append(
-                    InlineKeyboardButton(
-                        "◀️ Назад",
-                        callback_data=encode_athlete_list_page(filter_key, page - 1),
-                    )
-                )
-            remaining = total_count - (page + 1) * ATHLETE_LIST_PAGE_SIZE
-            if page < total_pages - 1:
-                label = f"▶️ Ещё ({remaining})" if remaining <= 99 else "▶️ Ещё"
-                nav_row.append(
-                    InlineKeyboardButton(
-                        label,
-                        callback_data=encode_athlete_list_page(filter_key, page + 1),
-                    )
-                )
-            keyboard.append(nav_row)
-
-        keyboard.append([InlineKeyboardButton("🔙 К категориям", callback_data="athletes_categories")])
-        keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        if update.callback_query:
-            await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode="HTML")
-        else:
-            await update.message.reply_text(message, reply_markup=reply_markup, parse_mode="HTML")
 
     except Exception as e:
         import traceback
@@ -1911,8 +1876,6 @@ async def show_athletes_list_by_filter(
             await update.callback_query.answer("❌ Ошибка при загрузке списка")
         else:
             await update.message.reply_text("❌ Ошибка при загрузке списка спортсменов")
-    finally:
-        session.close()
 
 async def handle_show_more_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать информацию о количестве спортсменов"""
@@ -1977,71 +1940,71 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
 
     logger.info("📝 Запрос на отметку посещений от пользователя %s", user_id)
-    session = Session()
     try:
-        user = get_user_by_telegram_id(session, user_id)
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, user_id)
 
-        if not user or get_user_role(user) != 'coach':
+            if not user or get_user_role(user) != 'coach':
+                if query:
+                    await query.edit_message_text("❌ У вас нет доступа к этому меню")
+                else:
+                    await update.message.reply_text("❌ У вас нет доступа к этому меню")
+                return
+
+            now = now_moscow()
+            slot_rows, virtual_slots = build_today_attendance_slots(session, user, now)
+            context.user_data["attendance_virtual_slots"] = virtual_slots
+
+            message = "📝 <b>Отметить посещения</b>\n\n"
+            if slot_rows:
+                message += "Выберите тренировку.\n\n"
+            else:
+                message += "На сегодня тренировок нет. Нажмите «🔄 Обновить».\n\n"
+
+            keyboard = []
+            for slot in slot_rows:
+                from utils.age_groups import format_age_group_label
+
+                age_group_ru = format_age_group_label(slot.age_group, short=True)
+                format_label = "Индивидуальная" if slot.is_individual_format else "Групповая"
+                slot_start = slot.training_datetime
+                slot_end = (
+                    individual_training_end_time(slot_start)
+                    if slot.is_individual_format
+                    else training_end_time(slot_start)
+                )
+                is_live = slot_start <= now <= slot_end
+                prefix = "" if is_live else "🔒 "
+                if slot.is_individual_format:
+                    button_text = (
+                        f"{prefix}🕒 {slot.training_datetime.strftime('%H:%M')} | "
+                        f"{slot.sport_type} — {format_label}"
+                    )
+                else:
+                    button_text = (
+                        f"{prefix}🕒 {slot.training_datetime.strftime('%H:%M')} | "
+                        f"{slot.sport_type} ({age_group_ru}) — {format_label}"
+                    )
+                if is_live:
+                    callback_data = (
+                        f"select_mark_training_virtual_{slot.virtual_token}"
+                        if slot.is_virtual
+                        else f"select_mark_training_{slot.training_id}"
+                    )
+                else:
+                    callback_data = "attendance_slot_locked"
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+
+            if not slot_rows:
+                keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data="attendance_training_list")])
+
+            keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
             if query:
-                await query.edit_message_text("❌ У вас нет доступа к этому меню")
+                await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
             else:
-                await update.message.reply_text("❌ У вас нет доступа к этому меню")
-            return
-
-        now = now_moscow()
-        slot_rows, virtual_slots = build_today_attendance_slots(session, user, now)
-        context.user_data["attendance_virtual_slots"] = virtual_slots
-
-        message = "📝 <b>Отметить посещения</b>\n\n"
-        if slot_rows:
-            message += "Выберите тренировку.\n\n"
-        else:
-            message += "На сегодня тренировок нет. Нажмите «🔄 Обновить».\n\n"
-
-        keyboard = []
-        for slot in slot_rows:
-            from utils.age_groups import format_age_group_label
-
-            age_group_ru = format_age_group_label(slot.age_group, short=True)
-            format_label = "Индивидуальная" if slot.is_individual_format else "Групповая"
-            slot_start = slot.training_datetime
-            slot_end = (
-                individual_training_end_time(slot_start)
-                if slot.is_individual_format
-                else training_end_time(slot_start)
-            )
-            is_live = slot_start <= now <= slot_end
-            prefix = "" if is_live else "🔒 "
-            if slot.is_individual_format:
-                button_text = (
-                    f"{prefix}🕒 {slot.training_datetime.strftime('%H:%M')} | "
-                    f"{slot.sport_type} — {format_label}"
-                )
-            else:
-                button_text = (
-                    f"{prefix}🕒 {slot.training_datetime.strftime('%H:%M')} | "
-                    f"{slot.sport_type} ({age_group_ru}) — {format_label}"
-                )
-            if is_live:
-                callback_data = (
-                    f"select_mark_training_virtual_{slot.virtual_token}"
-                    if slot.is_virtual
-                    else f"select_mark_training_{slot.training_id}"
-                )
-            else:
-                callback_data = "attendance_slot_locked"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
-
-        if not slot_rows:
-            keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data="attendance_training_list")])
-
-        keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        if query:
-            await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
-        else:
-            await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='HTML')
+                await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='HTML')
 
     except Exception as e:
         logger.error("❌ Ошибка в start_training: %s", e, exc_info=True)
@@ -2049,8 +2012,6 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Ошибка при загрузке тренировок")
         else:
             await update.message.reply_text("❌ Ошибка при загрузке тренировок")
-    finally:
-        session.close()
 
 
 async def handle_attendance_training_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2063,181 +2024,181 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     logger.debug("show_coach_calendar: user_id=%s", user_id)
 
-    session = Session()
     try:
-        user = get_user_by_telegram_id(session, user_id)
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, user_id)
 
-        if not user or get_user_role(user) != 'coach':
-            if update.callback_query:
-                await update.callback_query.answer("❌ У вас нет доступа")
-            else:
-                await update.message.reply_text("❌ У вас нет доступа к этому меню")
-            return
-
-        if isinstance(user, Coach):
-            user = (
-                session.query(Coach)
-                .options(joinedload(Coach.sport_type_rel))
-                .filter_by(id=user.id)
-                .first()
-            )
-            if not user:
+            if not user or get_user_role(user) != 'coach':
                 if update.callback_query:
-                    await update.callback_query.answer("❌ Пользователь не найден")
+                    await update.callback_query.answer("❌ У вас нет доступа")
                 else:
-                    await update.message.reply_text("❌ Пользователь не найден")
+                    await update.message.reply_text("❌ У вас нет доступа к этому меню")
                 return
 
-        # Получаем текущую дату или используем переданные параметры
-        now = now_moscow()
-        today = now.date()
-
-        if month is None:
-            current_month = now.month
-        else:
-            current_month = month
-
-        if year is None:
-            current_year = now.year
-        else:
-            current_year = year
-
-        sport_type_name = resolve_coach_sport_type_name(user)
-        if get_user_role(user) == "coach" and not sport_type_name:
-            if update.callback_query:
-                await update.callback_query.answer("❌ У вас не указан вид спорта")
-            else:
-                await update.message.reply_text(
-                    "❌ У вас не указан вид спорта. Обратитесь к администратору.",
-                    parse_mode='HTML'
+            if isinstance(user, Coach):
+                user = (
+                    session.query(Coach)
+                    .options(joinedload(Coach.sport_type_rel))
+                    .filter_by(id=user.id)
+                    .first()
                 )
-            return
-
-        # Получаем тренировки для отображаемого месяца
-        month_start = datetime(current_year, current_month, 1)
-        if current_month == 12:
-            month_end = datetime(current_year + 1, 1, 1)
-        else:
-            month_end = datetime(current_year, current_month + 1, 1)
-
-        query = session.query(Training).filter(
-            Training.coach_id == user.id,
-            Training.training_date >= month_start,
-            Training.training_date < month_end,
-            Training.is_cancelled == False
-        )
-        if sport_type_name:
-            query = query.filter(Training.sport_type == sport_type_name)
-        trainings = query.order_by(Training.training_date.asc()).all()
-        trainings = dedupe_individual_trainings_by_slot(trainings)
-
-        # Группируем тренировки по датам
-        trainings_by_date = {}
-        for training in trainings:
-            date_key = training.training_date.date()
-            if date_key not in trainings_by_date:
-                trainings_by_date[date_key] = []
-            trainings_by_date[date_key].append(training)
-
-        # Дни недели с тренировками по расписанию (для тренера с видом спорта)
-        scheduled_days = set()
-        if sport_type_name:
-            schedule_dict = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {})
-            for age_group in ['children', 'adults']:
-                schedule = schedule_dict.get(age_group)
-                if schedule and 'days' in schedule:
-                    scheduled_days.update(schedule['days'])
-
-        message = _coach_calendar_message_header(
-            current_year=current_year,
-            current_month=current_month,
-        )
-
-        # Календарь (monthcalendar: недели с понедельника)
-        cal = calendar.monthcalendar(current_year, current_month)
-        keyboard = []
-
-        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-        day_names_buttons = [
-            InlineKeyboardButton(f"{day_name}.", callback_data="cal_empty") for day_name in day_names
-        ]
-        keyboard.append(day_names_buttons)
-
-        weeks_to_show = list(cal)
-        while len(weeks_to_show) < 5:
-            weeks_to_show.append([0, 0, 0, 0, 0, 0, 0])
-
-        for week in weeks_to_show:
-            week_buttons = []
-            for day in week:
-                if day == 0:
-                    week_buttons.append(InlineKeyboardButton(" ", callback_data="cal_empty"))
-                else:
-                    date_obj = datetime(current_year, current_month, day).date()
-                    weekday = date_obj.weekday()
-                    has_scheduled_training = weekday in scheduled_days
-                    has_db_training = date_obj in trainings_by_date
-
-                    if date_obj == today:
-                        btn_text = f"[{day:2d}]"
-                    elif has_db_training:
-                        btn_text = f"+{day:2d}"
-                    elif has_scheduled_training:
-                        btn_text = f"({day:2d})"
+                if not user:
+                    if update.callback_query:
+                        await update.callback_query.answer("❌ Пользователь не найден")
                     else:
-                        btn_text = f"{day:2d}"
+                        await update.message.reply_text("❌ Пользователь не найден")
+                    return
 
-                    callback_data = f"cal_date_{current_year}_{current_month}_{day}"
-                    week_buttons.append(InlineKeyboardButton(btn_text, callback_data=callback_data))
+            # Получаем текущую дату или используем переданные параметры
+            now = now_moscow()
+            today = now.date()
 
-            keyboard.append(week_buttons)
+            if month is None:
+                current_month = now.month
+            else:
+                current_month = month
+
+            if year is None:
+                current_year = now.year
+            else:
+                current_year = year
+
+            sport_type_name = coach_sport_type_name(user)
+            if get_user_role(user) == "coach" and not sport_type_name:
+                if update.callback_query:
+                    await update.callback_query.answer("❌ У вас не указан вид спорта")
+                else:
+                    await update.message.reply_text(
+                        "❌ У вас не указан вид спорта. Обратитесь к администратору.",
+                        parse_mode='HTML'
+                    )
+                return
+
+            # Получаем тренировки для отображаемого месяца
+            month_start = datetime(current_year, current_month, 1)
+            if current_month == 12:
+                month_end = datetime(current_year + 1, 1, 1)
+            else:
+                month_end = datetime(current_year, current_month + 1, 1)
+
+            query = session.query(Training).filter(
+                Training.coach_id == user.id,
+                Training.training_date >= month_start,
+                Training.training_date < month_end,
+                Training.is_cancelled == False
+            )
+            if sport_type_name:
+                query = query.filter(Training.sport_type == sport_type_name)
+            trainings = query.order_by(Training.training_date.asc()).all()
+            trainings = dedupe_individual_trainings_by_slot(trainings)
+
+            # Группируем тренировки по датам
+            trainings_by_date = {}
+            for training in trainings:
+                date_key = training.training_date.date()
+                if date_key not in trainings_by_date:
+                    trainings_by_date[date_key] = []
+                trainings_by_date[date_key].append(training)
+
+            # Дни недели с тренировками по расписанию (для тренера с видом спорта)
+            scheduled_days = set()
+            if sport_type_name:
+                schedule_dict = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {})
+                for age_group in ['children', 'adults']:
+                    schedule = schedule_dict.get(age_group)
+                    if schedule and 'days' in schedule:
+                        scheduled_days.update(schedule['days'])
+
+            message = _coach_calendar_message_header(
+                current_year=current_year,
+                current_month=current_month,
+            )
+
+            # Календарь (monthcalendar: недели с понедельника)
+            cal = calendar.monthcalendar(current_year, current_month)
+            keyboard = []
+
+            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+            day_names_buttons = [
+                InlineKeyboardButton(f"{day_name}.", callback_data="cal_empty") for day_name in day_names
+            ]
+            keyboard.append(day_names_buttons)
+
+            weeks_to_show = list(cal)
+            while len(weeks_to_show) < 5:
+                weeks_to_show.append([0, 0, 0, 0, 0, 0, 0])
+
+            for week in weeks_to_show:
+                week_buttons = []
+                for day in week:
+                    if day == 0:
+                        week_buttons.append(InlineKeyboardButton(" ", callback_data="cal_empty"))
+                    else:
+                        date_obj = datetime(current_year, current_month, day).date()
+                        weekday = date_obj.weekday()
+                        has_scheduled_training = weekday in scheduled_days
+                        has_db_training = date_obj in trainings_by_date
+
+                        if date_obj == today:
+                            btn_text = f"[{day:2d}]"
+                        elif has_db_training:
+                            btn_text = f"+{day:2d}"
+                        elif has_scheduled_training:
+                            btn_text = f"({day:2d})"
+                        else:
+                            btn_text = f"{day:2d}"
+
+                        callback_data = f"cal_date_{current_year}_{current_month}_{day}"
+                        week_buttons.append(InlineKeyboardButton(btn_text, callback_data=callback_data))
+
+                keyboard.append(week_buttons)
         
-        # Кнопки навигации по месяцам
-        prev_month = current_month - 1
-        prev_year = current_year
-        if prev_month < 1:
-            prev_month = 12
-            prev_year -= 1
+            # Кнопки навигации по месяцам
+            prev_month = current_month - 1
+            prev_year = current_year
+            if prev_month < 1:
+                prev_month = 12
+                prev_year -= 1
             
-        next_month = current_month + 1
-        next_year = current_year
-        if next_month > 12:
-            next_month = 1
-            next_year += 1
+            next_month = current_month + 1
+            next_year = current_year
+            if next_month > 12:
+                next_month = 1
+                next_year += 1
         
-        keyboard.append([
-            InlineKeyboardButton("◀️ Предыдущий", callback_data=f"calendar_{prev_year}_{prev_month}"),
-            InlineKeyboardButton("Следующий ▶️", callback_data=f"calendar_{next_year}_{next_month}")
-        ])
-        
-        # Кнопка "Сегодня"
-        if current_month != now.month or current_year != now.year:
             keyboard.append([
-                InlineKeyboardButton("📅 Сегодня", callback_data=f"calendar_{now.year}_{now.month}")
+                InlineKeyboardButton("◀️ Предыдущий", callback_data=f"calendar_{prev_year}_{prev_month}"),
+                InlineKeyboardButton("Следующий ▶️", callback_data=f"calendar_{next_year}_{next_month}")
             ])
         
-        # Кнопка возврата в меню
-        keyboard.append([
-            InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")
-        ])
+            # Кнопка "Сегодня"
+            if current_month != now.month or current_year != now.year:
+                keyboard.append([
+                    InlineKeyboardButton("📅 Сегодня", callback_data=f"calendar_{now.year}_{now.month}")
+                ])
         
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            # Кнопка возврата в меню
+            keyboard.append([
+                InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")
+            ])
+        
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
-        if update.callback_query:
-            await update.callback_query.answer()
-            # При редактировании явно обновляем и текст, и клавиатуру
-            # Обновляем текст и клавиатуру одновременно, чтобы размер не менялся
-            await update.callback_query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-        else:
-            await update.message.reply_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
+            if update.callback_query:
+                await update.callback_query.answer()
+                # При редактировании явно обновляем и текст, и клавиатуру
+                # Обновляем текст и клавиатуру одновременно, чтобы размер не менялся
+                await update.callback_query.edit_message_text(
+                    message,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+            else:
+                await update.message.reply_text(
+                    message,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
 
     except Exception as e:
         logger.error("Ошибка при получении календаря тренера: %s", e, exc_info=True)
@@ -2246,8 +2207,6 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.callback_query.answer(error_msg)
         else:
             await update.message.reply_text(error_msg)
-    finally:
-        session.close()
 
 
 async def handle_calendar_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2279,264 +2238,264 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     user_id = update.effective_user.id
     logger.info("Клик по дате в календаре: %s от пользователя %s", query.data, user_id)
-    session = Session()
 
     try:
-        parts = query.data.split("_")
-        if len(parts) != 5:
-            logger.error("Неверный формат callback_data: %s, частей: %s", query.data, len(parts))
-            await query.answer("❌ Ошибка при обработке даты")
-            return
-
-        year = int(parts[2])
-        month = int(parts[3])
-        day = int(parts[4])
-
-        selected_date = datetime(year, month, day).date()
-        date_start = datetime.combine(selected_date, datetime.min.time())
-        date_end = datetime.combine(selected_date, datetime.max.time())
-
-        user = get_user_by_telegram_id(session, user_id)
-        if not user or get_user_role(user) != 'coach':
-            await query.answer("❌ У вас нет доступа")
-            return
-
-        if isinstance(user, Coach):
-            user = (
-                session.query(Coach)
-                .options(joinedload(Coach.sport_type_rel))
-                .filter_by(id=user.id)
-                .first()
-            )
-            if not user:
-                await query.answer("❌ Пользователь не найден")
+        with get_db_session() as session:
+            parts = query.data.split("_")
+            if len(parts) != 5:
+                logger.error("Неверный формат callback_data: %s, частей: %s", query.data, len(parts))
+                await query.answer("❌ Ошибка при обработке даты")
                 return
 
-        sport_type_name = resolve_coach_sport_type_name(user)
-        now = now_moscow()
+            year = int(parts[2])
+            month = int(parts[3])
+            day = int(parts[4])
 
-        query_filter = session.query(Training).filter(
-            Training.coach_id == user.id,
-            Training.training_date >= date_start,
-            Training.training_date <= date_end,
-            Training.is_cancelled == False
-        )
-        if sport_type_name:
-            query_filter = query_filter.filter(Training.sport_type == sport_type_name)
-        trainings = query_filter.order_by(Training.training_date.asc()).all()
-        trainings = dedupe_individual_trainings_by_slot(trainings)
+            selected_date = datetime(year, month, day).date()
+            date_start = datetime.combine(selected_date, datetime.min.time())
+            date_end = datetime.combine(selected_date, datetime.max.time())
 
-        date_str = selected_date.strftime("%d.%m.%Y")
-        message = f"<b>📅 {date_str}</b>\n\n"
+            user = get_user_by_telegram_id(session, user_id)
+            if not user or get_user_role(user) != 'coach':
+                await query.answer("❌ У вас нет доступа")
+                return
 
-        if trainings:
-            message += f"<b>Тренировок: {len(trainings)}</b>\n\n"
-            for training in trainings:
-                from utils.age_groups import format_age_group_label
-
-                age_group_ru = format_age_group_label(training.age_group, short=True)
-                time_str = training.training_date.strftime("%H:%M")
-                is_individual_slot = (
-                    (getattr(training, "training_format", None) or "").strip().lower()
-                    == TRAINING_FORMAT_INDIVIDUAL
+            if isinstance(user, Coach):
+                user = (
+                    session.query(Coach)
+                    .options(joinedload(Coach.sport_type_rel))
+                    .filter_by(id=user.id)
+                    .first()
                 )
-                slot_suffix = " — Индивидуальная" if is_individual_slot else " — Групповая"
-                if is_individual_slot:
-                    message += (
-                        f"• <b>{time_str}</b> - {training.sport_type}{slot_suffix}\n"
-                    )
-                else:
-                    message += (
-                        f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
-                    )
+                if not user:
+                    await query.answer("❌ Пользователь не найден")
+                    return
 
-                training_date_only = training.training_date.date()
-                subs_q = (
-                    session.query(Subscription)
-                    .join(Athlete, Subscription.athlete_id == Athlete.id)
-                    .filter(
-                        Subscription.is_active == True,
-                        Subscription.sport_type == training.sport_type,
-                        func.date(Subscription.start_date) <= training_date_only,
-                        func.date(Subscription.end_date) >= training_date_only,
+            sport_type_name = coach_sport_type_name(user)
+            now = now_moscow()
+
+            query_filter = session.query(Training).filter(
+                Training.coach_id == user.id,
+                Training.training_date >= date_start,
+                Training.training_date <= date_end,
+                Training.is_cancelled == False
+            )
+            if sport_type_name:
+                query_filter = query_filter.filter(Training.sport_type == sport_type_name)
+            trainings = query_filter.order_by(Training.training_date.asc()).all()
+            trainings = dedupe_individual_trainings_by_slot(trainings)
+
+            date_str = selected_date.strftime("%d.%m.%Y")
+            message = f"<b>📅 {date_str}</b>\n\n"
+
+            if trainings:
+                message += f"<b>Тренировок: {len(trainings)}</b>\n\n"
+                for training in trainings:
+                    from utils.age_groups import format_age_group_label
+
+                    age_group_ru = format_age_group_label(training.age_group, short=True)
+                    time_str = training.training_date.strftime("%H:%M")
+                    is_individual_slot = (
+                        (getattr(training, "training_format", None) or "").strip().lower()
+                        == TRAINING_FORMAT_INDIVIDUAL
                     )
-                )
-                # Индивидуальный абонемент нельзя показывать под каждой групповой парой дня:
-                # у него start/end в один календарный день, иначе он попадёт под все слоты.
-                if is_individual_slot:
-                    # Слот = момент начала; в БД у start_date могут отличаться секунды — сравниваем по минуте.
-                    slot_key = training.training_date.strftime("%Y-%m-%d %H:%M")
-                    subs_q = subs_q.filter(
-                        Subscription.subscription_type == "individual",
-                        func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
-                    )
-                else:
-                    subs_q = subs_q.filter(Athlete.age_group == training.age_group).filter(
-                        or_(
-                            Subscription.subscription_type.is_(None),
-                            Subscription.subscription_type != "individual",
+                    slot_suffix = " — Индивидуальная" if is_individual_slot else " — Групповая"
+                    if is_individual_slot:
+                        message += (
+                            f"• <b>{time_str}</b> - {training.sport_type}{slot_suffix}\n"
+                        )
+                    else:
+                        message += (
+                            f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
+                        )
+
+                    training_date_only = training.training_date.date()
+                    subs_q = (
+                        session.query(Subscription)
+                        .join(Athlete, Subscription.athlete_id == Athlete.id)
+                        .filter(
+                            Subscription.is_active == True,
+                            Subscription.sport_type == training.sport_type,
+                            func.date(Subscription.start_date) <= training_date_only,
+                            func.date(Subscription.end_date) >= training_date_only,
                         )
                     )
-                subs = subs_q.all()
-
-                if subs:
-                    message += f"  <b>Записано спортсменов: {len(subs)}</b>\n"
-                    athlete_ids = [sub.athlete_id for sub in subs]
-                    athletes_map = {
-                        a.id: a
-                        for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
-                    }
-                    sub_ids = [s.id for s in subs]
-                    slot_training_ids = individual_slot_training_ids(session, training)
-                    att_by_sub = {
-                        a.subscription_id: a
-                        for a in session.query(Attendance).filter(
-                            Attendance.training_id.in_(slot_training_ids),
-                            Attendance.subscription_id.in_(sub_ids),
-                        ).all()
-                    }
-                    for sub in subs[:10]:
-                        ath = athletes_map.get(sub.athlete_id)
-                        if not ath:
-                            continue
-                        att = att_by_sub.get(sub.id)
-                        status_icon = attendance_icon_for_slot(
-                            att, training.training_date, now=now
+                    # Индивидуальный абонемент нельзя показывать под каждой групповой парой дня:
+                    # у него start/end в один календарный день, иначе он попадёт под все слоты.
+                    if is_individual_slot:
+                        # Слот = момент начала; в БД у start_date могут отличаться секунды — сравниваем по минуте.
+                        slot_key = training.training_date.strftime("%Y-%m-%d %H:%M")
+                        subs_q = subs_q.filter(
+                            Subscription.subscription_type == "individual",
+                            func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
                         )
-                        message += f"    {status_icon} {html.escape(ath.full_name)}\n"
-                    if len(subs) > 10:
-                        message += f"    ... и еще {len(subs) - 10}\n"
-                else:
-                    # Fallback: если по активным абонементам никого нет, но по слоту уже есть
-                    # фактические отметки Attendance — показываем их в календаре.
-                    slot_training_ids = individual_slot_training_ids(session, training)
-                    slot_atts = (
-                        session.query(Attendance)
-                        .filter(Attendance.training_id.in_(slot_training_ids))
-                        .order_by(Attendance.created_at.asc())
-                        .all()
-                    )
-                    if slot_atts:
-                        by_athlete = {}
-                        for att in slot_atts:
-                            by_athlete[att.athlete_id] = att
-                        fallback_atts = list(by_athlete.values())
-                        athlete_ids = [att.athlete_id for att in fallback_atts]
+                    else:
+                        subs_q = subs_q.filter(Athlete.age_group == training.age_group).filter(
+                            or_(
+                                Subscription.subscription_type.is_(None),
+                                Subscription.subscription_type != "individual",
+                            )
+                        )
+                    subs = subs_q.all()
+
+                    if subs:
+                        message += f"  <b>Записано спортсменов: {len(subs)}</b>\n"
+                        athlete_ids = [sub.athlete_id for sub in subs]
                         athletes_map = {
                             a.id: a
                             for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
                         }
-                        message += f"  <b>Записано спортсменов: {len(fallback_atts)}</b>\n"
-                        for att in fallback_atts[:10]:
-                            ath = athletes_map.get(att.athlete_id)
+                        sub_ids = [s.id for s in subs]
+                        slot_training_ids = individual_slot_training_ids(session, training)
+                        att_by_sub = {
+                            a.subscription_id: a
+                            for a in session.query(Attendance).filter(
+                                Attendance.training_id.in_(slot_training_ids),
+                                Attendance.subscription_id.in_(sub_ids),
+                            ).all()
+                        }
+                        for sub in subs[:10]:
+                            ath = athletes_map.get(sub.athlete_id)
                             if not ath:
                                 continue
+                            att = att_by_sub.get(sub.id)
                             status_icon = attendance_icon_for_slot(
                                 att, training.training_date, now=now
                             )
                             message += f"    {status_icon} {html.escape(ath.full_name)}\n"
-                        if len(fallback_atts) > 10:
-                            message += f"    ... и еще {len(fallback_atts) - 10}\n"
+                        if len(subs) > 10:
+                            message += f"    ... и еще {len(subs) - 10}\n"
                     else:
-                        message += f"  Нет записанных спортсменов\n"
-
-                message += "\n"
-        else:
-            weekday = selected_date.weekday()
-
-            if sport_type_name:
-                schedule_info = {}
-                from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
-
-                for age_group in AGE_GROUP_CODES:
-                    schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {}).get(age_group)
-                    if schedule and weekday in schedule['days']:
-                        schedule_info[age_group] = schedule
-
-                if schedule_info:
-                    message += "<b>По расписанию:</b>\n\n"
-
-                    for age_group, schedule in schedule_info.items():
-                        age_group_ru = format_age_group_label(age_group, short=True)
-                        time_str = TrainingManager.get_time_str_for_weekday(schedule, weekday)
-                        hour, minute = TrainingManager.get_hour_minute_for_weekday(
-                            schedule, weekday
+                        # Fallback: если по активным абонементам никого нет, но по слоту уже есть
+                        # фактические отметки Attendance — показываем их в календаре.
+                        slot_training_ids = individual_slot_training_ids(session, training)
+                        slot_atts = (
+                            session.query(Attendance)
+                            .filter(Attendance.training_id.in_(slot_training_ids))
+                            .order_by(Attendance.created_at.asc())
+                            .all()
                         )
-                        slot_start = datetime.combine(
-                            selected_date, datetime.min.time()
-                        ).replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-                        message += f"• <b>{time_str}</b> - {sport_type_name} ({age_group_ru})\n"
-
-                        sub_ath_rows = (
-                            session.query(Subscription, Athlete)
-                            .join(Athlete, Subscription.athlete_id == Athlete.id)
-                            .filter(
-                                Subscription.is_active == True,
-                                Subscription.sport_type == sport_type_name,
-                                func.date(Subscription.start_date) <= selected_date,
-                                func.date(Subscription.end_date) >= selected_date,
-                                Athlete.age_group == age_group,
-                            )
-                        )
-
-                        if isinstance(user, Coach):
-                            sub_ath_rows = sub_ath_rows.filter(Athlete.created_by == user.id)
-
-                        pair_list = sub_ath_rows.all()
-
-                        if pair_list:
-                            message += f"  <b>Записано спортсменов: {len(pair_list)}</b>\n"
-                            aid_list = list({a.id for _s, a in pair_list})
-                            atts = (
-                                session.query(Attendance)
-                                .join(Training, Attendance.training_id == Training.id)
-                                .filter(
-                                    Training.sport_type == sport_type_name,
-                                    Training.age_group == age_group,
-                                    func.date(Training.training_date) == selected_date,
-                                    Attendance.athlete_id.in_(aid_list),
-                                )
-                                .all()
-                            )
-                            att_by_pair = {}
-                            for att in atts:
-                                key = (att.athlete_id, att.subscription_id)
-                                if key not in att_by_pair:
-                                    att_by_pair[key] = att
-
-                            for subscription, athlete in pair_list[:10]:
-                                attendance = att_by_pair.get((athlete.id, subscription.id))
-                                if attendance and attendance.training:
-                                    slot_eff = attendance.training.training_date
-                                else:
-                                    slot_eff = slot_start
+                        if slot_atts:
+                            by_athlete = {}
+                            for att in slot_atts:
+                                by_athlete[att.athlete_id] = att
+                            fallback_atts = list(by_athlete.values())
+                            athlete_ids = [att.athlete_id for att in fallback_atts]
+                            athletes_map = {
+                                a.id: a
+                                for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
+                            }
+                            message += f"  <b>Записано спортсменов: {len(fallback_atts)}</b>\n"
+                            for att in fallback_atts[:10]:
+                                ath = athletes_map.get(att.athlete_id)
+                                if not ath:
+                                    continue
                                 status_icon = attendance_icon_for_slot(
-                                    attendance, slot_eff, now=now
+                                    att, training.training_date, now=now
                                 )
-                                message += f"    {status_icon} {html.escape(athlete.full_name)}\n"
-                            if len(pair_list) > 10:
-                                message += f"    ... и еще {len(pair_list) - 10}\n"
+                                message += f"    {status_icon} {html.escape(ath.full_name)}\n"
+                            if len(fallback_atts) > 10:
+                                message += f"    ... и еще {len(fallback_atts) - 10}\n"
                         else:
                             message += f"  Нет записанных спортсменов\n"
 
-                        message += "\n"
+                    message += "\n"
+            else:
+                weekday = selected_date.weekday()
+
+                if sport_type_name:
+                    schedule_info = {}
+                    from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
+
+                    for age_group in AGE_GROUP_CODES:
+                        schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {}).get(age_group)
+                        if schedule and weekday in schedule['days']:
+                            schedule_info[age_group] = schedule
+
+                    if schedule_info:
+                        message += "<b>По расписанию:</b>\n\n"
+
+                        for age_group, schedule in schedule_info.items():
+                            age_group_ru = format_age_group_label(age_group, short=True)
+                            time_str = TrainingManager.get_time_str_for_weekday(schedule, weekday)
+                            hour, minute = TrainingManager.get_hour_minute_for_weekday(
+                                schedule, weekday
+                            )
+                            slot_start = datetime.combine(
+                                selected_date, datetime.min.time()
+                            ).replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+                            message += f"• <b>{time_str}</b> - {sport_type_name} ({age_group_ru})\n"
+
+                            sub_ath_rows = (
+                                session.query(Subscription, Athlete)
+                                .join(Athlete, Subscription.athlete_id == Athlete.id)
+                                .filter(
+                                    Subscription.is_active == True,
+                                    Subscription.sport_type == sport_type_name,
+                                    func.date(Subscription.start_date) <= selected_date,
+                                    func.date(Subscription.end_date) >= selected_date,
+                                    Athlete.age_group == age_group,
+                                )
+                            )
+
+                            if isinstance(user, Coach):
+                                sub_ath_rows = sub_ath_rows.filter(Athlete.created_by == user.id)
+
+                            pair_list = sub_ath_rows.all()
+
+                            if pair_list:
+                                message += f"  <b>Записано спортсменов: {len(pair_list)}</b>\n"
+                                aid_list = list({a.id for _s, a in pair_list})
+                                atts = (
+                                    session.query(Attendance)
+                                    .join(Training, Attendance.training_id == Training.id)
+                                    .filter(
+                                        Training.sport_type == sport_type_name,
+                                        Training.age_group == age_group,
+                                        func.date(Training.training_date) == selected_date,
+                                        Attendance.athlete_id.in_(aid_list),
+                                    )
+                                    .all()
+                                )
+                                att_by_pair = {}
+                                for att in atts:
+                                    key = (att.athlete_id, att.subscription_id)
+                                    if key not in att_by_pair:
+                                        att_by_pair[key] = att
+
+                                for subscription, athlete in pair_list[:10]:
+                                    attendance = att_by_pair.get((athlete.id, subscription.id))
+                                    if attendance and attendance.training:
+                                        slot_eff = attendance.training.training_date
+                                    else:
+                                        slot_eff = slot_start
+                                    status_icon = attendance_icon_for_slot(
+                                        attendance, slot_eff, now=now
+                                    )
+                                    message += f"    {status_icon} {html.escape(athlete.full_name)}\n"
+                                if len(pair_list) > 10:
+                                    message += f"    ... и еще {len(pair_list) - 10}\n"
+                            else:
+                                message += f"  Нет записанных спортсменов\n"
+
+                            message += "\n"
+                    else:
+                        message += "На эту дату тренировок не запланировано.\n\n"
                 else:
                     message += "На эту дату тренировок не запланировано.\n\n"
-            else:
-                message += "На эту дату тренировок не запланировано.\n\n"
 
-        keyboard = [[
-            InlineKeyboardButton("🔙 К календарю", callback_data=f"calendar_{year}_{month}")
-        ]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            keyboard = [[
+                InlineKeyboardButton("🔙 К календарю", callback_data=f"calendar_{year}_{month}")
+            ]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await query.answer()
-        await query.edit_message_text(
-            truncate_for_telegram_message(message),
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+            await query.answer()
+            await query.edit_message_text(
+                truncate_for_telegram_message(message),
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
 
     except Exception as e:
         logger.error("Ошибка при обработке клика по дате календаря: %s", e, exc_info=True)
@@ -2544,5 +2503,3 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
             await query.answer("❌ Ошибка при загрузке данных")
         except Exception:
             pass
-    finally:
-        session.close()

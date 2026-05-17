@@ -19,6 +19,7 @@ from database.db_utils.training_slots import (
 )
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
 from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
+from utils.coach_sport import sport_type_label_from_user
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow, training_end_time
 
@@ -59,14 +60,6 @@ class TodaySlotDisplay:
     is_individual_format: bool = False
 
 
-def get_coach_sport_type_name(user: Any) -> Optional[str]:
-    if not user:
-        return None
-    if getattr(user, "sport_type_rel", None):
-        return user.sport_type_rel.name
-    return getattr(user, "sport_type", None)
-
-
 def coach_training_access_error(user: Any, training: Training) -> Optional[str]:
     """
     Для тренера: тренировка должна быть его и по его виду спорта.
@@ -76,7 +69,7 @@ def coach_training_access_error(user: Any, training: Training) -> Optional[str]:
         return None
     if training.coach_id != user.id:
         return "❌ Здесь только ваши тренировки. Выберите занятие, где вы указаны тренером."
-    coach_sport = get_coach_sport_type_name(user)
+    coach_sport = sport_type_label_from_user(user)
     if coach_sport and training.sport_type != coach_sport:
         return f"❌ Это занятие по другому виду спорта ({training.sport_type}). Отметки — по вашему направлению."
     return None

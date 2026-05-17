@@ -9,6 +9,7 @@ import pytest
 import handlers.coach_handlers as ch
 from tests.helpers import (
     ctx as _ctx,
+    patch_get_db_session,
     run_async as _run,
     update_with_message as _update_with_message,
 )
@@ -69,7 +70,14 @@ def test_phone_rejects_name_like_without_proper_format():
 
 
 def test_phone_rejects_wrong_format(monkeypatch):
-    monkeypatch.setattr(ch, "Session", lambda: (_ for _ in ()).throw(AssertionError("DB should not open")))
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _deny_db():
+        raise AssertionError("DB should not open")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(ch, "get_db_session", _deny_db)
     update = _update_with_message("12345")
     state = _run(ch.add_athlete_phone(update, _ctx({"full_name": "Иванов Иван"})))
     assert state == ch.ATHLETE_PHONE
@@ -94,7 +102,7 @@ def test_phone_rejects_duplicate_phone(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(ch, "Session", lambda: _FakeSession())
+    patch_get_db_session(monkeypatch, ch, _FakeSession)
     update = _update_with_message("925-123-45-67")
     state = _run(ch.add_athlete_phone(update, _ctx({"full_name": "Новый Спортсмен"})))
     assert state == ch.ATHLETE_PHONE

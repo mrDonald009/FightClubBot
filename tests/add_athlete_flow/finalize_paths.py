@@ -8,6 +8,7 @@ import pytest
 import handlers.coach_handlers as ch
 from tests.helpers import (
     ctx as _ctx,
+    patch_get_db_session,
     run_async as _run,
     update_with_query as _update_with_query,
 )
@@ -43,7 +44,7 @@ def test_finalize_monthly_uses_12th_training_end(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(ch, "Session", lambda: _FakeSession())
+    patch_get_db_session(monkeypatch, ch, _FakeSession)
     monkeypatch.setattr(ch, "create_athlete", lambda **_k: SimpleNamespace(id=1))
     holder = {}
 
@@ -106,7 +107,7 @@ def test_finalize_single_uses_training_end_time(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(ch, "Session", lambda: _FakeSession())
+    patch_get_db_session(monkeypatch, ch, _FakeSession)
     monkeypatch.setattr(ch, "create_athlete", lambda **_k: SimpleNamespace(id=1))
     holder = {}
 
@@ -167,7 +168,7 @@ def test_finalize_on_create_athlete_error_shows_message(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(ch, "Session", lambda: _FakeSession())
+    patch_get_db_session(monkeypatch, ch, _FakeSession)
     monkeypatch.setattr(ch, "create_athlete", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("DB fail")))
     context = _ctx(
         {

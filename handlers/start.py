@@ -1,6 +1,7 @@
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
-from database.models import Session, Coach, Admin, Assistant, Athlete
+from database.models import Coach, Admin, Assistant, Athlete
+from core.database import get_db_session
 from database.db_utils import get_user_by_telegram_id, get_user_role, create_user
 from keyboards.coach_kb import get_coach_main_menu
 import logging
@@ -17,54 +18,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print(f"🎯 ПОЛЬЗОВАТЕЛЬ {user_id} ({first_name}) ОТПРАВИЛ /start")
     print(f"📝 Username: {username}")
 
-    session = Session()
     try:
-        user = get_user_by_telegram_id(session, user_id)
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, user_id)
 
-        if not user:
-            # Для новых пользователей создаем запись спортсмена (в таблице athletes)
-            from database.db_utils import create_athlete
-            # Создаем спортсмена без тренера (created_by будет NULL)
-            user = create_athlete(
-                session=session,
-                telegram_id=user_id,
-                full_name=first_name,
-                phone=None,
-                medical_info="",
-                sport_type=None,
-                age_group=None,
-                created_by=None
-            )
-            print(f"✅ СОЗДАН НОВЫЙ СПОРТСМЕН: {user_id}")
-            welcome_text = f"""👋 Добро пожаловать, {first_name}!
+            if not user:
+                # Для новых пользователей создаем запись спортсмена (в таблице athletes)
+                from database.db_utils import create_athlete
+                # Создаем спортсмена без тренера (created_by будет NULL)
+                user = create_athlete(
+                    session=session,
+                    telegram_id=user_id,
+                    full_name=first_name,
+                    phone=None,
+                    medical_info="",
+                    sport_type=None,
+                    age_group=None,
+                    created_by=None
+                )
+                print(f"✅ СОЗДАН НОВЫЙ СПОРТСМЕН: {user_id}")
+                welcome_text = f"""👋 Добро пожаловать, {first_name}!
 
 Вы были зарегистрированы как спортсмен. Обратитесь к тренеру для настройки профиля."""
-        else:
-            role = get_user_role(user)
-            print(f"🔍 ПОЛЬЗОВАТЕЛЬ {user_id} УЖЕ СУЩЕСТВУЕТ, роль: {role}")
-            welcome_text = f"""👋 С возвращением, {first_name}!
+            else:
+                role = get_user_role(user)
+                print(f"🔍 ПОЛЬЗОВАТЕЛЬ {user_id} УЖЕ СУЩЕСТВУЕТ, роль: {role}")
+                welcome_text = f"""👋 С возвращением, {first_name}!
 
 Ваша роль: {role}"""
 
-        await update.message.reply_text(welcome_text)
+            await update.message.reply_text(welcome_text)
 
-        # Показываем соответствующее меню
-        role = get_user_role(user)
-        if role == "coach":
-            print(f"🎯 ПОКАЗЫВАЕМ МЕНЮ ТРЕНЕРА ДЛЯ {user_id}")
-            await show_coach_menu(update, context)
-        elif role == "admin":
-            print(f"👑 ПОКАЗЫВАЕМ МЕНЮ АДМИНА ДЛЯ {user_id}")
-            await show_admin_menu(update, context)
-        else:
-            print(f"💪 ПОКАЗЫВАЕМ МЕНЮ СПОРТСМЕНА ДЛЯ {user_id}")
-            await show_athlete_menu(update, context)
+            # Показываем соответствующее меню
+            role = get_user_role(user)
+            if role == "coach":
+                print(f"🎯 ПОКАЗЫВАЕМ МЕНЮ ТРЕНЕРА ДЛЯ {user_id}")
+                await show_coach_menu(update, context)
+            elif role == "admin":
+                print(f"👑 ПОКАЗЫВАЕМ МЕНЮ АДМИНА ДЛЯ {user_id}")
+                await show_admin_menu(update, context)
+            else:
+                print(f"💪 ПОКАЗЫВАЕМ МЕНЮ СПОРТСМЕНА ДЛЯ {user_id}")
+                await show_athlete_menu(update, context)
 
     except Exception as e:
         print(f"❌ ОШИБКА В /start: {e}")
         await update.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
-    finally:
-        session.close()
         print(f"🔚 ЗАВЕРШЕНА ОБРАБОТКА /start ДЛЯ {user_id}")
 
 

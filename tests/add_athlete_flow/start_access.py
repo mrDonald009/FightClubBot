@@ -9,6 +9,7 @@ import pytest
 import handlers.coach_handlers as ch
 from tests.helpers import (
     ctx as _ctx,
+    patch_get_db_session,
     run_async as _run,
     update_with_message as _update_with_message,
 )
@@ -39,7 +40,7 @@ def test_add_athlete_start_user_not_found(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(ch, "Session", lambda: _S())
+    patch_get_db_session(monkeypatch, ch, _S)
     monkeypatch.setattr(ch, "get_user_by_telegram_id", lambda *_a, **_k: None)
     update = _update_with_message("")
     state = _run(ch.add_athlete_start(update, _ctx({"old": 1})))
@@ -51,7 +52,7 @@ def test_add_athlete_start_wrong_role(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(ch, "Session", lambda: _S())
+    patch_get_db_session(monkeypatch, ch, _S)
     monkeypatch.setattr(ch, "get_user_by_telegram_id", lambda *_a, **_k: SimpleNamespace())
     monkeypatch.setattr(ch, "get_user_role", lambda *_a, **_k: "assistant")
     update = _update_with_message("")
@@ -64,7 +65,7 @@ def test_add_athlete_start_admin_denied(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(ch, "Session", lambda: _S())
+    patch_get_db_session(monkeypatch, ch, _S)
     monkeypatch.setattr(ch, "get_user_by_telegram_id", lambda *_a, **_k: SimpleNamespace(telegram_id=4242))
     monkeypatch.setattr(ch, "get_user_role", lambda *_a, **_k: "admin")
     update = _update_with_message("")
@@ -79,7 +80,7 @@ def test_add_athlete_start_coach_with_sport(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(ch, "Session", lambda: _S())
+    patch_get_db_session(monkeypatch, ch, _S)
     monkeypatch.setattr(ch, "get_user_by_telegram_id", lambda *_a, **_k: coach)
     monkeypatch.setattr(ch, "get_user_role", lambda *_a, **_k: "coach")
     real_isinstance = builtins.isinstance
@@ -101,7 +102,7 @@ def test_add_athlete_start_coach_without_sport_in_profile(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr(ch, "Session", lambda: _S())
+    patch_get_db_session(monkeypatch, ch, _S)
     monkeypatch.setattr(ch, "get_user_by_telegram_id", lambda *_a, **_k: coach)
     monkeypatch.setattr(ch, "get_user_role", lambda *_a, **_k: "coach")
     real_isinstance = builtins.isinstance
