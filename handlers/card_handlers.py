@@ -3126,16 +3126,6 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
             keyboard = [
                 [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")]
             ]
-            if isinstance(user, Coach):
-                keyboard.insert(
-                    0,
-                    [
-                        InlineKeyboardButton(
-                            "📅 К календарю тренера",
-                            callback_data=f"calendar_{now.year}_{now.month}",
-                        )
-                    ],
-                )
             reply_markup = InlineKeyboardMarkup(keyboard)
         
             await query.edit_message_text(
