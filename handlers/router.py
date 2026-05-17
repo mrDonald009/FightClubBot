@@ -18,12 +18,16 @@ from services.user_service import UserService
 from database.db_utils import get_user_role
 from services.subscription_service import SubscriptionService
 from services.subscription_audit_service import run_subscription_audit, format_audit_report
-from database.db_utils import (
-    apply_global_freeze,
-    deactivate_global_freeze_and_migrate,
-    list_active_global_freezes_overlapping_range,
+from services.global_freeze_service import (
+    apply_global_freeze_service,
+    deactivate_global_freeze_service,
+    format_current_global_freezes_html as _format_current_global_freezes_html,
+    format_global_freeze_history_html as _format_global_freeze_history_html,
+    gf_keyboard_button_label_from_parts as _gf_keyboard_button_label_from_parts,
+    list_active_global_freezes as _list_active_global_freezes,
+    overlapping_global_freeze_ids,
+    parse_ui_date as _parse_ui_date,
 )
-from utils.time_utils import now_moscow
 from handlers.start import start
 from handlers.coach_handlers import (
     coach_menu,
@@ -247,7 +251,7 @@ async def create_global_freeze(update, context):
 
     try:
         with get_db_session() as session:
-            result = apply_global_freeze(
+            result = apply_global_freeze_service(
                 session=session,
                 start_date=start_date,
                 end_date=end_date,
@@ -270,103 +274,6 @@ async def create_global_freeze(update, context):
     except Exception as e:
         logger.error(f"Ошибка применения массовой заморозки: {e}", exc_info=True)
         await update.message.reply_text("❌ Ошибка при применении массовой заморозки")
-
-
-def _parse_ui_date(text: str):
-    """Парсинг даты UI формата ДД.ММ.ГГГГ."""
-    try:
-        return datetime.strptime(text.strip(), "%d.%m.%Y")
-    except Exception:
-        return None
-
-
-def _format_current_global_freezes_html(session) -> str:
-    """
-    Текст для UI: массовые заморозки, действующие «сейчас» (по времени и is_active).
-    """
-    from database.models import GlobalFreeze
-
-    now = now_moscow()
-    rows = (
-        session.query(GlobalFreeze)
-        .filter(GlobalFreeze.is_active == True)
-        .filter(GlobalFreeze.start_date <= now)
-        .filter(GlobalFreeze.end_date >= now)
-        .order_by(GlobalFreeze.id.asc())
-        .all()
-    )
-    if not rows:
-        return "📭 <b>Сейчас действующих массовых заморозок нет.</b>"
-
-    header = (
-        "📌 <b>Сейчас действует массовая заморозка:</b>"
-        if len(rows) == 1
-        else "📌 <b>Сейчас действуют массовые заморозки:</b>"
-    )
-    lines = [header]
-    for g in rows:
-        title = html.escape((g.title or "").strip() or "без названия")
-        ds = g.start_date.strftime("%d.%m.%Y")
-        de = g.end_date.strftime("%d.%m.%Y")
-        lines.append(f"• ID <code>{g.id}</code> — <b>{title}</b>")
-        lines.append(f"  <i>{ds} — {de}</i>")
-    return "\n".join(lines)
-
-
-def _list_active_global_freezes(session):
-    """Все массовые заморозки с is_active=True (в т.ч. будущие по календарю)."""
-    from database.models import GlobalFreeze
-
-    return (
-        session.query(GlobalFreeze)
-        .filter(GlobalFreeze.is_active == True)
-        .order_by(GlobalFreeze.start_date.asc())
-        .all()
-    )
-
-
-def _format_global_freeze_history_html(session, limit: int = 15) -> str:
-    """Короткая история массовых заморозок (активные и неактивные)."""
-    from database.models import GlobalFreeze
-
-    rows = (
-        session.query(GlobalFreeze)
-        .order_by(GlobalFreeze.id.desc())
-        .limit(limit)
-        .all()
-    )
-    if not rows:
-        return "📭 <b>История массовых заморозок пуста.</b>"
-
-    lines = [f"📚 <b>История массовых заморозок</b> (последние {len(rows)}):"]
-    for g in rows:
-        status = "🟢 Действует" if g.is_active else "⚪ Отключена"
-        title = html.escape((g.title or "").strip() or "без названия")
-        ds = g.start_date.strftime("%d.%m.%Y")
-        de = g.end_date.strftime("%d.%m.%Y")
-        created = g.created_at.strftime("%d.%m.%Y") if g.created_at else "—"
-        initiator = str(g.created_by) if g.created_by else "не указан"
-        lines.append(f"• <b>{title}</b>")
-        lines.append(f"  Создано: {created}")
-        lines.append(f"  Период действия: {ds}—{de}")
-        lines.append(f"  Текущий статус: {status}")
-        lines.append(f"  Инициатор: {initiator}")
-    return "\n".join(lines)
-
-
-def _gf_keyboard_button_label(g) -> str:
-    t = (g.title or "").strip() or "без названия"
-    if len(t) > 28:
-        t = t[:25] + "…"
-    return f"#{g.id} {t}"
-
-
-def _gf_keyboard_button_label_from_parts(gf_id: int, title: str) -> str:
-    """Безопасный label: работает с примитивами, не зависит от ORM-сессии."""
-    t = (title or "").strip() or "без названия"
-    if len(t) > 28:
-        t = t[:25] + "…"
-    return f"#{gf_id} {t}"
 
 
 async def _gf_safe_edit(
@@ -639,7 +546,7 @@ async def handle_gf_deact_confirm(update, context):
             if not user or get_user_role(user) not in ["coach", "admin"]:
                 await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
-            result = deactivate_global_freeze_and_migrate(session, gf_id)
+            result = deactivate_global_freeze_service(session, gf_id)
     except Exception as e:
         logger.error(f"Ошибка (gf_deact_confirm): {e}", exc_info=True)
         await _gf_safe_edit(update, context, "❌ Ошибка при деактивации")
@@ -759,11 +666,8 @@ async def handle_global_freeze_title(update, context):
     overlap_note = ""
     try:
         with get_db_session() as session:
-            overlapping = list_active_global_freezes_overlapping_range(session, start_date, end_date)
-            if overlapping:
-                oids = ", ".join(str(g.id) for g in overlapping[:5])
-                if len(overlapping) > 5:
-                    oids += ", …"
+            oids = overlapping_global_freeze_ids(session, start_date, end_date)
+            if oids:
                 overlap_note = (
                     f"\n\n⚠️ Период пересекается с уже действующей массовой заморозкой "
                     f"(записи: <code>{html.escape(oids)}</code>). "
@@ -806,7 +710,7 @@ async def handle_global_freeze_confirm_apply(update, context):
 
     try:
         with get_db_session() as session:
-            result = apply_global_freeze(
+            result = apply_global_freeze_service(
                 session=session,
                 start_date=start_date,
                 end_date=end_date,
@@ -888,7 +792,7 @@ async def deactivate_global_freeze(update, context):
                 await update.message.reply_text("❌ У вас нет прав для этой команды")
                 return
 
-            result = deactivate_global_freeze_and_migrate(session, gf_id)
+            result = deactivate_global_freeze_service(session, gf_id)
 
             if not result.get("success"):
                 await update.message.reply_text(f"❌ {result.get('message', 'Ошибка')}")

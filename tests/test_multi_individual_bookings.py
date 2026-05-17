@@ -6,7 +6,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from database.db_utils.subscriptions import create_subscription
-from database.models import Athlete, Base, Subscription
+from database.models import Athlete, Base, SportType, Subscription
 from handlers.card_handlers import (
     _has_legacy_unique_athlete_constraint,
     _supports_multi_individual_bookings,
@@ -165,5 +165,36 @@ def test_unique_individual_slot_per_athlete():
         )
         s.commit()
     s.rollback()
+    s.close()
+    engine.dispose()
+
+
+def test_create_subscription_sets_sport_type_id_when_lookup_exists():
+    s, engine = _session()
+    st = SportType(name="MMA", display_name="MMA")
+    s.add(st)
+    s.flush()
+
+    athlete = Athlete(
+        full_name="Спортсмен с FK",
+        sport_type="MMA",
+        age_group="adults",
+        created_by=4,
+    )
+    s.add(athlete)
+    s.flush()
+
+    sub = create_subscription(
+        s,
+        athlete.id,
+        "single",
+        "MMA",
+        discipline_key="mma_group",
+        subscription_format="group",
+        commit=False,
+    )
+    s.flush()
+
+    assert sub.sport_type_id == st.id
     s.close()
     engine.dispose()

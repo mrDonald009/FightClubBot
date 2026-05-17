@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
-from database.models import Athlete, Subscription, Training
+from database.models import Athlete, SportType, Subscription, Training
 from utils.discipline_keys import discipline_key_for
 from utils.time_utils import now_moscow
 from utils.training_manager import TrainingManager
@@ -30,6 +31,16 @@ def create_subscription(
 
     if not sport_type:
         sport_type = athlete.sport_type
+
+    sport_type_id = None
+    if sport_type:
+        sport_type_obj = (
+            session.query(SportType)
+            .filter(func.lower(SportType.name) == sport_type.lower())
+            .first()
+        )
+        if sport_type_obj:
+            sport_type_id = sport_type_obj.id
 
     fmt = (subscription_format or "group").strip().lower()
     dk = discipline_key or discipline_key_for(sport_type, format=fmt)
@@ -65,6 +76,7 @@ def create_subscription(
                     f"У спортсмена уже есть активный абонемент по направлению {dk}"
                 )
             existing.sport_type = sport_type
+            existing.sport_type_id = sport_type_id
             existing.subscription_type = subscription_type
             existing.responsible_coach_id = rc
             existing.trainings_total = trainings_total
@@ -82,6 +94,7 @@ def create_subscription(
         athlete_id=athlete_id,
         discipline_key=dk,
         responsible_coach_id=rc,
+        sport_type_id=sport_type_id,
         sport_type=sport_type,
         subscription_type=subscription_type,
         start_date=None,
