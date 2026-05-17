@@ -26,7 +26,7 @@ from typing import List, Optional, Tuple, Union
 from utils.coach_sport import coach_sport_type_name
 from utils.training_manager import TrainingManager
 from utils.subscription_resolve import subscription_for_coach_sport
-from utils.attendance_display import attendance_icon_for_slot
+from utils.attendance_display import attendance_icon_for_slot, attendance_label_ru_for_slot
 from utils.time_utils import (
     now_moscow,
     ACTIVATION_GRACE_AFTER_START,
@@ -2317,7 +2317,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
             message = f"<b>📅 {date_str}</b>\n\n"
 
             if trainings:
-                message += f"<b>Тренировок: {len(trainings)}</b>\n\n"
+                rendered_slots = 0
                 for training in trainings:
                     from utils.age_groups import format_age_group_label
 
@@ -2328,21 +2328,11 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         == TRAINING_FORMAT_INDIVIDUAL
                     )
                     slot_suffix = " — Индивидуальная" if is_individual_slot else " — Групповая"
-                    if is_individual_slot:
-                        message += (
-                            f"• <b>{time_str}</b> - {training.sport_type}{slot_suffix}\n"
-                        )
-                    else:
-                        message += (
-                            f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
-                        )
-
                     training_date_only = training.training_date.date()
                     subs_q = (
                         session.query(Subscription)
                         .join(Athlete, Subscription.athlete_id == Athlete.id)
                         .filter(
-                            Subscription.is_active == True,
                             Subscription.sport_type == training.sport_type,
                             func.date(Subscription.start_date) <= training_date_only,
                             func.date(Subscription.end_date) >= training_date_only,
@@ -2366,8 +2356,10 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         )
                     subs = subs_q.all()
 
+                    athlete_lines = []
+                    athlete_count = 0
                     if subs:
-                        message += f"  <b>Записано спортсменов: {len(subs)}</b>\n"
+                        athlete_count = len(subs)
                         athlete_ids = [sub.athlete_id for sub in subs]
                         athletes_map = {
                             a.id: a
@@ -2390,9 +2382,17 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                             status_icon = attendance_icon_for_slot(
                                 att, training.training_date, now=now
                             )
-                            message += f"    {status_icon} {html.escape(ath.full_name)}\n"
+                            status_label = attendance_label_ru_for_slot(
+                                att,
+                                training.training_date,
+                                now=now,
+                                training_format=getattr(training, "training_format", None),
+                            )
+                            athlete_lines.append(
+                                f"    {status_icon} {html.escape(ath.full_name)} — {status_label}\n"
+                            )
                         if len(subs) > 10:
-                            message += f"    ... и еще {len(subs) - 10}\n"
+                            athlete_lines.append(f"    ... и еще {len(subs) - 10}\n")
                     else:
                         # Fallback: если по активным абонементам никого нет, но по слоту уже есть
                         # фактические отметки Attendance — показываем их в календаре.
@@ -2408,12 +2408,12 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                             for att in slot_atts:
                                 by_athlete[att.athlete_id] = att
                             fallback_atts = list(by_athlete.values())
+                            athlete_count = len(fallback_atts)
                             athlete_ids = [att.athlete_id for att in fallback_atts]
                             athletes_map = {
                                 a.id: a
                                 for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
                             }
-                            message += f"  <b>Записано спортсменов: {len(fallback_atts)}</b>\n"
                             for att in fallback_atts[:10]:
                                 ath = athletes_map.get(att.athlete_id)
                                 if not ath:
@@ -2421,13 +2421,47 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                 status_icon = attendance_icon_for_slot(
                                     att, training.training_date, now=now
                                 )
-                                message += f"    {status_icon} {html.escape(ath.full_name)}\n"
+                                status_label = attendance_label_ru_for_slot(
+                                    att,
+                                    training.training_date,
+                                    now=now,
+                                    training_format=getattr(training, "training_format", None),
+                                )
+                                athlete_lines.append(
+                                    f"    {status_icon} {html.escape(ath.full_name)} — {status_label}\n"
+                                )
                             if len(fallback_atts) > 10:
-                                message += f"    ... и еще {len(fallback_atts) - 10}\n"
-                        else:
-                            message += f"  Нет записанных спортсменов\n"
+                                athlete_lines.append(
+                                    f"    ... и еще {len(fallback_atts) - 10}\n"
+                                )
 
+                    # В календаре дня показываем только слоты, где есть данные по спортсменам.
+                    if not athlete_lines:
+                        continue
+
+                    rendered_slots += 1
+                    if rendered_slots == 1:
+                        message += "<b>Тренировки со спортсменами:</b>\n\n"
+                    if is_individual_slot:
+                        message += (
+                            f"• <b>{time_str}</b> - {training.sport_type}{slot_suffix}\n"
+                        )
+                    else:
+                        message += (
+                            f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
+                        )
+                    message += f"  <b>Спортсменов: {athlete_count}</b>\n"
+                    for line in athlete_lines:
+                        message += line
                     message += "\n"
+                if rendered_slots:
+                    message = message.replace(
+                        "<b>📅 " + date_str + "</b>\n\n",
+                        f"<b>📅 {date_str}</b>\n\n<b>Тренировок: {rendered_slots}</b>\n\n",
+                        1,
+                    )
+                else:
+                    message += "На эту дату нет тренировок со спортсменами.\n\n"
             else:
                 weekday = selected_date.weekday()
 
