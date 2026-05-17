@@ -332,3 +332,56 @@ def test_individual_slot_has_links_true_with_active_subscription():
 
     assert individual_slot_has_links(session, training, coach_id=coach.id) is True
     session.close()
+
+
+@pytest.mark.db
+def test_individual_slot_has_links_true_with_inactive_subscription():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    st = SportType(name="MMA", display_name="MMA")
+    session.add(st)
+    session.flush()
+    coach = Coach(telegram_id=9993, sport_type_id=st.id, sport_type="MMA")
+    session.add(coach)
+    session.flush()
+    athlete = Athlete(
+        full_name="Тест Атлет 2",
+        sport_type="MMA",
+        age_group="children",
+        created_by=coach.id,
+    )
+    session.add(athlete)
+    session.flush()
+
+    slot_start = datetime(2026, 5, 17, 11, 30, 0)
+    training = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=slot_start,
+        coach_id=coach.id,
+        training_format="individual",
+        is_cancelled=False,
+    )
+    session.add(training)
+    session.flush()
+
+    sub = Subscription(
+        athlete_id=athlete.id,
+        discipline_key="mma_individual_old",
+        sport_type="MMA",
+        subscription_type="individual",
+        start_date=slot_start,
+        end_date=slot_start,
+        is_active=False,
+        trainings_total=1,
+        trainings_remaining=0,
+        responsible_coach_id=coach.id,
+        created_at=datetime(2026, 5, 16, 10, 0, 0),
+    )
+    session.add(sub)
+    session.commit()
+
+    assert individual_slot_has_links(session, training, coach_id=coach.id) is True
+    session.close()

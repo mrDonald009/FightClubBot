@@ -173,7 +173,7 @@ def individual_slot_has_links(
 ) -> bool:
     """
     Есть ли у индивидуального слота реальные связи:
-    - активная individual-подписка на этот старт;
+    - individual-подписка на этот старт (включая уже завершённые/неактивные);
     - или attendance в одном из training_id этого слота.
     """
     fmt = (getattr(training, "training_format", None) or "").strip().lower()
@@ -188,7 +188,6 @@ def individual_slot_has_links(
         .join(Athlete, Subscription.athlete_id == Athlete.id)
         .filter(
             Subscription.subscription_type == "individual",
-            Subscription.is_active.is_(True),
             Subscription.sport_type == training.sport_type,
             func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
         )
