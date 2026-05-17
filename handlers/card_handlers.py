@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 import calendar as py_calendar
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
-from database.models import Athlete, Subscription, Training, Attendance, Coach, Admin, GlobalFreeze, VisitHistory
+from database.models import Athlete, Subscription, Training, Attendance, Coach, Admin, GlobalFreeze
 from core.database import get_db_session
 from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
@@ -33,6 +33,7 @@ from database.db_utils.training_slots import (
     individual_slot_training_ids,
     iter_allowed_individual_starts,
 )
+from database.db_utils.visit_history import upsert_visit_history_for_training
 from typing import List, Optional, Union
 
 from sqlalchemy import and_, exists, func, or_, text
@@ -3014,7 +3015,6 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                                 return att_by_tid[sid]
                         return None
 
-                    history_changed = False
                     ordered_slots = sorted(visible_slots, key=lambda tr: tr.training_date)
                     if len(ordered_slots) > max_lines:
                         ordered_slots = ordered_slots[-max_lines:]
@@ -3031,41 +3031,16 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                         else:
                             # В истории не используем «не отмечено»: отсутствие отметки считаем «не был».
                             status_code = "absent"
-
-                        vh = (
-                            session.query(VisitHistory)
-                            .filter(
-                                VisitHistory.athlete_id == athlete_id,
-                                VisitHistory.training_id == t.id,
-                            )
-                            .first()
+                        upsert_visit_history_for_training(
+                            session,
+                            athlete_id=athlete_id,
+                            training_id=t.id,
+                            attendance=att,
+                            status_code=status_code,
+                            status_label=label,
+                            source="derived",
+                            recorded_at=now,
                         )
-                        if vh is None:
-                            vh = VisitHistory(
-                                athlete_id=athlete_id,
-                                training_id=t.id,
-                                subscription_id=att.subscription_id if att is not None else None,
-                                attendance_id=att.id if att is not None else None,
-                                status_code=status_code,
-                                status_label=label,
-                                source="derived",
-                                recorded_at=now,
-                            )
-                            session.add(vh)
-                            history_changed = True
-                        else:
-                            if (
-                                vh.subscription_id != (att.subscription_id if att is not None else None)
-                                or vh.attendance_id != (att.id if att is not None else None)
-                                or vh.status_code != status_code
-                                or vh.status_label != label
-                            ):
-                                vh.subscription_id = att.subscription_id if att is not None else None
-                                vh.attendance_id = att.id if att is not None else None
-                                vh.status_code = status_code
-                                vh.status_label = label
-                                vh.updated_at = now
-                                history_changed = True
 
                         is_individual_slot = (
                             (getattr(t, "training_format", None) or "").strip().lower()
@@ -3087,9 +3062,6 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                             status_text = "❌ Не был"
 
                         rows.append((t.training_date, f"{slot_desc} — {status_text}\n"))
-                    if history_changed:
-                        session.commit()
-
             covered_tids = set()
             for tr in visible_slots:
                 covered_tids.update(individual_slot_training_ids(session, tr))

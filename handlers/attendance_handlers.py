@@ -13,6 +13,7 @@ from database.db_utils import (
     is_training_in_global_freeze,
 )
 from database.db_utils.training_slots import individual_slot_training_ids
+from database.db_utils.visit_history import upsert_visit_history_for_training
 from utils.subscription_resolve import (
     active_subscriptions_all,
     active_subscription_for_training,
@@ -269,6 +270,7 @@ async def _run_attendance_mark_query(
         # Остаток абонемента не меняем до окончания пары; списание — при выставлении locked_at (фоновая задача).
         existing_attendance.attended = attended
         existing_attendance.marked_by = query.from_user.id
+        attendance_row = existing_attendance
         logger.info(
             "attendance_updated trainer_tg=%s athlete_id=%s training_id=%s old=%s new=%s",
             query.from_user.id,
@@ -289,6 +291,8 @@ async def _run_attendance_mark_query(
         )
 
         session.add(attendance)
+        session.flush()
+        attendance_row = attendance
         logger.info(
             "attendance_created trainer_tg=%s athlete_id=%s training_id=%s status=%s",
             query.from_user.id,
@@ -296,6 +300,16 @@ async def _run_attendance_mark_query(
             training_id,
             "present" if attended else "absent",
         )
+
+    upsert_visit_history_for_training(
+        session,
+        athlete_id=athlete_id,
+        training_id=training.id,
+        attendance=attendance_row,
+        status_code="present" if attended else "absent",
+        status_label="✅ Был" if attended else "❌ Не был",
+        source="attendance_mark",
+    )
 
     session.commit()
 
