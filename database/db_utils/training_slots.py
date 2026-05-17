@@ -4,9 +4,10 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from database.models import Subscription, Training
+from database.models import Athlete, Attendance, Subscription, Training
 from utils.time_utils import (
     ACTIVATION_GRACE_AFTER_START,
     individual_training_end_time,
@@ -162,6 +163,51 @@ def find_group_training_on_calendar_day(
         if fmt != TRAINING_FORMAT_INDIVIDUAL:
             return training
     return None
+
+
+def individual_slot_has_links(
+    session: Session,
+    training: Training,
+    *,
+    coach_id: Optional[int] = None,
+) -> bool:
+    """
+    Есть ли у индивидуального слота реальные связи:
+    - активная individual-подписка на этот старт;
+    - или attendance в одном из training_id этого слота.
+    """
+    fmt = (getattr(training, "training_format", None) or "").strip().lower()
+    if fmt != TRAINING_FORMAT_INDIVIDUAL:
+        return True
+
+    slot_ids = individual_slot_training_ids(session, training)
+    slot_key = training.training_date.strftime("%Y-%m-%d %H:%M")
+
+    sub_q = (
+        session.query(Subscription.id)
+        .join(Athlete, Subscription.athlete_id == Athlete.id)
+        .filter(
+            Subscription.subscription_type == "individual",
+            Subscription.is_active.is_(True),
+            Subscription.sport_type == training.sport_type,
+            func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
+        )
+    )
+    if coach_id is not None:
+        sub_q = sub_q.filter(
+            (Subscription.responsible_coach_id == coach_id) | (Athlete.created_by == coach_id)
+        )
+    if sub_q.first() is not None:
+        return True
+
+    att_q = (
+        session.query(Attendance.id)
+        .join(Athlete, Attendance.athlete_id == Athlete.id)
+        .filter(Attendance.training_id.in_(slot_ids))
+    )
+    if coach_id is not None:
+        att_q = att_q.filter(Athlete.created_by == coach_id)
+    return att_q.first() is not None
 
 
 def individual_slot_conflicts(

@@ -3,12 +3,18 @@ from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
 from database.db_utils.training_slots import (
     dedupe_individual_trainings_by_slot,
+    individual_slot_has_links,
     individual_slot_conflicts,
     iter_allowed_individual_starts,
     scheduled_group_training_intervals,
 )
+from database.models import Athlete, Attendance, Base, Coach, SportType, Subscription, Training
 
 
 def _empty_session():
@@ -245,3 +251,84 @@ def test_individual_slot_conflicts_with_schedule_without_db_rows():
     assert not individual_slot_conflicts(
         session, 1, "MMA", datetime(2026, 4, 7, 10, 0)
     )
+
+
+@pytest.mark.db
+def test_individual_slot_has_links_false_for_orphan_slot():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    st = SportType(name="MMA", display_name="MMA")
+    session.add(st)
+    session.flush()
+    coach = Coach(telegram_id=9991, sport_type_id=st.id, sport_type="MMA")
+    session.add(coach)
+    session.flush()
+
+    training = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=datetime(2026, 5, 17, 8, 0, 0),
+        coach_id=coach.id,
+        training_format="individual",
+        is_cancelled=False,
+    )
+    session.add(training)
+    session.commit()
+
+    assert individual_slot_has_links(session, training, coach_id=coach.id) is False
+    session.close()
+
+
+@pytest.mark.db
+def test_individual_slot_has_links_true_with_active_subscription():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    st = SportType(name="MMA", display_name="MMA")
+    session.add(st)
+    session.flush()
+    coach = Coach(telegram_id=9992, sport_type_id=st.id, sport_type="MMA")
+    session.add(coach)
+    session.flush()
+    athlete = Athlete(
+        full_name="Тест Атлет",
+        sport_type="MMA",
+        age_group="children",
+        created_by=coach.id,
+    )
+    session.add(athlete)
+    session.flush()
+
+    slot_start = datetime(2026, 5, 17, 10, 30, 0)
+    training = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=slot_start,
+        coach_id=coach.id,
+        training_format="individual",
+        is_cancelled=False,
+    )
+    session.add(training)
+    session.flush()
+
+    sub = Subscription(
+        athlete_id=athlete.id,
+        discipline_key="mma_individual",
+        sport_type="MMA",
+        subscription_type="individual",
+        start_date=slot_start,
+        end_date=slot_start,
+        is_active=True,
+        trainings_total=1,
+        trainings_remaining=1,
+        responsible_coach_id=coach.id,
+        created_at=datetime(2026, 5, 16, 10, 0, 0),
+    )
+    session.add(sub)
+    session.commit()
+
+    assert individual_slot_has_links(session, training, coach_id=coach.id) is True
+    session.close()

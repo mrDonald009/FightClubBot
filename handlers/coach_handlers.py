@@ -14,6 +14,7 @@ from database.db_utils.training_slots import (
     TRAINING_FORMAT_INDIVIDUAL,
     dedupe_individual_trainings_by_slot,
     find_group_training_on_calendar_day,
+    individual_slot_has_links,
     individual_slot_conflicts,
     individual_slot_training_ids,
     iter_allowed_individual_starts,
@@ -2100,6 +2101,15 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                 query = query.filter(Training.sport_type == sport_type_name)
             trainings = query.order_by(Training.training_date.asc()).all()
             trainings = dedupe_individual_trainings_by_slot(trainings)
+            trainings = [
+                t
+                for t in trainings
+                if (
+                    (getattr(t, "training_format", None) or "").strip().lower()
+                    != TRAINING_FORMAT_INDIVIDUAL
+                )
+                or individual_slot_has_links(session, t, coach_id=user.id)
+            ]
 
             # Группируем тренировки по датам
             trainings_by_date = {}
@@ -2293,6 +2303,15 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                 query_filter = query_filter.filter(Training.sport_type == sport_type_name)
             trainings = query_filter.order_by(Training.training_date.asc()).all()
             trainings = dedupe_individual_trainings_by_slot(trainings)
+            trainings = [
+                t
+                for t in trainings
+                if (
+                    (getattr(t, "training_format", None) or "").strip().lower()
+                    != TRAINING_FORMAT_INDIVIDUAL
+                )
+                or individual_slot_has_links(session, t, coach_id=user.id)
+            ]
 
             date_str = selected_date.strftime("%d.%m.%Y")
             message = f"<b>📅 {date_str}</b>\n\n"
