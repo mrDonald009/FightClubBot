@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 from database.models import Athlete, SportType, Subscription, Training
+from database.db_utils.training_slots import find_group_training_on_calendar_day
 from utils.discipline_keys import discipline_key_for
 from utils.time_utils import now_moscow
 from utils.training_manager import TrainingManager
@@ -163,6 +164,14 @@ def _create_and_deduct_scheduled_trainings(
                 .first()
             )
 
+            if not existing_training:
+                existing_training = find_group_training_on_calendar_day(
+                    session,
+                    sport_type=athlete.sport_type,
+                    age_group=athlete.age_group,
+                    day=training_datetime.date(),
+                    coach_id=coach_id,
+                )
             if not existing_training:
                 # Создаем новую тренировку
                 training = Training(

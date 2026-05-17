@@ -127,6 +127,43 @@ def coach_trainings_on_calendar_day(
     )
 
 
+def find_group_training_on_calendar_day(
+    session: Session,
+    *,
+    sport_type: str,
+    age_group: str,
+    day: date,
+    coach_id: Optional[int] = None,
+) -> Optional[Training]:
+    """
+    Найти существующую групповую тренировку на календарный день.
+
+    Используется как fallback при смене расписания: если в этот день уже есть
+    один групповой слот (например legacy 18:00), не создаём второй (17:00).
+    """
+    day_start = datetime.combine(day, time(0, 0, 0))
+    day_end = day_start + timedelta(days=1)
+    q = (
+        session.query(Training)
+        .filter(
+            Training.sport_type == sport_type,
+            Training.age_group == age_group,
+            Training.is_cancelled.is_(False),
+            Training.training_date >= day_start,
+            Training.training_date < day_end,
+        )
+        .order_by(Training.training_date.asc(), Training.id.asc())
+    )
+    if coach_id is not None:
+        q = q.filter(Training.coach_id == coach_id)
+    trainings = q.all()
+    for training in trainings:
+        fmt = (getattr(training, "training_format", None) or "").strip().lower()
+        if fmt != TRAINING_FORMAT_INDIVIDUAL:
+            return training
+    return None
+
+
 def individual_slot_conflicts(
     session: Session,
     coach_id: int,

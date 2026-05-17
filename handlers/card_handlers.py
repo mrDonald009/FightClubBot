@@ -29,6 +29,7 @@ from database.db_utils.training_slots import (
     INDIVIDUAL_TRAINING_AGE_GROUP_STORED,
     TRAINING_FORMAT_INDIVIDUAL,
     dedupe_individual_trainings_by_slot,
+    find_group_training_on_calendar_day,
     individual_slot_conflicts,
     individual_slot_training_ids,
     iter_allowed_individual_starts,
@@ -371,6 +372,14 @@ async def _finalize_subscription_activation(
             training_date=start_date,
             is_cancelled=False,
         ).first()
+        if not training:
+            training = find_group_training_on_calendar_day(
+                session,
+                sport_type=sport_type,
+                age_group=age_group,
+                day=start_date.date(),
+                coach_id=coach_id,
+            )
         if not training:
             training = Training(
                 sport_type=sport_type,

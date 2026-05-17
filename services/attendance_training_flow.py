@@ -15,6 +15,7 @@ from database.db_utils import get_user_role
 from database.db_utils.training_slots import (
     TRAINING_FORMAT_INDIVIDUAL,
     dedupe_individual_trainings_by_slot,
+    find_group_training_on_calendar_day,
     individual_slot_training_ids,
 )
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
@@ -255,6 +256,15 @@ def resolve_training_from_attendance_callback(
         if coach_id is not None:
             q = q.filter_by(coach_id=coach_id)
         training = q.first()
+        if training:
+            return training, False, None
+        training = find_group_training_on_calendar_day(
+            session,
+            sport_type=sport_type,
+            age_group=age_group,
+            day=training_dt.date(),
+            coach_id=coach_id,
+        )
         if training:
             return training, False, None
         payload: Dict[str, Any] = dict(

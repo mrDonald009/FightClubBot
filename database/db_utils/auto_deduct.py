@@ -7,6 +7,7 @@ from utils.time_utils import individual_training_end_time, now_moscow, training_
 from .global_freeze import is_training_in_global_freeze
 from .training_slots import (
     TRAINING_FORMAT_INDIVIDUAL,
+    find_group_training_on_calendar_day,
     individual_slot_training_ids,
 )
 
@@ -142,6 +143,14 @@ def auto_deduct_daily_trainings(session: Session):
             is_cancelled=False
         ).first()
         
+        if not existing_training:
+            existing_training = find_group_training_on_calendar_day(
+                session,
+                sport_type=athlete.sport_type,
+                age_group=athlete.age_group,
+                day=training_datetime.date(),
+                coach_id=getattr(athlete, "created_by", None),
+            )
         if not existing_training:
             # Создаем тренировку
             coach_id = athlete.created_by

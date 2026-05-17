@@ -20,7 +20,9 @@ from services.attendance_training_flow import (
     parse_attendance_direct_mark_callback,
     parse_attendance_name_column_callback,
     parse_attendance_page_callback,
+    resolve_training_from_attendance_callback,
 )
+from utils.training_manager import TrainingManager
 
 pytestmark = pytest.mark.unit
 
@@ -351,4 +353,84 @@ def test_fetch_athletes_individual_slot_lists_all_ages_same_start():
     names = {a.full_name for a in athletes}
     assert names == {"Попов Алексей Сергеевич", "Морозов Никита Иванович"}
 
+    session.close()
+
+
+@pytest.mark.db
+def test_resolve_virtual_slot_reuses_existing_group_on_same_day():
+    """
+    Виртуальный слот «Отметить посещения» не должен создавать второй group-слот
+    в тот же день, если уже есть активная групповая тренировка того же тренера.
+    Время берётся из актуального TRAINING_SCHEDULE (без хардкода 17:00/18:00).
+    """
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    sport_type = "MMA"
+    age_group = "children"
+    schedule = TrainingManager.TRAINING_SCHEDULE[sport_type][age_group]
+    training_weekday = schedule["days"][0]
+    expected_time = TrainingManager.get_time_str_for_weekday(schedule, training_weekday)
+    expected_hour, expected_minute = map(int, expected_time.split(":"))
+
+    base_day = datetime(2026, 5, 1)
+    while base_day.weekday() != training_weekday:
+        base_day += timedelta(days=1)
+    today = base_day.replace(hour=9, minute=0, second=0, microsecond=0)
+    expected_dt = today.replace(hour=expected_hour, minute=expected_minute, second=0, microsecond=0)
+
+    legacy_dt = expected_dt + timedelta(minutes=60)
+    if legacy_dt.date() != expected_dt.date():
+        legacy_dt = expected_dt - timedelta(minutes=60)
+
+    st = SportType(name=sport_type, display_name=sport_type)
+    session.add(st)
+    session.flush()
+    coach = Coach(telegram_id=9010, sport_type_id=st.id, sport_type=sport_type)
+    session.add(coach)
+    session.flush()
+
+    legacy_group = Training(
+        sport_type=sport_type,
+        age_group=age_group,
+        training_date=legacy_dt,
+        coach_id=coach.id,
+        training_format=None,
+        is_cancelled=False,
+    )
+    session.add(legacy_group)
+    session.commit()
+
+    callback = "select_mark_training_virtual_slot1"
+    virtual_slots = {
+        "slot1": {
+            "sport_type": sport_type,
+            "age_group": age_group,
+            "hour": expected_hour,
+            "minute": expected_minute,
+            "coach_id": coach.id,
+        }
+    }
+
+    with patch("services.attendance_training_flow.now_moscow", return_value=today):
+        training, created, err = resolve_training_from_attendance_callback(
+            session, callback, virtual_slots
+        )
+
+    assert err is None
+    assert created is False
+    assert training is not None
+    assert training.id == legacy_group.id
+    assert (
+        session.query(Training)
+        .filter(
+            Training.sport_type == sport_type,
+            Training.age_group == age_group,
+            Training.coach_id == coach.id,
+            Training.is_cancelled.is_(False),
+        )
+        .count()
+        == 1
+    )
     session.close()
