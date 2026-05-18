@@ -22,7 +22,7 @@ from services.user_service import UserService
 from services.subscription_service import SubscriptionService
 from services.subscription_audit_service import run_subscription_audit, format_audit_report
 from utils.age_groups import format_age_group_label
-from utils.time_utils import APP_TZ
+from utils.time_utils import APP_TZ, now_moscow
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def _coach_and_slots_for_today(now_dt: datetime) -> List[Tuple[int, List]]:
 
 async def _daily_coach_schedule_summary_job(context) -> None:
     """Ежедневный дайджест тренеру: сколько тренировок на сегодня."""
-    now_dt = datetime.now(APP_TZ)
+    now_dt = now_moscow()
     today = now_dt.date()
     sent_keys: Set[str] = context.application.bot_data.setdefault(
         "coach_daily_summary_sent_keys", set()
@@ -88,7 +88,7 @@ async def _daily_coach_schedule_summary_job(context) -> None:
 
 async def _coach_training_start_reminder_job(context) -> None:
     """Напоминание тренеру в момент старта занятия."""
-    now_dt = datetime.now(APP_TZ)
+    now_dt = now_moscow()
     # Окно 1 мин назад и 1 мин вперед, чтобы не пропускать событие из-за дрейфа таймера.
     left = now_dt - timedelta(minutes=1)
     right = now_dt + timedelta(minutes=1)
