@@ -1965,7 +1965,24 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
             slot_rows, virtual_slots = build_today_attendance_slots(session, user, now)
             context.user_data["attendance_virtual_slots"] = virtual_slots
 
+            def _trainings_count_label(count: int) -> str:
+                n = abs(int(count))
+                if n % 10 == 1 and n % 100 != 11:
+                    word = "тренировка"
+                elif n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+                    word = "тренировки"
+                else:
+                    word = "тренировок"
+                return f"{n} {word}"
+
+            today_str = now.strftime("%d.%m.%Y")
+            planned_count = len(slot_rows)
+            planned_label = _trainings_count_label(planned_count)
             message = "📝 <b>Отметить посещения</b>\n\n"
+            message += (
+                f"Сегодня: <b>{today_str}</b> — На сегодня у Вас запланировано: "
+                f"<b>{planned_label}</b>.\n"
+            )
             if slot_rows:
                 message += "Выберите тренировку.\n\n"
             else:
