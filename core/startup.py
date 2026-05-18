@@ -1,8 +1,9 @@
 """Модуль для инициализации и стартовых задач приложения."""
 import logging
-from datetime import time, timedelta
-from typing import Set
+from datetime import datetime, time, timedelta
+from typing import List, Set, Tuple
 
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application
 
 from core.config import Config
@@ -12,15 +13,128 @@ from database.db_utils import (
     close_unmarked_attendance_after_grace,
     lock_attendances_for_ended_trainings,
 )
+from database.models import Coach
+from services.attendance_training_flow import (
+    build_today_attendance_slots,
+    format_today_trainings_count_ru,
+)
 from services.user_service import UserService
 from services.subscription_service import SubscriptionService
 from services.subscription_audit_service import run_subscription_audit, format_audit_report
+from utils.age_groups import format_age_group_label
 from utils.time_utils import APP_TZ
 
 logger = logging.getLogger(__name__)
 
 # Вид спорта в БД для списка THAI_COACH_TELEGRAM_IDS
 THAI_COACH_SPORT_TYPE = "Тайский Бокс"
+
+
+def _slot_summary_line(slot) -> str:
+    """Короткая строка тренировки для уведомлений."""
+    t_str = slot.training_datetime.strftime("%H:%M")
+    if getattr(slot, "is_individual_format", False):
+        return f"🕒 {t_str} | {slot.sport_type} — Индивидуальная"
+    age_group = format_age_group_label(slot.age_group, short=True)
+    return f"🕒 {t_str} | {slot.sport_type} ({age_group}) — Групповая"
+
+
+def _coach_and_slots_for_today(now_dt: datetime) -> List[Tuple[int, List]]:
+    """Вернуть пары (coach_telegram_id, slots_today)."""
+    out: List[Tuple[int, List]] = []
+    with get_db_session() as session:
+        coaches = session.query(Coach).all()
+        for coach in coaches:
+            if not getattr(coach, "telegram_id", None):
+                continue
+            slots, _virtual = build_today_attendance_slots(session, coach, now_dt)
+            out.append((coach.telegram_id, slots))
+    return out
+
+
+async def _daily_coach_schedule_summary_job(context) -> None:
+    """Ежедневный дайджест тренеру: сколько тренировок на сегодня."""
+    now_dt = datetime.now(APP_TZ)
+    today = now_dt.date()
+    sent_keys: Set[str] = context.application.bot_data.setdefault(
+        "coach_daily_summary_sent_keys", set()
+    )
+
+    try:
+        coach_rows = _coach_and_slots_for_today(now_dt)
+        for coach_telegram_id, slots in coach_rows:
+            key = f"{today.isoformat()}:{coach_telegram_id}"
+            if key in sent_keys:
+                continue
+            count_label = format_today_trainings_count_ru(len(slots))
+            msg = (
+                "📝 <b>Отметить посещения</b>\n\n"
+                f"Сегодня: <b>{today.strftime('%d.%m.%Y')}</b> — "
+                f"У Вас запланировано: <b>{count_label}</b>."
+            )
+            await context.bot.send_message(
+                chat_id=coach_telegram_id,
+                text=msg,
+                parse_mode="HTML",
+            )
+            sent_keys.add(key)
+        # Чистим кэш от старых дат.
+        context.application.bot_data["coach_daily_summary_sent_keys"] = {
+            k for k in sent_keys if k.startswith(today.isoformat())
+        }
+    except Exception as e:  # pragma: no cover
+        logger.error("❌ Ошибка daily coach summary: %s", e, exc_info=True)
+
+
+async def _coach_training_start_reminder_job(context) -> None:
+    """Напоминание тренеру в момент старта занятия."""
+    now_dt = datetime.now(APP_TZ)
+    # Окно 1 мин назад и 1 мин вперед, чтобы не пропускать событие из-за дрейфа таймера.
+    left = now_dt - timedelta(minutes=1)
+    right = now_dt + timedelta(minutes=1)
+
+    sent_keys: Set[str] = context.application.bot_data.setdefault(
+        "coach_start_reminder_sent_keys", set()
+    )
+    today_prefix = now_dt.date().isoformat()
+
+    try:
+        coach_rows = _coach_and_slots_for_today(now_dt)
+        for coach_telegram_id, slots in coach_rows:
+            for slot in slots:
+                start_dt = slot.training_datetime
+                if not (left <= start_dt <= right):
+                    continue
+                slot_key = (
+                    f"{today_prefix}:{coach_telegram_id}:{slot.sport_type}:{slot.age_group}:"
+                    f"{start_dt.strftime('%H:%M')}:{int(getattr(slot, 'is_individual_format', False))}"
+                )
+                if slot_key in sent_keys:
+                    continue
+
+                text = (
+                    "🔔 <b>Тренировка началась</b>\n\n"
+                    f"{_slot_summary_line(slot)}\n\n"
+                    "Пожалуйста, после занятия зайдите в «📝 Отметить посещения» "
+                    "и отметьте спортсменов, которые пришли."
+                )
+                keyboard = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("📝 Открыть «Отметить посещения»", callback_data="attendance_training_list")]]
+                )
+                await context.bot.send_message(
+                    chat_id=coach_telegram_id,
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                sent_keys.add(slot_key)
+
+        # Чистим ключи только текущей датой, чтобы не разрасталось.
+        context.application.bot_data["coach_start_reminder_sent_keys"] = {
+            k for k in sent_keys if k.startswith(today_prefix)
+        }
+    except Exception as e:  # pragma: no cover
+        logger.error("❌ Ошибка coach training start reminder: %s", e, exc_info=True)
 
 
 def ensure_admin_user(config: Config) -> None:
@@ -252,4 +366,20 @@ def setup_scheduled_jobs(application: Application, config: Config) -> None:
         name="daily_subscription_audit",
     )
     logger.info("🗓️ Запланирован ежедневный аудит абонементов (08:00 APP_TIMEZONE)")
+
+    coach_summary_time = time(hour=9, minute=0, tzinfo=APP_TZ)
+    application.job_queue.run_daily(
+        _daily_coach_schedule_summary_job,
+        time=coach_summary_time,
+        name="daily_coach_schedule_summary",
+    )
+    logger.info("🗓️ Запланирован ежедневный дайджест тренерам (09:00 APP_TIMEZONE)")
+
+    application.job_queue.run_repeating(
+        _coach_training_start_reminder_job,
+        interval=timedelta(minutes=1),
+        first=timedelta(seconds=50),
+        name="coach_training_start_reminder",
+    )
+    logger.info("🗓️ Запланированы напоминания тренерам о старте занятий (каждую минуту)")
 
