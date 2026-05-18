@@ -8,11 +8,6 @@ from telegram.ext import Application
 
 from core.config import Config
 from core.database import get_db_session
-from database.db_utils import (
-    auto_deduct_daily_trainings,
-    close_unmarked_attendance_after_grace,
-    lock_attendances_for_ended_trainings,
-)
 from database.models import Coach
 from services.attendance_training_flow import (
     build_today_attendance_slots,
@@ -255,58 +250,7 @@ def initialize_app(config: Config) -> None:
     # Проверяем абонементы
     check_subscriptions_on_startup()
 
-    # После окончания пары: locked_at + списание за «был»; неявные «не был» без отметки
-    try:
-        with get_db_session() as session:
-            n_lock = lock_attendances_for_ended_trainings(session)
-            n_backfill = close_unmarked_attendance_after_grace(session)
-        if n_lock or n_backfill:
-            logger.info(
-                "🧾 При старте посещения: lock_attendances=%s, close_unmarked (новые строки)=%s",
-                n_lock,
-                n_backfill,
-            )
-    except Exception as e:
-        logger.error(
-            "❌ Ошибка close_unmarked_attendance_after_grace при старте: %s",
-            e,
-            exc_info=True,
-        )
-
     logger.info("✅ Инициализация завершена")
-
-
-async def _close_unmarked_interval_job(context) -> None:
-    """Фиксация отметок после конца пары и строки «не был» без отметки тренера."""
-    try:
-        with get_db_session() as session:
-            n_lock = lock_attendances_for_ended_trainings(session)
-            n = close_unmarked_attendance_after_grace(session)
-        if n_lock or n:
-            logger.info(
-                "🧾 close_unmarked (интервал 15 мин): lock=%s, создано записей=%s",
-                n_lock,
-                n,
-            )
-    except Exception as e:  # pragma: no cover
-        logger.error("❌ Ошибка interval close_unmarked: %s", e, exc_info=True)
-
-
-async def _daily_attendance_maintenance_job(context) -> None:
-    """Авто-списание по расписанию + фиксация в БД без отметки после конца пары."""
-    try:
-        with get_db_session() as session:
-            d0 = auto_deduct_daily_trainings(session)
-        with get_db_session() as session:
-            lock_attendances_for_ended_trainings(session)
-            d1 = close_unmarked_attendance_after_grace(session)
-        logger.info(
-            "📋 Ежедневное обслуживание посещений: auto_deduct=%s, close_unmarked=%s",
-            d0,
-            d1,
-        )
-    except Exception as e:  # pragma: no cover
-        logger.error("❌ Ошибка daily attendance maintenance: %s", e, exc_info=True)
 
 
 async def _daily_subscription_audit_job(context) -> None:
@@ -337,27 +281,6 @@ def setup_scheduled_jobs(application: Application, config: Config) -> None:
     if not application.job_queue:
         logger.warning("⚠️ JobQueue недоступен: ежедневный аудит не запланирован")
         return
-
-    application.job_queue.run_repeating(
-        _close_unmarked_interval_job,
-        interval=timedelta(minutes=15),
-        first=timedelta(seconds=45),
-        name="close_unmarked_attendance_interval",
-    )
-    logger.info(
-        "🗓️ Запланировано закрытие посещений без отметки каждые 15 мин (после конца пары)"
-    )
-
-    maintenance_time = time(hour=8, minute=5, tzinfo=APP_TZ)
-    application.job_queue.run_daily(
-        _daily_attendance_maintenance_job,
-        time=maintenance_time,
-        name="daily_attendance_maintenance",
-    )
-    logger.info(
-        "🗓️ Запланировано ежедневное обслуживание посещений (08:05 APP_TIMEZONE): "
-        "auto_deduct + close_unmarked"
-    )
 
     run_time = time(hour=8, minute=0, tzinfo=APP_TZ)
     application.job_queue.run_daily(

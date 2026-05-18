@@ -1,4 +1,4 @@
-"""Единые подписи и иконки посещения: Был / Не был / Не отмечено (до конца пары, дальше — «не был»)."""
+"""Единые подписи и иконки посещения: Был / Не был / Не отмечено (только явная отметка)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -8,10 +8,7 @@ from sqlalchemy.orm import Session as OrmSession
 
 from database.models import Attendance, Training
 from utils.time_utils import (
-    ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END,
     now_moscow,
-    training_end_time,
-    training_slot_end_time,
 )
 
 def attendance_icon_for_slot(
@@ -21,13 +18,10 @@ def attendance_icon_for_slot(
     now: Optional[datetime] = None,
     training_format: Optional[str] = None,
 ) -> str:
-    """✅ был · ❌ не был · ⏳ ещё нет записи и пара не закончилась (можно отметить во время пары)."""
+    """✅ был · ❌ не был · ⏳ нет явной отметки."""
     now = now or now_moscow()
     if attendance is not None:
         return "✅" if attendance.attended else "❌"
-    end = training_slot_end_time(training_start, training_format)
-    if now > end + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END:
-        return "❌"
     return "⏳"
 
 
@@ -41,16 +35,11 @@ def attendance_label_ru_for_slot(
 ) -> str:
     """
     Короткая подпись для списков.
-    with_note=True — добавить пояснение для случая «не был без записи в срок».
+    with_note параметр сохранен для обратной совместимости интерфейсов.
     """
     now = now or now_moscow()
     if attendance is not None:
         return "Был" if attendance.attended else "Не был"
-    end = training_slot_end_time(training_start, training_format)
-    if now > end + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END:
-        if with_note:
-            return "Не был <i>(нет записи в срок)</i>"
-        return "Не был"
     return "Не отмечено"
 
 
@@ -90,12 +79,10 @@ def is_effective_absent_no_row(
     *,
     now: Optional[datetime] = None,
 ) -> bool:
-    """Нет строки attendances, но дедлайн «не отмечено» прошёл → считаем отсутствием."""
+    """Отсутствие фиксируется только явной отметкой attended=False."""
     if attendance is not None:
         return not attendance.attended
-    now = now or now_moscow()
-    end = training_end_time(training_start)
-    return now > end + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END
+    return False
 
 
 def is_effective_present(attendance: Optional[Attendance]) -> bool:
@@ -108,12 +95,10 @@ def is_pending_unmarked(
     *,
     now: Optional[datetime] = None,
 ) -> bool:
-    """Слот ещё без записи и не прошёл дедлайн «после конца пары» (grace из time_utils)."""
+    """Слот без записи всегда считается «не отмечено»."""
     if attendance is not None:
         return False
-    now = now or now_moscow()
-    end = training_end_time(training_start)
-    return now <= end + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END
+    return True
 
 
 def count_implicit_absent_slots(
@@ -126,41 +111,5 @@ def count_implicit_absent_slots(
     *,
     now: Optional[datetime] = None,
 ) -> int:
-    """
-    Слоты Training за период без строки Attendance у спортсмена,
-    если уже прошло время после окончания пары с учётом grace (считаем «не был»).
-    """
-    now = now or now_moscow()
-    past_slots = (
-        session.query(Training)
-        .filter(
-            Training.sport_type == sport_type,
-            Training.age_group == age_group,
-            Training.training_date >= period_start,
-            Training.training_date <= period_end,
-            Training.is_cancelled == False,
-        )
-        .all()
-    )
-    covered_tids = {
-        row[0]
-        for row in session.query(Attendance.training_id)
-        .join(Training, Attendance.training_id == Training.id)
-        .filter(
-            Attendance.athlete_id == athlete_id,
-            Training.training_date >= period_start,
-            Training.training_date <= period_end,
-        )
-        .distinct()
-        .all()
-        if row[0] is not None
-    }
-    implicit = 0
-    for t in past_slots:
-        if t.id in covered_tids:
-            continue
-        if now > training_slot_end_time(
-            t.training_date, getattr(t, "training_format", None)
-        ) + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END:
-            implicit += 1
-    return implicit
+    """Имплицитные «не был» отключены: считаем только явные Attendance."""
+    return 0

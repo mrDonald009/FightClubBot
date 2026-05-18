@@ -319,7 +319,7 @@ async def _run_attendance_mark_query(
     flash_icon = "✅" if attended else "❌"
     flash = (
         f"{flash_icon} <b>{name_esc}</b> — {status_ru}.\n"
-        "<i>Остаток по абонементу обновится сам после окончания занятия.</i>"
+        "<i>Отметка сохранена.</i>"
     )
 
     if clear_legacy_mark_flow_keys:

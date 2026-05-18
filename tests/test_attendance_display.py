@@ -1,4 +1,4 @@
-"""Логика иконок/подписей посещения (после конца пары без grace — «не был»)."""
+"""Логика иконок/подписей посещения: без имплицитного «не был»."""
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -10,10 +10,7 @@ from utils.attendance_display import (
     attendance_label_ru_for_slot,
     is_effective_absent_no_row,
 )
-from utils.time_utils import (
-    ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END,
-    training_end_time,
-)
+from utils.time_utils import training_end_time
 
 pytestmark = pytest.mark.unit
 
@@ -26,12 +23,12 @@ def test_icon_pending_before_training_end():
     assert "Не отмечено" in attendance_label_ru_for_slot(None, start, now=now)
 
 
-def test_icon_absent_no_row_after_grace():
+def test_icon_unmarked_no_row_after_training_end():
     start = datetime(2026, 6, 1, 10, 0)
     end = training_end_time(start)
-    now = end + ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END + timedelta(minutes=1)
-    assert attendance_icon_for_slot(None, start, now=now) == "❌"
-    assert is_effective_absent_no_row(None, start, now=now) is True
+    now = end + timedelta(minutes=30)
+    assert attendance_icon_for_slot(None, start, now=now) == "⏳"
+    assert is_effective_absent_no_row(None, start, now=now) is False
 
 
 def test_icon_explicit_present_and_absent():
