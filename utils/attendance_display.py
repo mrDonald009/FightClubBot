@@ -18,8 +18,10 @@ def attendance_icon_for_slot(
     now: Optional[datetime] = None,
     training_format: Optional[str] = None,
 ) -> str:
-    """✅ был · ❌ не был."""
+    """✅ был · ❌ не был · 🕒 тренировка ещё не началась (без записи)."""
     now = now or now_moscow()
+    if attendance is None and now < training_start:
+        return "🕒"
     if attendance is not None and attendance.attended:
         return "✅"
     return "❌"
@@ -38,6 +40,8 @@ def attendance_label_ru_for_slot(
     with_note параметр сохранен для обратной совместимости интерфейсов.
     """
     now = now or now_moscow()
+    if attendance is None and now < training_start:
+        return "Тренировка не началась"
     if attendance is not None and attendance.attended:
         return "Был"
     return "Не был"
