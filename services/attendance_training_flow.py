@@ -412,7 +412,7 @@ def build_step2_message_and_keyboard_rows(
     parts.extend(
         [
             slot_title,
-            "Отметьте присутствие.",
+            "Пожалуйста, отметьте пришедших до окончания тренировки.",
         ]
     )
     if not athletes:
