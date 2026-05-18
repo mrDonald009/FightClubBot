@@ -154,7 +154,7 @@ def test_build_step2_no_nav_when_few_athletes():
     athletes = [SimpleNamespace(id=1, full_name="Иванов Иван Петрович")]
     msg, rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
     assert "Отметьте присутствие" in msg
-    assert rows[0][0] == ("⏳ Иванов И.П.", "attnm_2_1")
+    assert rows[0][0] == ("❌ Иванов И.П.", "attnm_2_1")
     assert rows[0][1] == ("✅ Был", "atmark_2_1_1")
     assert rows[0][2] == ("❌ Не был", "atmark_2_1_0")
     assert rows[-2] == [("🔙 К тренировкам на сегодня", "attendance_training_list")]

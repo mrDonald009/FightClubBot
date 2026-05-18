@@ -366,11 +366,9 @@ def _surname_initials_button_label(full_name: str, max_len: int = 40) -> str:
 
 
 def _name_column_button_with_status(full_name: str, att: Optional[Attendance]) -> str:
-    """Кнопка колонки ФИО: ⏳/✅/❌ + фамилия с инициалами."""
+    """Кнопка колонки ФИО: ✅/❌ + фамилия с инициалами."""
     base = _surname_initials_button_label(full_name)
-    if att is None:
-        return f"⏳ {base}"
-    if att.attended:
+    if att is not None and att.attended:
         return f"✅ {base}"
     return f"❌ {base}"
 

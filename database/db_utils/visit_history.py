@@ -11,8 +11,6 @@ from utils.time_utils import now_moscow
 def _default_status_label(status_code: str) -> str:
     if status_code == "present":
         return "✅ Был"
-    if status_code == "pending":
-        return "⏳ Не отмечено"
     return "❌ Не был"
 
 

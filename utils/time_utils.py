@@ -47,7 +47,7 @@ except Exception:
 
 INDIVIDUAL_TRAINING_DURATION = timedelta(minutes=INDIVIDUAL_TRAINING_DURATION_MINUTES)
 
-# После окончания пары без строки в attendances в UI считаем «Не был», а не «Не отмечено».
+# Порог после окончания пары для трактовки отсутствия без явной записи в attendance.
 # 0 — сразу после конца слота (как только now > end); раньше было 24 ч.
 ATTENDANCE_UNMARKED_TO_ABSENT_AFTER_TRAINING_END = timedelta(0)
 

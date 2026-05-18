@@ -1,4 +1,4 @@
-"""Единые подписи и иконки посещения: Был / Не был / Не отмечено (только явная отметка)."""
+"""Единые подписи и иконки посещения: только «Был» и «Не был»."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -18,11 +18,11 @@ def attendance_icon_for_slot(
     now: Optional[datetime] = None,
     training_format: Optional[str] = None,
 ) -> str:
-    """✅ был · ❌ не был · ⏳ нет явной отметки."""
+    """✅ был · ❌ не был."""
     now = now or now_moscow()
-    if attendance is not None:
-        return "✅" if attendance.attended else "❌"
-    return "⏳"
+    if attendance is not None and attendance.attended:
+        return "✅"
+    return "❌"
 
 
 def attendance_label_ru_for_slot(
@@ -38,9 +38,9 @@ def attendance_label_ru_for_slot(
     with_note параметр сохранен для обратной совместимости интерфейсов.
     """
     now = now or now_moscow()
-    if attendance is not None:
-        return "Был" if attendance.attended else "Не был"
-    return "Не отмечено"
+    if attendance is not None and attendance.attended:
+        return "Был"
+    return "Не был"
 
 
 def attendance_icon_for_training(
@@ -79,10 +79,10 @@ def is_effective_absent_no_row(
     *,
     now: Optional[datetime] = None,
 ) -> bool:
-    """Отсутствие фиксируется только явной отметкой attended=False."""
+    """В модели отображения отсутствие без явной записи трактуем как «не был»."""
     if attendance is not None:
         return not attendance.attended
-    return False
+    return True
 
 
 def is_effective_present(attendance: Optional[Attendance]) -> bool:
@@ -95,10 +95,8 @@ def is_pending_unmarked(
     *,
     now: Optional[datetime] = None,
 ) -> bool:
-    """Слот без записи всегда считается «не отмечено»."""
-    if attendance is not None:
-        return False
-    return True
+    """Статус «не отмечено» не используется."""
+    return False
 
 
 def count_implicit_absent_slots(
