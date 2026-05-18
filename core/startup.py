@@ -115,7 +115,7 @@ async def _coach_training_start_reminder_job(context) -> None:
                 text = (
                     "🔔 <b>Тренировка началась</b>\n\n"
                     f"{_slot_summary_line(slot)}\n\n"
-                    "Пожалуйста, после занятия зайдите в «📝 Отметить посещения» "
+                    "Пожалуйста, зайдите в «📝 Отметить посещения» "
                     "и отметьте спортсменов, которые пришли."
                 )
                 keyboard = InlineKeyboardMarkup(
