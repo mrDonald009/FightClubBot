@@ -26,8 +26,8 @@ def test_icon_pending_before_training_end():
 def test_icon_before_training_start_is_neutral():
     start = datetime(2026, 6, 1, 10, 0)
     now = start - timedelta(minutes=5)
-    assert attendance_icon_for_slot(None, start, now=now) == "🕒"
-    assert "Тренировка не началась" in attendance_label_ru_for_slot(None, start, now=now)
+    assert attendance_icon_for_slot(None, start, now=now) == "⏳"
+    assert "Ожидает начала" in attendance_label_ru_for_slot(None, start, now=now)
 
 
 def test_icon_unmarked_no_row_after_training_end():
