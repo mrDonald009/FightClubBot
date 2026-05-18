@@ -1980,7 +1980,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
             planned_label = _trainings_count_label(planned_count)
             message = "📝 <b>Отметить посещения</b>\n\n"
             message += (
-                f"Сегодня: <b>{today_str}</b> — На сегодня у Вас запланировано: "
+                f"Сегодня: <b>{today_str}</b> — У Вас запланировано: "
                 f"<b>{planned_label}</b>.\n"
             )
             if slot_rows:
