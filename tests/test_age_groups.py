@@ -17,6 +17,11 @@ def test_format_middle_label():
     assert format_age_group_label("middle", short=True) == "Средняя"
 
 
+def test_format_short_labels_are_feminine():
+    assert format_age_group_label("children", short=True) == "Детская"
+    assert format_age_group_label("adults", short=True) == "Взрослая"
+
+
 def test_normalize_russian_middle():
     assert normalize_age_group("Средняя") == "middle"
 

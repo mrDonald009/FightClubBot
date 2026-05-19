@@ -18,9 +18,9 @@ LABEL_TO_CODE = dict(zip(BUTTON_LABELS, AGE_GROUP_CODES))
 CODE_TO_LABEL = {code: label for label, code in LABEL_TO_CODE.items()}
 
 SHORT_LABELS = {
-    AGE_GROUP_CHILDREN: "Дети",
+    AGE_GROUP_CHILDREN: "Детская",
     AGE_GROUP_MIDDLE: "Средняя",
-    AGE_GROUP_ADULTS: "Взрослые",
+    AGE_GROUP_ADULTS: "Взрослая",
 }
 
 

@@ -96,18 +96,6 @@ def _surname_initials(full_name: str) -> str:
     return f"{parts[0]} {initials}".strip()
 
 
-def _age_group_feminine(age_group: Optional[str]) -> str:
-    """Форма группы для подписи спортсмена: Взрослая/Средняя/Детская."""
-    code = (age_group or "").strip().lower()
-    if code == "adults":
-        return "Взрослая"
-    if code == "middle":
-        return "Средняя"
-    if code == "children":
-        return "Детская"
-    return ""
-
-
 # Пагинация списка спортсменов (лимит Telegram на callback_data — 64 байта, префикс alpg_)
 ATHLETE_LIST_PAGE_SIZE = 20
 _ATHLETE_LIST_FILTER_CODES = {
@@ -2424,9 +2412,9 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                             )
                             age_suffix = ""
                             if is_individual_slot and getattr(ath, "age_group", None):
-                                feminine = _age_group_feminine(ath.age_group)
-                                if feminine:
-                                    age_suffix = f" ({feminine})"
+                                age_group_ru = format_age_group_label(ath.age_group, short=True)
+                                if age_group_ru:
+                                    age_suffix = f" ({age_group_ru})"
                             athlete_lines.append(
                                 f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
                             )
@@ -2462,9 +2450,9 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                 )
                                 age_suffix = ""
                                 if is_individual_slot and getattr(ath, "age_group", None):
-                                    feminine = _age_group_feminine(ath.age_group)
-                                    if feminine:
-                                        age_suffix = f" ({feminine})"
+                                    age_group_ru = format_age_group_label(ath.age_group, short=True)
+                                    if age_group_ru:
+                                        age_suffix = f" ({age_group_ru})"
                                 athlete_lines.append(
                                     f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
                                 )
