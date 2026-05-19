@@ -857,6 +857,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     # Обработчики для кнопок меню
     logger.info("📝 Регистрируем обработчики кнопок меню...")
     _list_pat = r"^\s*📋\s*Список\s*спортсменов\s*$"
+    _calendar_pat = r"^\s*(?:📅\s*)?Мой\s*календарь\s*$"
     registrar.register(MessageHandler(filters.Regex(_list_pat), athletes_list))
     logger.info("✅ Зарегистрирован обработчик: 📋 Список спортсменов")
     registrar.register(
@@ -869,7 +870,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     logger.info("✅ Зарегистрирован обработчик: 📝 Отметить посещения")
     registrar.register(
-        MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar)
+        MessageHandler(filters.Regex(_calendar_pat), show_coach_calendar)
     )
     logger.info("✅ Зарегистрирован обработчик: 📅 Мой календарь")
     registrar.register(
@@ -921,7 +922,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 ),
                 start_training,
             ),
-            MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
+            MessageHandler(filters.Regex(_calendar_pat), show_coach_calendar),
             MessageHandler(filters.Regex("^(📊 Статистика)$"), coach_report_entry),
             MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
         ],
@@ -996,7 +997,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
                 ),
                 start_training,
             ),
-            MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
+            MessageHandler(filters.Regex(_calendar_pat), show_coach_calendar),
             MessageHandler(filters.Regex("^(📊 Статистика)$"), coach_report_entry),
             MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
         ],
