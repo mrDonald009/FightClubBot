@@ -26,7 +26,7 @@ from typing import List, Optional, Tuple, Union
 from utils.coach_sport import coach_sport_type_name
 from utils.training_manager import TrainingManager
 from utils.subscription_resolve import subscription_for_coach_sport
-from utils.attendance_display import attendance_icon_for_slot, attendance_label_ru_for_slot
+from utils.attendance_display import attendance_icon_for_slot
 from utils.time_utils import (
     now_moscow,
     ACTIVATION_GRACE_AFTER_START,
@@ -83,6 +83,17 @@ def _coach_calendar_message_header(*, current_year: int, current_month: int) -> 
         "📅 <b>Мой календарь</b>\n\n"
         f"{html.escape(title)} {current_year}"
     )
+
+
+def _surname_initials(full_name: str) -> str:
+    """Формат Фамилия И.О. для компактного списка."""
+    parts = [p for p in (full_name or "").split() if p]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    initials = "".join(f"{p[0]}." for p in parts[1:] if p)
+    return f"{parts[0]} {initials}".strip()
 
 
 # Пагинация списка спортсменов (лимит Telegram на callback_data — 64 байта, префикс alpg_)
@@ -2399,14 +2410,8 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                             status_icon = attendance_icon_for_slot(
                                 att, training.training_date, now=now
                             )
-                            status_label = attendance_label_ru_for_slot(
-                                att,
-                                training.training_date,
-                                now=now,
-                                training_format=getattr(training, "training_format", None),
-                            )
                             athlete_lines.append(
-                                f"    {status_icon} {html.escape(ath.full_name)} — {status_label}\n"
+                                f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}\n"
                             )
                         if len(subs) > 10:
                             athlete_lines.append(f"    ... и еще {len(subs) - 10}\n")
@@ -2438,14 +2443,8 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                 status_icon = attendance_icon_for_slot(
                                     att, training.training_date, now=now
                                 )
-                                status_label = attendance_label_ru_for_slot(
-                                    att,
-                                    training.training_date,
-                                    now=now,
-                                    training_format=getattr(training, "training_format", None),
-                                )
                                 athlete_lines.append(
-                                    f"    {status_icon} {html.escape(ath.full_name)} — {status_label}\n"
+                                    f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}\n"
                                 )
                             if len(fallback_atts) > 10:
                                 athlete_lines.append(
@@ -2461,7 +2460,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         message += "<b>Тренировки со спортсменами:</b>\n\n"
                     if is_individual_slot:
                         message += (
-                            f"• <b>{time_str}</b> - {training.sport_type}{slot_suffix}\n"
+                            f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
                         )
                     else:
                         message += (
