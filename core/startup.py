@@ -43,13 +43,15 @@ def format_coach_daily_summary_message(today: date, slots: List) -> str:
     if not slots:
         return (
             "Доброе утро!\n\n"
-            f"Сегодня, {date_label}, у Вас нет запланированных тренировок."
+            f"Сегодня - {date_label}\n"
+            "У Вас нет запланированных тренировок."
         )
     count_label = format_today_trainings_count_ru(len(slots))
     lines = [
         "Доброе утро!",
         "",
-        f"Сегодня, {date_label}, у Вас запланировано {count_label}:",
+        f"Сегодня - {date_label}",
+        f"У Вас запланировано {count_label}:",
         "",
     ]
     ordered = sorted(slots, key=lambda s: s.training_datetime)

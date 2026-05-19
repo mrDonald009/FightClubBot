@@ -83,8 +83,8 @@ def test_format_coach_daily_summary_message_with_details():
     ]
     text = format_coach_daily_summary_message(today, slots)
     assert "Доброе утро!" in text
-    assert "19.05.2026" in text
-    assert "3 тренировки" in text
+    assert "Сегодня - 19.05.2026" in text
+    assert "У Вас запланировано 3 тренировки:" in text
     assert "1. 08:00 — MMA, индивидуальная" in text
     assert "2. 17:00 — MMA" in text and "групповая" in text
     assert "3. 18:30 — MMA" in text
