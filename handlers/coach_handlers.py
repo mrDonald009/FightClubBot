@@ -96,6 +96,18 @@ def _surname_initials(full_name: str) -> str:
     return f"{parts[0]} {initials}".strip()
 
 
+def _age_group_feminine(age_group: Optional[str]) -> str:
+    """Форма группы для подписи спортсмена: Взрослая/Средняя/Детская."""
+    code = (age_group or "").strip().lower()
+    if code == "adults":
+        return "Взрослая"
+    if code == "middle":
+        return "Средняя"
+    if code == "children":
+        return "Детская"
+    return ""
+
+
 # Пагинация списка спортсменов (лимит Telegram на callback_data — 64 байта, префикс alpg_)
 ATHLETE_LIST_PAGE_SIZE = 20
 _ATHLETE_LIST_FILTER_CODES = {
@@ -2410,8 +2422,13 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                             status_icon = attendance_icon_for_slot(
                                 att, training.training_date, now=now
                             )
+                            age_suffix = ""
+                            if is_individual_slot and getattr(ath, "age_group", None):
+                                feminine = _age_group_feminine(ath.age_group)
+                                if feminine:
+                                    age_suffix = f" ({feminine})"
                             athlete_lines.append(
-                                f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}\n"
+                                f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
                             )
                         if len(subs) > 10:
                             athlete_lines.append(f"    ... и еще {len(subs) - 10}\n")
@@ -2443,8 +2460,13 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                 status_icon = attendance_icon_for_slot(
                                     att, training.training_date, now=now
                                 )
+                                age_suffix = ""
+                                if is_individual_slot and getattr(ath, "age_group", None):
+                                    feminine = _age_group_feminine(ath.age_group)
+                                    if feminine:
+                                        age_suffix = f" ({feminine})"
                                 athlete_lines.append(
-                                    f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}\n"
+                                    f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
                                 )
                             if len(fallback_atts) > 10:
                                 athlete_lines.append(

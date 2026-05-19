@@ -5,6 +5,7 @@ from typing import List, Set, Tuple
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application
+from sqlalchemy import text
 
 from core.config import Config
 from core.database import get_db_session
@@ -26,6 +27,59 @@ THAI_COACH_SPORT_TYPE = "Тайский Бокс"
 
 # Ежедневный дайджест: всегда не позже 09:00; раньше — только если индивидуальная − 1 ч < 09:00.
 DEFAULT_COACH_DAILY_SUMMARY_TIME = time(9, 0, 0)
+
+
+def _ensure_daily_summary_delivery_table(session) -> None:
+    """Таблица отправок дайджеста (persist между рестартами)."""
+    session.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS coach_daily_summary_delivery (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                summary_date TEXT NOT NULL,
+                coach_telegram_id INTEGER NOT NULL,
+                sent_at TEXT NOT NULL,
+                UNIQUE(summary_date, coach_telegram_id)
+            )
+            """
+        )
+    )
+
+
+def _daily_summary_already_sent(session, *, summary_date: date, coach_telegram_id: int) -> bool:
+    row = session.execute(
+        text(
+            """
+            SELECT 1
+            FROM coach_daily_summary_delivery
+            WHERE summary_date = :summary_date
+              AND coach_telegram_id = :coach_telegram_id
+            LIMIT 1
+            """
+        ),
+        {
+            "summary_date": summary_date.isoformat(),
+            "coach_telegram_id": int(coach_telegram_id),
+        },
+    ).first()
+    return row is not None
+
+
+def _mark_daily_summary_sent(session, *, summary_date: date, coach_telegram_id: int, sent_at: datetime) -> None:
+    session.execute(
+        text(
+            """
+            INSERT INTO coach_daily_summary_delivery (summary_date, coach_telegram_id, sent_at)
+            VALUES (:summary_date, :coach_telegram_id, :sent_at)
+            ON CONFLICT(summary_date, coach_telegram_id) DO NOTHING
+            """
+        ),
+        {
+            "summary_date": summary_date.isoformat(),
+            "coach_telegram_id": int(coach_telegram_id),
+            "sent_at": sent_at.isoformat(timespec="seconds"),
+        },
+    )
 
 
 def _slot_summary_line(slot) -> str:
@@ -118,19 +172,32 @@ async def _daily_coach_schedule_summary_job(context) -> None:
 
     try:
         coach_rows = _coach_and_slots_for_today(now_dt)
-        for coach_telegram_id, slots in coach_rows:
-            key = f"{today.isoformat()}:{coach_telegram_id}"
-            if key in sent_keys:
-                continue
-            send_at = coach_daily_summary_send_datetime(today, slots)
-            if now_dt < send_at:
-                continue
-            msg = format_coach_daily_summary_message(today, slots)
-            await context.bot.send_message(
-                chat_id=coach_telegram_id,
-                text=msg,
-            )
-            sent_keys.add(key)
+        with get_db_session() as session:
+            _ensure_daily_summary_delivery_table(session)
+            for coach_telegram_id, slots in coach_rows:
+                key = f"{today.isoformat()}:{coach_telegram_id}"
+                if key in sent_keys:
+                    continue
+                if _daily_summary_already_sent(
+                    session, summary_date=today, coach_telegram_id=coach_telegram_id
+                ):
+                    sent_keys.add(key)
+                    continue
+                send_at = coach_daily_summary_send_datetime(today, slots)
+                if now_dt < send_at:
+                    continue
+                msg = format_coach_daily_summary_message(today, slots)
+                await context.bot.send_message(
+                    chat_id=coach_telegram_id,
+                    text=msg,
+                )
+                _mark_daily_summary_sent(
+                    session,
+                    summary_date=today,
+                    coach_telegram_id=coach_telegram_id,
+                    sent_at=now_dt,
+                )
+                sent_keys.add(key)
         # Чистим кэш от старых дат.
         context.application.bot_data["coach_daily_summary_sent_keys"] = {
             k for k in sent_keys if k.startswith(today.isoformat())
