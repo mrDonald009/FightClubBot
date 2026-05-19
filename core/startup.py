@@ -172,6 +172,11 @@ async def _daily_coach_schedule_summary_job(context) -> None:
 
     try:
         coach_rows = _coach_and_slots_for_today(now_dt)
+    except Exception as e:  # pragma: no cover
+        logger.error("❌ Ошибка подготовки daily coach summary: %s", e, exc_info=True)
+        return
+
+    try:
         with get_db_session() as session:
             _ensure_daily_summary_delivery_table(session)
             for coach_telegram_id, slots in coach_rows:
@@ -186,24 +191,51 @@ async def _daily_coach_schedule_summary_job(context) -> None:
                 send_at = coach_daily_summary_send_datetime(today, slots)
                 if now_dt < send_at:
                     continue
+
                 msg = format_coach_daily_summary_message(today, slots)
-                await context.bot.send_message(
-                    chat_id=coach_telegram_id,
-                    text=msg,
-                )
-                _mark_daily_summary_sent(
-                    session,
-                    summary_date=today,
-                    coach_telegram_id=coach_telegram_id,
-                    sent_at=now_dt,
-                )
+                try:
+                    await context.bot.send_message(
+                        chat_id=coach_telegram_id,
+                        text=msg,
+                    )
+                except Exception as send_err:  # pragma: no cover
+                    logger.error(
+                        "❌ Ошибка отправки daily summary coach=%s: %s",
+                        coach_telegram_id,
+                        send_err,
+                        exc_info=True,
+                    )
+                    continue
+
+                try:
+                    _mark_daily_summary_sent(
+                        session,
+                        summary_date=today,
+                        coach_telegram_id=coach_telegram_id,
+                        sent_at=now_dt,
+                    )
+                    # Фиксируем сразу по каждому тренеру: рестарт не вызовет повторный daily.
+                    session.commit()
+                except Exception as db_err:  # pragma: no cover
+                    session.rollback()
+                    logger.error(
+                        "❌ Ошибка сохранения флага daily summary coach=%s: %s",
+                        coach_telegram_id,
+                        db_err,
+                        exc_info=True,
+                    )
+                    # Защита от спама в текущем процессе даже при проблеме БД.
+                    sent_keys.add(key)
+                    continue
+
                 sent_keys.add(key)
+    except Exception as e:  # pragma: no cover
+        logger.error("❌ Ошибка daily coach summary: %s", e, exc_info=True)
+    finally:
         # Чистим кэш от старых дат.
         context.application.bot_data["coach_daily_summary_sent_keys"] = {
             k for k in sent_keys if k.startswith(today.isoformat())
         }
-    except Exception as e:  # pragma: no cover
-        logger.error("❌ Ошибка daily coach summary: %s", e, exc_info=True)
 
 
 async def _coach_training_start_reminder_job(context) -> None:
