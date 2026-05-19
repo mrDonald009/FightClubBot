@@ -2191,7 +2191,7 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                         elif has_db_training:
                             btn_text = f"+{day:2d}"
                         elif has_scheduled_training:
-                            btn_text = f"({day:2d})"
+                            btn_text = f"{day}•"
                         else:
                             btn_text = f"{day:2d}"
 
