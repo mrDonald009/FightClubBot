@@ -2414,7 +2414,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                             if is_individual_slot and getattr(ath, "age_group", None):
                                 age_group_ru = format_age_group_label(ath.age_group, short=True)
                                 if age_group_ru:
-                                    age_suffix = f" ({age_group_ru})"
+                                    age_suffix = f" - {age_group_ru}"
                             athlete_lines.append(
                                 f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
                             )
@@ -2452,7 +2452,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                 if is_individual_slot and getattr(ath, "age_group", None):
                                     age_group_ru = format_age_group_label(ath.age_group, short=True)
                                     if age_group_ru:
-                                        age_suffix = f" ({age_group_ru})"
+                                        age_suffix = f" - {age_group_ru}"
                                 athlete_lines.append(
                                     f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
                                 )
@@ -2470,11 +2470,11 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                         message += "<b>Тренировки со спортсменами:</b>\n\n"
                     if is_individual_slot:
                         message += (
-                            f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
+                            f"• <b>{time_str}</b> - {training.sport_type} | {age_group_ru}{slot_suffix}\n"
                         )
                     else:
                         message += (
-                            f"• <b>{time_str}</b> - {training.sport_type} ({age_group_ru}){slot_suffix}\n"
+                            f"• <b>{time_str}</b> - {training.sport_type} | {age_group_ru}{slot_suffix}\n"
                         )
                     message += f"  <b>Спортсменов: {athlete_count}</b>\n"
                     for line in athlete_lines:
