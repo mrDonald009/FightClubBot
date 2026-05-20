@@ -10,7 +10,10 @@ from database.db_utils.training_slots import (
     reconcile_group_training_to_schedule,
 )
 from database.models import Attendance, Athlete, Base, Coach, SportType, Subscription, Training
-from services.attendance_training_flow import build_today_attendance_slots
+from services.attendance_training_flow import (
+    build_attendance_slots_for_day,
+    build_today_attendance_slots,
+)
 
 
 @pytest.mark.db
@@ -101,3 +104,42 @@ def test_build_today_includes_middle_virtual_for_coach():
     assert ("17:00", "children") in labels
     assert ("18:30", "middle") in labels
     assert ("20:00", "adults") in labels
+
+
+@pytest.mark.db
+def test_build_for_day_matches_today_slots_mma_wednesday():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    st = SportType(name="MMA", display_name="MMA")
+    session.add(st)
+    session.flush()
+    coach = Coach(telegram_id=9004, sport_type_id=st.id, sport_type="MMA")
+    session.add(coach)
+    session.flush()
+
+    t1 = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=datetime(2026, 5, 20, 8, 0, 0),
+        coach_id=coach.id,
+        training_format="individual",
+    )
+    t2 = Training(
+        sport_type="MMA",
+        age_group="children",
+        training_date=datetime(2026, 5, 20, 9, 30, 0),
+        coach_id=coach.id,
+        training_format="individual",
+    )
+    session.add_all([t1, t2])
+    session.commit()
+
+    day_slots, _ = build_attendance_slots_for_day(session, coach, datetime(2026, 5, 20).date())
+    times = [s.training_datetime.strftime("%H:%M") for s in day_slots]
+    assert times == ["08:00", "09:30", "17:00", "18:30", "20:00"]
+
+    now_slots, _ = build_today_attendance_slots(session, coach, datetime(2026, 5, 20, 7, 0, 0))
+    now_times = [s.training_datetime.strftime("%H:%M") for s in now_slots]
+    assert now_times == times

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import html
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from sqlalchemy import func, or_
@@ -94,18 +94,18 @@ def _reconcile_loaded_group_trainings(
     return out
 
 
-def build_today_attendance_slots(
+def build_attendance_slots_for_day(
     session: OrmSession,
     user: Union[Coach, Admin],
-    now: datetime,
+    day: date,
 ) -> Tuple[List[TodaySlotDisplay], Dict[str, Dict[str, Any]]]:
     """
     Тренировки на сегодня для шага 1: из БД + строки по расписанию, если записи ещё нет.
     Возвращает отсортированный список для UI и словарь токенов для callback виртуальных строк.
     """
-    today_start = datetime(now.year, now.month, now.day)
+    today_start = datetime(day.year, day.month, day.day)
     today_end = today_start + timedelta(days=1)
-    weekday = now.weekday()
+    weekday = day.weekday()
     virtual_slots: Dict[str, Dict[str, Any]] = {}
     rows: List[TodaySlotDisplay] = []
 
@@ -234,6 +234,18 @@ def build_today_attendance_slots(
 
     rows.sort(key=lambda r: r.training_datetime)
     return rows, virtual_slots
+
+
+def build_today_attendance_slots(
+    session: OrmSession,
+    user: Union[Coach, Admin],
+    now: datetime,
+) -> Tuple[List[TodaySlotDisplay], Dict[str, Dict[str, Any]]]:
+    """
+    Совместимый фасад для текущего «сегодня»-потока.
+    Вся логика слотов вынесена в build_attendance_slots_for_day.
+    """
+    return build_attendance_slots_for_day(session, user, now.date())
 
 
 def resolve_training_from_attendance_callback(

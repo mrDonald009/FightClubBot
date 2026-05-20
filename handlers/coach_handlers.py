@@ -2318,260 +2318,218 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     await query.answer("❌ Пользователь не найден")
                     return
 
-            sport_type_name = coach_sport_type_name(user)
             now = now_moscow()
+            from services.attendance_training_flow import build_attendance_slots_for_day
+            from utils.age_groups import format_age_group_label
 
-            query_filter = session.query(Training).filter(
-                Training.coach_id == user.id,
-                Training.training_date >= date_start,
-                Training.training_date <= date_end,
-                Training.is_cancelled == False
+            slot_rows, _virtual_slots = build_attendance_slots_for_day(session, user, selected_date)
+            db_training_ids = [s.training_id for s in slot_rows if (not s.is_virtual and s.training_id)]
+            db_trainings = (
+                session.query(Training)
+                .filter(Training.id.in_(db_training_ids))
+                .all()
+                if db_training_ids
+                else []
             )
-            if sport_type_name:
-                query_filter = query_filter.filter(Training.sport_type == sport_type_name)
-            trainings = query_filter.order_by(Training.training_date.asc()).all()
-            trainings = dedupe_individual_trainings_by_slot(trainings)
-            trainings = [
-                t
-                for t in trainings
-                if (
-                    (getattr(t, "training_format", None) or "").strip().lower()
-                    != TRAINING_FORMAT_INDIVIDUAL
-                )
-                or individual_slot_has_links(session, t, coach_id=user.id)
-            ]
+            training_by_id = {t.id: t for t in db_trainings}
+
+            visible_slots = []
+            for slot in slot_rows:
+                if slot.is_individual_format:
+                    training = training_by_id.get(slot.training_id)
+                    if not training:
+                        continue
+                    if not individual_slot_has_links(session, training, coach_id=user.id):
+                        continue
+                visible_slots.append(slot)
 
             date_str = selected_date.strftime("%d.%m.%Y")
             message = f"<b>📅 {date_str}</b>\n\n"
 
-            if trainings:
+            if visible_slots:
                 rendered_slots = 0
-                for training in trainings:
-                    from utils.age_groups import format_age_group_label
-
-                    age_group_ru = format_age_group_label(training.age_group, short=True)
-                    time_str = training.training_date.strftime("%H:%M")
-                    is_individual_slot = (
-                        (getattr(training, "training_format", None) or "").strip().lower()
-                        == TRAINING_FORMAT_INDIVIDUAL
-                    )
+                for slot in visible_slots:
+                    training = training_by_id.get(slot.training_id)
+                    age_group_ru = format_age_group_label(slot.age_group, short=True)
+                    time_str = slot.training_datetime.strftime("%H:%M")
+                    is_individual_slot = bool(slot.is_individual_format)
                     slot_suffix = " — Индивидуальная" if is_individual_slot else " — Групповая"
-                    training_date_only = training.training_date.date()
-                    subs_q = (
-                        session.query(Subscription)
-                        .join(Athlete, Subscription.athlete_id == Athlete.id)
-                        .filter(
-                            Subscription.sport_type == training.sport_type,
-                            func.date(Subscription.start_date) <= training_date_only,
-                            func.date(Subscription.end_date) >= training_date_only,
-                        )
-                    )
-                    # Индивидуальный абонемент нельзя показывать под каждой групповой парой дня:
-                    # у него start/end в один календарный день, иначе он попадёт под все слоты.
+                    training_date_only = slot.training_datetime.date()
+
+                    athlete_lines = []
+                    athlete_count = 0
                     if is_individual_slot:
-                        # Слот = момент начала; в БД у start_date могут отличаться секунды — сравниваем по минуте.
-                        slot_key = training.training_date.strftime("%Y-%m-%d %H:%M")
+                        subs_q = (
+                            session.query(Subscription)
+                            .join(Athlete, Subscription.athlete_id == Athlete.id)
+                            .filter(
+                                Subscription.sport_type == slot.sport_type,
+                                func.date(Subscription.start_date) <= training_date_only,
+                                func.date(Subscription.end_date) >= training_date_only,
+                            )
+                        )
+                        slot_key = slot.training_datetime.strftime("%Y-%m-%d %H:%M")
                         subs_q = subs_q.filter(
                             Subscription.subscription_type == "individual",
                             func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
                         )
-                    else:
-                        subs_q = subs_q.filter(Athlete.age_group == training.age_group).filter(
-                            or_(
-                                Subscription.subscription_type.is_(None),
-                                Subscription.subscription_type != "individual",
-                            )
-                        )
-                    subs = subs_q.all()
-
-                    athlete_lines = []
-                    athlete_count = 0
-                    if subs:
-                        athlete_count = len(subs)
-                        athlete_ids = [sub.athlete_id for sub in subs]
-                        athletes_map = {
-                            a.id: a
-                            for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
-                        }
-                        sub_ids = [s.id for s in subs]
-                        slot_training_ids = individual_slot_training_ids(session, training)
-                        att_by_sub = {
-                            a.subscription_id: a
-                            for a in session.query(Attendance).filter(
-                                Attendance.training_id.in_(slot_training_ids),
-                                Attendance.subscription_id.in_(sub_ids),
-                            ).all()
-                        }
-                        for sub in subs[:10]:
-                            ath = athletes_map.get(sub.athlete_id)
-                            if not ath:
-                                continue
-                            att = att_by_sub.get(sub.id)
-                            status_icon = attendance_icon_for_slot(
-                                att, training.training_date, now=now
-                            )
-                            age_suffix = ""
-                            if is_individual_slot and getattr(ath, "age_group", None):
-                                age_group_ru = format_age_group_label(ath.age_group, short=True)
-                                if age_group_ru:
-                                    age_suffix = f" - {age_group_ru}"
-                            athlete_lines.append(
-                                f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
-                            )
-                        if len(subs) > 10:
-                            athlete_lines.append(f"    ... и еще {len(subs) - 10}\n")
-                    else:
-                        # Fallback: если по активным абонементам никого нет, но по слоту уже есть
-                        # фактические отметки Attendance — показываем их в календаре.
-                        slot_training_ids = individual_slot_training_ids(session, training)
-                        slot_atts = (
-                            session.query(Attendance)
-                            .filter(Attendance.training_id.in_(slot_training_ids))
-                            .order_by(Attendance.created_at.asc())
-                            .all()
-                        )
-                        if slot_atts:
-                            by_athlete = {}
-                            for att in slot_atts:
-                                by_athlete[att.athlete_id] = att
-                            fallback_atts = list(by_athlete.values())
-                            athlete_count = len(fallback_atts)
-                            athlete_ids = [att.athlete_id for att in fallback_atts]
+                        subs = subs_q.all()
+                        if subs:
+                            athlete_count = len(subs)
+                            athlete_ids = [sub.athlete_id for sub in subs]
                             athletes_map = {
                                 a.id: a
                                 for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
                             }
-                            for att in fallback_atts[:10]:
-                                ath = athletes_map.get(att.athlete_id)
+                            sub_ids = [s.id for s in subs]
+                            slot_training_ids = individual_slot_training_ids(session, training)
+                            att_by_sub = {
+                                a.subscription_id: a
+                                for a in session.query(Attendance).filter(
+                                    Attendance.training_id.in_(slot_training_ids),
+                                    Attendance.subscription_id.in_(sub_ids),
+                                ).all()
+                            }
+                            for sub in subs[:10]:
+                                ath = athletes_map.get(sub.athlete_id)
                                 if not ath:
                                     continue
+                                att = att_by_sub.get(sub.id)
                                 status_icon = attendance_icon_for_slot(
-                                    att, training.training_date, now=now
+                                    att, slot.training_datetime, now=now
                                 )
                                 age_suffix = ""
-                                if is_individual_slot and getattr(ath, "age_group", None):
-                                    age_group_ru = format_age_group_label(ath.age_group, short=True)
-                                    if age_group_ru:
-                                        age_suffix = f" - {age_group_ru}"
+                                if getattr(ath, "age_group", None):
+                                    athlete_age_ru = format_age_group_label(ath.age_group, short=True)
+                                    if athlete_age_ru:
+                                        age_suffix = f" - {athlete_age_ru}"
                                 athlete_lines.append(
                                     f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
                                 )
-                            if len(fallback_atts) > 10:
-                                athlete_lines.append(
-                                    f"    ... и еще {len(fallback_atts) - 10}\n"
-                                )
-
-                    # В календаре дня показываем только слоты, где есть данные по спортсменам.
-                    if not athlete_lines:
-                        continue
-
-                    rendered_slots += 1
-                    if rendered_slots == 1:
-                        message += "<b>Тренировки со спортсменами:</b>\n\n"
-                    if is_individual_slot:
-                        message += (
-                            f"• <b>{time_str}</b> - {training.sport_type} | {age_group_ru}{slot_suffix}\n"
-                        )
+                            if len(subs) > 10:
+                                athlete_lines.append(f"    ... и еще {len(subs) - 10}\n")
+                        else:
+                            # Fallback: если абонемент не найден, но есть Attendance по слоту.
+                            slot_training_ids = individual_slot_training_ids(session, training)
+                            slot_atts = (
+                                session.query(Attendance)
+                                .filter(Attendance.training_id.in_(slot_training_ids))
+                                .order_by(Attendance.created_at.asc())
+                                .all()
+                            )
+                            if slot_atts:
+                                by_athlete = {}
+                                for att in slot_atts:
+                                    by_athlete[att.athlete_id] = att
+                                fallback_atts = list(by_athlete.values())
+                                athlete_count = len(fallback_atts)
+                                athlete_ids = [att.athlete_id for att in fallback_atts]
+                                athletes_map = {
+                                    a.id: a
+                                    for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
+                                }
+                                for att in fallback_atts[:10]:
+                                    ath = athletes_map.get(att.athlete_id)
+                                    if not ath:
+                                        continue
+                                    status_icon = attendance_icon_for_slot(
+                                        att, slot.training_datetime, now=now
+                                    )
+                                    age_suffix = ""
+                                    if getattr(ath, "age_group", None):
+                                        athlete_age_ru = format_age_group_label(ath.age_group, short=True)
+                                        if athlete_age_ru:
+                                            age_suffix = f" - {athlete_age_ru}"
+                                    athlete_lines.append(
+                                        f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
+                                    )
+                                if len(fallback_atts) > 10:
+                                    athlete_lines.append(
+                                        f"    ... и еще {len(fallback_atts) - 10}\n"
+                                    )
                     else:
-                        message += (
-                            f"• <b>{time_str}</b> - {training.sport_type} | {age_group_ru}{slot_suffix}\n"
-                        )
-                    message += f"  <b>Спортсменов: {athlete_count}</b>\n"
-                    for line in athlete_lines:
-                        message += line
-                    message += "\n"
-                if rendered_slots:
-                    message = message.replace(
-                        "<b>📅 " + date_str + "</b>\n\n",
-                        f"<b>📅 {date_str}</b>\n\n<b>Тренировок: {rendered_slots}</b>\n\n",
-                        1,
-                    )
-                else:
-                    message += "На эту дату нет тренировок со спортсменами.\n\n"
-            else:
-                weekday = selected_date.weekday()
-
-                if sport_type_name:
-                    schedule_info = {}
-                    from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
-
-                    for age_group in AGE_GROUP_CODES:
-                        schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {}).get(age_group)
-                        if schedule and weekday in schedule['days']:
-                            schedule_info[age_group] = schedule
-
-                    if schedule_info:
-                        message += "<b>По расписанию:</b>\n\n"
-
-                        for age_group, schedule in schedule_info.items():
-                            age_group_ru = format_age_group_label(age_group, short=True)
-                            time_str = TrainingManager.get_time_str_for_weekday(schedule, weekday)
-                            hour, minute = TrainingManager.get_hour_minute_for_weekday(
-                                schedule, weekday
+                        sub_ath_rows = (
+                            session.query(Subscription, Athlete)
+                            .join(Athlete, Subscription.athlete_id == Athlete.id)
+                            .filter(
+                                Subscription.is_active == True,
+                                Subscription.sport_type == slot.sport_type,
+                                func.date(Subscription.start_date) <= selected_date,
+                                func.date(Subscription.end_date) >= selected_date,
+                                Athlete.age_group == slot.age_group,
                             )
-                            slot_start = datetime.combine(
-                                selected_date, datetime.min.time()
-                            ).replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-                            message += f"• <b>{time_str}</b> - {sport_type_name} ({age_group_ru})\n"
-
-                            sub_ath_rows = (
-                                session.query(Subscription, Athlete)
-                                .join(Athlete, Subscription.athlete_id == Athlete.id)
-                                .filter(
-                                    Subscription.is_active == True,
-                                    Subscription.sport_type == sport_type_name,
-                                    func.date(Subscription.start_date) <= selected_date,
-                                    func.date(Subscription.end_date) >= selected_date,
-                                    Athlete.age_group == age_group,
+                            .filter(
+                                or_(
+                                    Subscription.subscription_type.is_(None),
+                                    Subscription.subscription_type != "individual",
                                 )
                             )
-
-                            if isinstance(user, Coach):
-                                sub_ath_rows = sub_ath_rows.filter(Athlete.created_by == user.id)
-
-                            pair_list = sub_ath_rows.all()
-
-                            if pair_list:
-                                message += f"  <b>Записано спортсменов: {len(pair_list)}</b>\n"
-                                aid_list = list({a.id for _s, a in pair_list})
+                        )
+                        pair_list = sub_ath_rows.all()
+                        athlete_count = len(pair_list)
+                        if pair_list:
+                            aid_list = list({a.id for _s, a in pair_list})
+                            sub_ids = list({s.id for s, _a in pair_list})
+                            if training:
+                                slot_training_ids = individual_slot_training_ids(session, training)
                                 atts = (
                                     session.query(Attendance)
-                                    .join(Training, Attendance.training_id == Training.id)
                                     .filter(
-                                        Training.sport_type == sport_type_name,
-                                        Training.age_group == age_group,
-                                        func.date(Training.training_date) == selected_date,
+                                        Attendance.training_id.in_(slot_training_ids),
+                                        Attendance.subscription_id.in_(sub_ids),
                                         Attendance.athlete_id.in_(aid_list),
                                     )
                                     .all()
                                 )
-                                att_by_pair = {}
-                                for att in atts:
-                                    key = (att.athlete_id, att.subscription_id)
-                                    if key not in att_by_pair:
-                                        att_by_pair[key] = att
-
-                                for subscription, athlete in pair_list[:10]:
-                                    attendance = att_by_pair.get((athlete.id, subscription.id))
-                                    if attendance and attendance.training:
-                                        slot_eff = attendance.training.training_date
-                                    else:
-                                        slot_eff = slot_start
-                                    status_icon = attendance_icon_for_slot(
-                                        attendance, slot_eff, now=now
-                                    )
-                                    message += f"    {status_icon} {html.escape(athlete.full_name)}\n"
-                                if len(pair_list) > 10:
-                                    message += f"    ... и еще {len(pair_list) - 10}\n"
                             else:
-                                message += f"  Нет записанных спортсменов\n"
+                                atts = (
+                                    session.query(Attendance)
+                                    .join(Training, Attendance.training_id == Training.id)
+                                    .filter(
+                                        Training.coach_id == user.id,
+                                        Training.sport_type == slot.sport_type,
+                                        Training.age_group == slot.age_group,
+                                        func.date(Training.training_date) == selected_date,
+                                        Attendance.subscription_id.in_(sub_ids),
+                                        Attendance.athlete_id.in_(aid_list),
+                                    )
+                                    .all()
+                                )
+                            att_by_pair = {}
+                            for att in atts:
+                                key = (att.athlete_id, att.subscription_id)
+                                if key not in att_by_pair:
+                                    att_by_pair[key] = att
 
-                            message += "\n"
-                    else:
-                        message += "На эту дату тренировок не запланировано.\n\n"
-                else:
-                    message += "На эту дату тренировок не запланировано.\n\n"
+                            for subscription, athlete in pair_list[:10]:
+                                attendance = att_by_pair.get((athlete.id, subscription.id))
+                                status_icon = attendance_icon_for_slot(
+                                    attendance, slot.training_datetime, now=now
+                                )
+                                athlete_lines.append(
+                                    f"    {status_icon} {html.escape(_surname_initials(athlete.full_name))}\n"
+                                )
+                            if len(pair_list) > 10:
+                                athlete_lines.append(f"    ... и еще {len(pair_list) - 10}\n")
+
+                    rendered_slots += 1
+                    if rendered_slots == 1:
+                        message += "<b>Тренировки со спортсменами:</b>\n\n"
+                    message += (
+                        f"• <b>{time_str}</b> - {slot.sport_type} | {age_group_ru}{slot_suffix}\n"
+                    )
+                    message += f"  <b>Спортсменов: {athlete_count}</b>\n"
+                    for line in athlete_lines:
+                        message += line
+                    message += "\n"
+
+                message = message.replace(
+                    "<b>📅 " + date_str + "</b>\n\n",
+                    f"<b>📅 {date_str}</b>\n\n<b>Тренировок: {rendered_slots}</b>\n\n",
+                    1,
+                )
+            else:
+                message += "На эту дату тренировок не запланировано.\n\n"
 
             keyboard = [[
                 InlineKeyboardButton("🔙 К календарю", callback_data=f"calendar_{year}_{month}")
