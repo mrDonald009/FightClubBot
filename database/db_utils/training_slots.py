@@ -1,13 +1,15 @@
 """Слоты тренера: пересечение групповых и индивидуальных тренировок (один coach_id, один sport_type)."""
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database.models import Athlete, Attendance, Subscription, Training
+from utils.age_groups import AGE_GROUP_CHILDREN, AGE_GROUP_MIDDLE, normalize_age_group
 from utils.time_utils import (
     ACTIVATION_GRACE_AFTER_START,
     individual_training_end_time,
@@ -32,6 +34,8 @@ SCHEDULED_GROUP_SPORTS = ("MMA", "Тайский Бокс")
 
 # Индивидуальный слот не делится на детей/взрослых: в trainings.age_group храним одно значение.
 INDIVIDUAL_TRAINING_AGE_GROUP_STORED = "adults"
+
+logger = logging.getLogger(__name__)
 
 
 def individual_slot_training_ids(session: Session, training: Training) -> List[int]:
@@ -128,6 +132,260 @@ def coach_trainings_on_calendar_day(
     )
 
 
+def is_group_training(training: Training) -> bool:
+    fmt = (getattr(training, "training_format", None) or "").strip().lower()
+    return fmt != TRAINING_FORMAT_INDIVIDUAL
+
+
+def expected_group_training_start(
+    training_date: datetime,
+    sport_type: str,
+    age_group: str,
+) -> Optional[datetime]:
+    """Начало групповой пары по TRAINING_SCHEDULE или None (в этот день недели слота нет)."""
+    from utils.training_manager import TrainingManager
+
+    schedule_map = TrainingManager.TRAINING_SCHEDULE.get(sport_type) or {}
+    schedule = schedule_map.get(age_group)
+    if not schedule:
+        return None
+    weekday = training_date.weekday()
+    if weekday not in (schedule.get("days") or []):
+        return None
+    hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, weekday)
+    return training_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _find_group_training_at_time(
+    session: Session,
+    *,
+    sport_type: str,
+    age_group: str,
+    target_start: datetime,
+    coach_id: Optional[int],
+    exclude_id: Optional[int],
+) -> Optional[Training]:
+    day = target_start.date()
+    day_start = datetime.combine(day, time(0, 0, 0))
+    day_end = day_start + timedelta(days=1)
+    q = session.query(Training).filter(
+        Training.sport_type == sport_type,
+        Training.age_group == age_group,
+        Training.is_cancelled.is_(False),
+        Training.training_date >= day_start,
+        Training.training_date < day_end,
+    )
+    if coach_id is not None:
+        q = q.filter(Training.coach_id == coach_id)
+    if exclude_id is not None:
+        q = q.filter(Training.id != exclude_id)
+    for tr in q.order_by(Training.id.asc()).all():
+        if not is_group_training(tr):
+            continue
+        if (
+            tr.training_date.hour == target_start.hour
+            and tr.training_date.minute == target_start.minute
+        ):
+            return tr
+    return None
+
+
+def children_group_at_wrong_schedule_time(training: Training) -> bool:
+    """Групповая «Детская» не в слоте TRAINING_SCHEDULE для children."""
+    if not is_group_training(training):
+        return False
+    age_group = normalize_age_group(training.age_group)
+    if age_group != AGE_GROUP_CHILDREN:
+        return False
+    sport_type = (training.sport_type or "").strip()
+    if not sport_type:
+        return False
+    expected_children = expected_group_training_start(
+        training.training_date, sport_type, AGE_GROUP_CHILDREN
+    )
+    current = training.training_date.replace(second=0, microsecond=0)
+    if expected_children is None:
+        return True
+    return current != expected_children
+
+
+def inspect_misplaced_children_group_trainings(session: Session) -> List[Dict[str, Any]]:
+    """Список групповых «Детская» не на своём времени (для проверки перед правкой)."""
+    rows: List[Dict[str, Any]] = []
+    for training in (
+        session.query(Training)
+        .filter(Training.is_cancelled.is_(False))
+        .order_by(Training.training_date.asc(), Training.id.asc())
+        .all()
+    ):
+        if not children_group_at_wrong_schedule_time(training):
+            continue
+        sport_type = (training.sport_type or "").strip()
+        expected_middle = expected_group_training_start(
+            training.training_date, sport_type, AGE_GROUP_MIDDLE
+        )
+        rows.append(
+            {
+                "id": training.id,
+                "sport_type": sport_type,
+                "coach_id": training.coach_id,
+                "from": training.training_date.strftime("%Y-%m-%d %H:%M"),
+                "to_age_group": AGE_GROUP_MIDDLE,
+                "to_time": (
+                    expected_middle.strftime("%Y-%m-%d %H:%M")
+                    if expected_middle
+                    else None
+                ),
+            }
+        )
+    return rows
+
+
+def fix_misplaced_children_group_trainings(session: Session) -> Dict[str, Any]:
+    """Переклассифицировать все групповые «Детская» не в своём слоте → «Средняя» (+ время)."""
+    report: Dict[str, Any] = {"fixed": 0, "skipped": 0, "actions": []}
+    ids = [row["id"] for row in inspect_misplaced_children_group_trainings(session)]
+    for training_id in ids:
+        training = session.query(Training).filter_by(id=training_id).first()
+        if not training:
+            continue
+        before = (
+            training.training_date.strftime("%Y-%m-%d %H:%M"),
+            training.age_group,
+        )
+        sport_type = (training.sport_type or "").strip()
+        expected_middle = expected_group_training_start(
+            training.training_date, sport_type, AGE_GROUP_MIDDLE
+        )
+        if expected_middle is None:
+            report["skipped"] += 1
+            report["actions"].append(
+                {"id": training_id, "action": "skip", "reason": "no_middle_slot_this_day"}
+            )
+            continue
+        result = reconcile_group_training_to_schedule(
+            session, training, expected_start=expected_middle
+        )
+        report["fixed"] += 1
+        report["actions"].append(
+            {
+                "id": training_id,
+                "result_id": result.id,
+                "from": f"{before[0]} children",
+                "to": f"{result.training_date.strftime('%Y-%m-%d %H:%M')} {result.age_group}",
+            }
+        )
+    session.flush()
+    return report
+
+
+def _merge_attendances_to_training(
+    session: Session,
+    *,
+    from_training_id: int,
+    to_training_id: int,
+) -> None:
+    for att in session.query(Attendance).filter(Attendance.training_id == from_training_id).all():
+        dup = (
+            session.query(Attendance)
+            .filter(
+                Attendance.athlete_id == att.athlete_id,
+                Attendance.training_id == to_training_id,
+            )
+            .first()
+        )
+        if dup:
+            session.delete(att)
+        else:
+            att.training_id = to_training_id
+
+
+def reconcile_group_training_to_schedule(
+    session: Session,
+    training: Training,
+    *,
+    expected_start: Optional[datetime] = None,
+) -> Training:
+    """
+    Привести групповую запись к актуальному времени расписания.
+
+    Если в целевом слоте уже есть пара — attendances переносятся, дубликат удаляется.
+    """
+    if not is_group_training(training):
+        return training
+
+    age_group = normalize_age_group(training.age_group) or training.age_group
+    if age_group and age_group != training.age_group:
+        training.age_group = age_group
+    sport_type = (training.sport_type or "").strip()
+    if not sport_type or not age_group:
+        return training
+
+    if children_group_at_wrong_schedule_time(training):
+        expected_middle = expected_group_training_start(
+            training.training_date, sport_type, AGE_GROUP_MIDDLE
+        )
+        if expected_middle is None:
+            logger.warning(
+                "Групповая children training_id=%s не в своём слоте, "
+                "но средняя группа в этот день не scheduled — пропуск",
+                training.id,
+            )
+            return training
+        logger.info(
+            "Групповая training_id=%s: Детская не в своём времени → Средняя %s",
+            training.id,
+            expected_middle.strftime("%Y-%m-%d %H:%M"),
+        )
+        training.age_group = AGE_GROUP_MIDDLE
+        age_group = AGE_GROUP_MIDDLE
+        expected_start = expected_middle
+
+    expected = expected_start or expected_group_training_start(
+        training.training_date, sport_type, age_group
+    )
+    if expected is None:
+        return training
+
+    current = training.training_date.replace(second=0, microsecond=0)
+    if current == expected:
+        return training
+
+    existing = _find_group_training_at_time(
+        session,
+        sport_type=sport_type,
+        age_group=age_group,
+        target_start=expected,
+        coach_id=training.coach_id,
+        exclude_id=training.id,
+    )
+    if existing is not None:
+        logger.info(
+            "Групповая training_id=%s объединена с training_id=%s (%s %s → %s)",
+            training.id,
+            existing.id,
+            sport_type,
+            age_group,
+            expected.strftime("%H:%M"),
+        )
+        _merge_attendances_to_training(
+            session, from_training_id=training.id, to_training_id=existing.id
+        )
+        session.delete(training)
+        session.flush()
+        return existing
+
+    logger.info(
+        "Групповая training_id=%s перенесена на расписание: %s → %s",
+        training.id,
+        current.strftime("%Y-%m-%d %H:%M"),
+        expected.strftime("%Y-%m-%d %H:%M"),
+    )
+    training.training_date = expected
+    session.flush()
+    return training
+
+
 def find_group_training_on_calendar_day(
     session: Session,
     *,
@@ -137,11 +395,32 @@ def find_group_training_on_calendar_day(
     coach_id: Optional[int] = None,
 ) -> Optional[Training]:
     """
-    Найти существующую групповую тренировку на календарный день.
+    Групповая тренировка на календарный день по расписанию.
 
-    Используется как fallback при смене расписания: если в этот день уже есть
-    один групповой слот (например legacy 18:00), не создаём второй (17:00).
+    Сначала ищем слот в актуальное время; legacy-запись в тот же день
+    автоматически переносится на время из TRAINING_SCHEDULE.
     """
+    age_group = normalize_age_group(age_group) or age_group
+    sport_type = (sport_type or "").strip()
+    if not sport_type or not age_group:
+        return None
+
+    anchor = datetime.combine(day, time(0, 0, 0))
+    expected = expected_group_training_start(anchor, sport_type, age_group)
+    if expected is None:
+        return None
+
+    exact = _find_group_training_at_time(
+        session,
+        sport_type=sport_type,
+        age_group=age_group,
+        target_start=expected,
+        coach_id=coach_id,
+        exclude_id=None,
+    )
+    if exact is not None:
+        return exact
+
     day_start = datetime.combine(day, time(0, 0, 0))
     day_end = day_start + timedelta(days=1)
     q = (
@@ -157,11 +436,18 @@ def find_group_training_on_calendar_day(
     )
     if coach_id is not None:
         q = q.filter(Training.coach_id == coach_id)
-    trainings = q.all()
-    for training in trainings:
-        fmt = (getattr(training, "training_format", None) or "").strip().lower()
-        if fmt != TRAINING_FORMAT_INDIVIDUAL:
-            return training
+    for legacy in q.all():
+        if not is_group_training(legacy):
+            continue
+        leg_age = normalize_age_group(legacy.age_group) or legacy.age_group
+        if leg_age != age_group:
+            continue
+        if children_group_at_wrong_schedule_time(legacy):
+            reconcile_group_training_to_schedule(session, legacy)
+            return None
+        return reconcile_group_training_to_schedule(
+            session, legacy, expected_start=expected
+        )
     return None
 
 

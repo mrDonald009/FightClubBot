@@ -6,7 +6,7 @@ from __future__ import annotations
 import html
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session as OrmSession
@@ -17,6 +17,8 @@ from database.db_utils.training_slots import (
     dedupe_individual_trainings_by_slot,
     find_group_training_on_calendar_day,
     individual_slot_training_ids,
+    is_group_training,
+    reconcile_group_training_to_schedule,
 )
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
 from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
@@ -76,6 +78,22 @@ def coach_training_access_error(user: Any, training: Training) -> Optional[str]:
     return None
 
 
+def _reconcile_loaded_group_trainings(
+    session: OrmSession, trainings: List[Training]
+) -> List[Training]:
+    """Привести групповые записи из БД к актуальному TRAINING_SCHEDULE перед показом в UI."""
+    out: List[Training] = []
+    seen_ids: Set[int] = set()
+    for training in trainings:
+        if is_group_training(training):
+            training = reconcile_group_training_to_schedule(session, training)
+        if training.id in seen_ids:
+            continue
+        seen_ids.add(training.id)
+        out.append(training)
+    return out
+
+
 def build_today_attendance_slots(
     session: OrmSession,
     user: Union[Coach, Admin],
@@ -131,6 +149,7 @@ def build_today_attendance_slots(
             .all()
         )
         db_trainings = dedupe_individual_trainings_by_slot(db_trainings)
+        db_trainings = _reconcile_loaded_group_trainings(session, db_trainings)
         existing_keys = {
             (t.sport_type, t.age_group, t.training_date.hour, t.training_date.minute)
             for t in db_trainings
@@ -177,6 +196,7 @@ def build_today_attendance_slots(
             trainings_query = trainings_query.filter(Training.sport_type == sport_type_name)
         db_trainings = trainings_query.order_by(Training.training_date.asc()).all()
         db_trainings = dedupe_individual_trainings_by_slot(db_trainings)
+        db_trainings = _reconcile_loaded_group_trainings(session, db_trainings)
 
         if not sport_type_name and db_trainings:
             sport_type_name = db_trainings[0].sport_type
@@ -202,7 +222,7 @@ def build_today_attendance_slots(
             (t.sport_type, t.age_group, t.training_date.hour, t.training_date.minute)
             for t in db_trainings
         }
-        for age_group in ("children", "adults"):
+        for age_group in AGE_GROUP_CODES:
             schedule = schedule_map.get(age_group)
             if not schedule or weekday not in schedule.get("days", []):
                 continue

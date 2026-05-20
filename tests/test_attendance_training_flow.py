@@ -425,6 +425,7 @@ def test_resolve_virtual_slot_reuses_existing_group_on_same_day():
     assert created is False
     assert training is not None
     assert training.id == legacy_group.id
+    assert training.training_date == expected_dt
     assert (
         session.query(Training)
         .filter(

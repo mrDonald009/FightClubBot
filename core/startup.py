@@ -112,10 +112,10 @@ def format_coach_daily_summary_message(today: date, slots: List) -> str:
     for index, slot in enumerate(ordered, start=1):
         t_str = slot.training_datetime.strftime("%H:%M")
         if getattr(slot, "is_individual_format", False):
-            detail = f"{slot.sport_type}, индивидуальная"
+            detail = f"{slot.sport_type} | Индивидуальная"
         else:
             age = format_age_group_label(slot.age_group, short=True)
-            detail = f"{slot.sport_type} ({age}), групповая"
+            detail = f"{slot.sport_type} | {age} — Групповая"
         lines.append(f"{index}. {t_str} — {detail}")
     return "\n".join(lines)
 
