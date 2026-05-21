@@ -3634,7 +3634,7 @@ _EDIT_FIELD_UI = {
         "enter_new_start": "Введите новый телефон",
         "enter_new_retry": "Введите новый телефон или нажмите «Отмена».",
         "empty": "Не указан",
-        "hint": "Формат: <b>XXX-XXX-XX-XX</b> (<i>пример: 925-123-45-67</i>)",
+        "hint": "Формат: XXX-XXX-XX-XX (пример: 925-123-45-67)",
     },
     "medical": {
         "icon": "🏥",
@@ -3654,20 +3654,25 @@ def _edit_athlete_field_message(
 ) -> str:
     """
     Текст шага редактирования.
-    unchanged=False — открытие поля: только заголовок и «Введите новое …».
+    unchanged=False — открытие: заголовок с текущим значением и «Введите новое …».
     unchanged=True — ввод совпал с БД: значение и «— уже используется.».
     """
     ui = _EDIT_FIELD_UI[field_key]
-    parts = [f"{ui['icon']} <b>{ui['title']}</b>\n"]
+    display = (current_value or "").strip() or ui["empty"]
     if unchanged:
-        display = (current_value or "").strip() or ui["empty"]
-        parts.append(f"{html.escape(display)} — уже используется.\n")
-        parts.append(ui["enter_new_retry"])
+        parts = [
+            f"{ui['icon']} <b>{ui['title']}</b>\n",
+            f"{html.escape(display)} — уже используется.\n",
+            ui["enter_new_retry"],
+        ]
     else:
-        parts.append(ui["enter_new_start"])
+        parts = [
+            f"{ui['icon']} <b>{ui['title']} - {html.escape(display)}</b>\n",
+            ui["enter_new_start"],
+        ]
         hint = ui.get("hint")
         if hint:
-            parts.append(f"\n{hint}")
+            parts.append(hint)
     return "\n".join(parts)
 
 
