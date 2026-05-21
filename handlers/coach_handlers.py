@@ -1988,19 +1988,23 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return f"{n} {word}"
 
             today_str = now.strftime("%d.%m.%Y")
-            message = "📝 <b>Отметить посещения</b>\n\n"
+            # Из меню (ReplyKeyboard) заголовок уже в сообщении пользователя — не дублируем.
+            message_parts: List[str] = []
+            if query:
+                message_parts.append("📝 <b>Отметить посещения</b>\n\n")
             if slot_rows:
                 planned_label = _trainings_count_label(len(slot_rows))
-                message += (
+                message_parts.append(
                     f"Сегодня: <b>{today_str}</b> — У Вас запланировано: "
                     f"<b>{planned_label}</b>.\n"
                     "Выберите тренировку.\n\n"
                 )
             else:
-                message += (
+                message_parts.append(
                     f"Сегодня — <b>{today_str}</b>\n"
                     "У Вас нет запланированных тренировок.\n\n"
                 )
+            message = "".join(message_parts)
 
             keyboard = []
             for slot in slot_rows:
@@ -2047,7 +2051,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except BadRequest as br:
                     if "message is not modified" in str(br).lower():
                         hint = (
-                            "Список актуален — на сегодня тренировок нет."
+                            "У Вас нет запланированных тренировок на сегодня."
                             if not slot_rows
                             else "Список без изменений."
                         )
