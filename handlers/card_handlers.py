@@ -181,6 +181,319 @@ def _subscription_history_list_callback(
     return f"{prefix}{athlete_id}"
 
 
+_VISIT_HISTORY_LOOKBACK_DAYS = 120
+_VISIT_HISTORY_MAX_LINES = 28
+# (дней, подпись в сводке) — считаются по всем слотам в окне lookback, не по строкам списка
+_VISIT_HISTORY_SUMMARY_PERIODS = (
+    (7, "7 дней"),
+    (30, "30 дней"),
+    (90, "3 мес."),
+    (_VISIT_HISTORY_LOOKBACK_DAYS, "120 дней"),
+)
+_VISIT_HISTORY_FILTER_DAYS = tuple(days for days, _label in _VISIT_HISTORY_SUMMARY_PERIODS)
+_VISIT_KIND_FILTER_ALL = "all"
+_VISIT_KIND_FILTER_GROUP = "grp"
+_VISIT_KIND_FILTER_INDIVIDUAL = "ind"
+_VISIT_KIND_FILTER_SINGLE = "sgl"
+_VISIT_KIND_FILTER_CODES = frozenset(
+    {
+        _VISIT_KIND_FILTER_ALL,
+        _VISIT_KIND_FILTER_GROUP,
+        _VISIT_KIND_FILTER_INDIVIDUAL,
+        _VISIT_KIND_FILTER_SINGLE,
+    }
+)
+_VISIT_KIND_CODE_TO_LABEL = {
+    _VISIT_KIND_FILTER_ALL: None,
+    _VISIT_KIND_FILTER_GROUP: "Групповая",
+    _VISIT_KIND_FILTER_INDIVIDUAL: "Индивидуальная",
+    _VISIT_KIND_FILTER_SINGLE: "Разовая",
+}
+_VISIT_KIND_CODE_TO_BUTTON = {
+    _VISIT_KIND_FILTER_ALL: "Все",
+    _VISIT_KIND_FILTER_GROUP: "Групп",
+    _VISIT_KIND_FILTER_INDIVIDUAL: "Индив",
+    _VISIT_KIND_FILTER_SINGLE: "Разов",
+}
+_VISIT_PERIOD_CODE_TO_BUTTON = {
+    7: "7д",
+    30: "30д",
+    90: "90д",
+    120: "120д",
+}
+
+
+def _is_individual_training_slot(training: Training) -> bool:
+    return (
+        (getattr(training, "training_format", None) or "").strip().lower()
+        == TRAINING_FORMAT_INDIVIDUAL
+    )
+
+
+def _subscription_for_visit_slot(
+    session, athlete_id: int, training: Training
+) -> Optional[Subscription]:
+    """Абонемент, покрывающий слот (для подписи «Групповая» / «Разовая» / «Индивидуальная»)."""
+    if not training.training_date:
+        return None
+    td = training.training_date
+    subs = (
+        session.query(Subscription)
+        .filter(
+            Subscription.athlete_id == athlete_id,
+            Subscription.sport_type == training.sport_type,
+            func.date(Subscription.start_date) <= func.date(td),
+            func.date(Subscription.end_date) >= func.date(td),
+        )
+        .order_by(Subscription.id.desc())
+        .all()
+    )
+    if not subs:
+        return None
+    if _is_individual_training_slot(training):
+        for sub in subs:
+            if (getattr(sub, "subscription_type", None) or "").strip().lower() == "individual":
+                return sub
+        return subs[0]
+    for sub in subs:
+        if (getattr(sub, "subscription_type", None) or "").strip().lower() == "single":
+            return sub
+    for sub in subs:
+        st = (getattr(sub, "subscription_type", None) or "").strip().lower()
+        if st != "individual":
+            return sub
+    return subs[0]
+
+
+def _visit_training_kind_ru(
+    training: Training,
+    attendance: Optional[Attendance] = None,
+    subscription: Optional[Subscription] = None,
+) -> str:
+    if _is_individual_training_slot(training):
+        return "Индивидуальная"
+    sub = subscription
+    if sub is None and attendance is not None:
+        sub = attendance.subscription
+    st = (getattr(sub, "subscription_type", None) or "").strip().lower() if sub else ""
+    if st == "single":
+        return "Разовая"
+    return "Групповая"
+
+
+def _visit_history_slot_present(attendance: Optional[Attendance]) -> bool:
+    return attendance is not None and bool(attendance.attended)
+
+
+def _format_visit_history_slot_line(
+    training: Training,
+    attendance: Optional[Attendance],
+    *,
+    subscription: Optional[Subscription] = None,
+) -> str:
+    present = _visit_history_slot_present(attendance)
+    icon = "✅" if present else "❌"
+    time_str = (
+        training.training_date.strftime("%H:%M") if training.training_date else "—"
+    )
+    sport = html.escape((training.sport_type or "—").strip())
+    kind = _visit_training_kind_ru(training, attendance, subscription)
+    return f"{icon} {time_str} · {sport} | {kind}\n"
+
+
+def _parse_visits_callback(callback_data: str) -> tuple:
+    """
+    visits_{athlete_id} или visits_{athlete_id}_{days}_{kind}.
+    kind: all | grp | ind | sgl
+    """
+    if not callback_data.startswith("visits_"):
+        raise ValueError("invalid visits callback")
+    parts = callback_data[7:].split("_")
+    athlete_id = int(parts[0])
+    filter_days = _VISIT_HISTORY_LOOKBACK_DAYS
+    kind_code = _VISIT_KIND_FILTER_ALL
+    if len(parts) >= 2:
+        filter_days = int(parts[1])
+    if len(parts) >= 3:
+        kind_code = parts[2]
+    if filter_days not in _VISIT_HISTORY_FILTER_DAYS:
+        filter_days = _VISIT_HISTORY_LOOKBACK_DAYS
+    if kind_code not in _VISIT_KIND_FILTER_CODES:
+        kind_code = _VISIT_KIND_FILTER_ALL
+    return athlete_id, filter_days, kind_code
+
+
+def _visits_filter_callback(athlete_id: int, filter_days: int, kind_code: str) -> str:
+    return f"visits_{athlete_id}_{filter_days}_{kind_code}"
+
+
+def _visit_filter_button_label(caption: str, *, active: bool) -> str:
+    return f"• {caption}" if active else caption
+
+
+def _visit_history_filter_caption(filter_days: int, kind_code: str) -> str:
+    period = dict(_VISIT_HISTORY_SUMMARY_PERIODS).get(
+        filter_days, f"{filter_days} дн."
+    )
+    kind = _VISIT_KIND_CODE_TO_BUTTON.get(kind_code, kind_code)
+    return f"{period} · {kind}"
+
+
+def _visit_history_entries_for_stats(
+    entries: List[tuple], kind_code: str
+) -> List[tuple]:
+    """Оставить (dt, line, present) с учётом фильтра по типу тренировки."""
+    kind_label = _VISIT_KIND_CODE_TO_LABEL.get(kind_code)
+    if not kind_label:
+        return [(dt, line, present) for dt, line, present, _kind in entries]
+    return [
+        (dt, line, present)
+        for dt, line, present, kind in entries
+        if kind == kind_label
+    ]
+
+
+def _visit_history_entries_for_display(
+    entries: List[tuple],
+    *,
+    filter_days: int,
+    kind_code: str,
+    now: datetime,
+) -> List[tuple]:
+    """(dt, line, present) в выбранном периоде и типе."""
+    cutoff = now - timedelta(days=filter_days)
+    kind_label = _VISIT_KIND_CODE_TO_LABEL.get(kind_code)
+    filtered = []
+    for dt, line, present, kind in entries:
+        if dt < cutoff:
+            continue
+        if kind_label and kind != kind_label:
+            continue
+        filtered.append((dt, line, present))
+    return sorted(filtered, key=lambda x: x[0])
+
+
+def _build_visit_history_filter_keyboard(
+    athlete_id: int, filter_days: int, kind_code: str
+) -> InlineKeyboardMarkup:
+    period_row = [
+        InlineKeyboardButton(
+            _visit_filter_button_label(
+                _VISIT_PERIOD_CODE_TO_BUTTON[days], active=(filter_days == days)
+            ),
+            callback_data=_visits_filter_callback(athlete_id, days, kind_code),
+        )
+        for days in _VISIT_HISTORY_FILTER_DAYS
+    ]
+    kind_row = [
+        InlineKeyboardButton(
+            _visit_filter_button_label(
+                _VISIT_KIND_CODE_TO_BUTTON[code], active=(kind_code == code)
+            ),
+            callback_data=_visits_filter_callback(athlete_id, filter_days, code),
+        )
+        for code in (
+            _VISIT_KIND_FILTER_ALL,
+            _VISIT_KIND_FILTER_GROUP,
+            _VISIT_KIND_FILTER_INDIVIDUAL,
+            _VISIT_KIND_FILTER_SINGLE,
+        )
+    ]
+    return InlineKeyboardMarkup(
+        [
+            period_row,
+            kind_row,
+            [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")],
+        ]
+    )
+
+
+def _visit_history_period_stats(
+    entries: List[tuple],
+    *,
+    now: datetime,
+) -> List[tuple]:
+    """Сводка по периодам: [(label, present, absent, total), ...]."""
+    stats = []
+    for days, label in _VISIT_HISTORY_SUMMARY_PERIODS:
+        cutoff = now - timedelta(days=days)
+        in_period = [(dt, line, present) for dt, line, present in entries if dt >= cutoff]
+        present_count = sum(1 for _dt, _line, present in in_period if present)
+        total = len(in_period)
+        stats.append((label, present_count, total - present_count, total))
+    return stats
+
+
+def _format_visit_history_summary_block(stats: List[tuple]) -> str:
+    lines = ["<b>Сводка:</b>"]
+    for label, present_count, absent_count, total in stats:
+        lines.append(
+            f"• {label}: ✅ {present_count} · ❌ {absent_count} · всего {total}"
+        )
+    return "\n".join(lines) + "\n\n"
+
+
+def _render_visit_history_message(
+    athlete_name: str,
+    display_entries: List[tuple],
+    *,
+    stats_entries: Optional[List[tuple]] = None,
+    now: Optional[datetime] = None,
+    total_matching: Optional[int] = None,
+    filter_days: int = _VISIT_HISTORY_LOOKBACK_DAYS,
+    kind_code: str = _VISIT_KIND_FILTER_ALL,
+) -> str:
+    """
+    display_entries — строки в списке (последние N).
+    stats_entries — все записи в окне lookback для сводки по периодам.
+    """
+    now = now or now_moscow()
+    stats_source = stats_entries if stats_entries is not None else display_entries
+    stats = _visit_history_period_stats(stats_source, now=now)
+
+    message = "📅 <b>ИСТОРИЯ ПОСЕЩЕНИЙ</b>\n\n"
+    message += f"👤 <b>{html.escape(athlete_name)}</b>\n"
+    is_default_filter = (
+        filter_days == _VISIT_HISTORY_LOOKBACK_DAYS
+        and kind_code == _VISIT_KIND_FILTER_ALL
+    )
+    if not is_default_filter:
+        message += (
+            f"<i>Фильтр: {html.escape(_visit_history_filter_caption(filter_days, kind_code))}</i>\n"
+        )
+    message += _format_visit_history_summary_block(stats)
+
+    total_all = total_matching if total_matching is not None else len(stats_source)
+    if total_all > len(display_entries) and display_entries:
+        filter_hint = ""
+        if not is_default_filter:
+            filter_hint = f" ({_visit_history_filter_caption(filter_days, kind_code)})"
+        message += (
+            f"<i>Показаны последние {len(display_entries)} "
+            f"из {total_all}{filter_hint}</i>\n\n"
+        )
+
+    if not display_entries:
+        if not is_default_filter:
+            message += "📭 По выбранному фильтру записей нет.\n"
+        else:
+            message += "📭 Нет записей посещений.\n"
+        return message
+
+    by_day = {}
+    for dt, line, _present in display_entries:
+        day = dt.date()
+        by_day.setdefault(day, []).append((dt, line))
+
+    for day in sorted(by_day.keys()):
+        message += f"▸ {day.strftime('%d.%m.%Y')}\n"
+        for _dt, line in sorted(by_day[day], key=lambda x: x[0]):
+            message += line
+        message += "\n"
+
+    return message
+
+
 def _supports_multi_individual_bookings(session) -> bool:
     """Схема БД допускает несколько individual-строк на одного спортсмена."""
     try:
@@ -2915,7 +3228,11 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
 
-    athlete_id = int(query.data.replace("visits_", ""))
+    try:
+        athlete_id, filter_days, kind_code = _parse_visits_callback(query.data)
+    except (ValueError, IndexError):
+        await query.edit_message_text("❌ Неверная ссылка на историю посещений")
+        return
 
     try:
         with get_db_session() as session:
@@ -2935,17 +3252,12 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
                 return
 
-            message = f"📅 <b>ИСТОРИЯ ПОСЕЩЕНИЙ</b>\n\n"
-            message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
-            message += "\n"
-
             now = now_moscow()
-            max_lines = 28
-            rows: List[tuple] = []
-            visible_slots: List[Training] = []
+            entries: List[tuple] = []
+            slots_for_history: List[Training] = []
 
             if athlete.sport_type and athlete.age_group:
-                lookback = now - timedelta(days=120)
+                lookback = now - timedelta(days=_VISIT_HISTORY_LOOKBACK_DAYS)
                 _fit = TRAINING_FORMAT_INDIVIDUAL
                 has_group_sub = exists().where(
                     and_(
@@ -3009,11 +3321,12 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 if getattr(athlete, "created_by", None):
                     trainings_indiv = [t for t in trainings_indiv if t.coach_id == athlete.created_by]
                 all_slots = dedupe_individual_trainings_by_slot(trainings_group + trainings_indiv)
-                # Показываем не только завершённые, но и текущие слоты: отмеченные статусы видны сразу.
-                visible_slots = sorted(all_slots, key=lambda tr: tr.training_date, reverse=True)[:45]
-                if visible_slots:
+                slots_for_history = sorted(
+                    all_slots, key=lambda tr: tr.training_date or now
+                )
+                if slots_for_history:
                     tids_flat = set()
-                    for tr in visible_slots:
+                    for tr in slots_for_history:
                         tids_flat.update(individual_slot_training_ids(session, tr))
                     atts = (
                         session.query(Attendance)
@@ -3032,14 +3345,8 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                                 return att_by_tid[sid]
                         return None
 
-                    ordered_slots = sorted(visible_slots, key=lambda tr: tr.training_date)
-                    if len(ordered_slots) > max_lines:
-                        ordered_slots = ordered_slots[-max_lines:]
-
-                    for t in ordered_slots:
+                    for t in slots_for_history:
                         att = _attendance_for_slot(t)
-                        training_date = t.training_date.strftime("%d.%m.%Y %H:%M")
-                        icon = attendance_icon_for_training(att, t, now=now)
                         label = attendance_label_ru_for_training(
                             att, t, now=now, with_note=(att is None)
                         )
@@ -3061,29 +3368,19 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                             recorded_at=now,
                         )
 
-                        is_individual_slot = (
-                            (getattr(t, "training_format", None) or "").strip().lower()
-                            == TRAINING_FORMAT_INDIVIDUAL
+                        sub = (
+                            att.subscription
+                            if att is not None and att.subscription is not None
+                            else _subscription_for_visit_slot(session, athlete_id, t)
                         )
-                        if is_individual_slot:
-                            slot_desc = (
-                                f"{training_date} — {html.escape(t.sport_type)} — Индивидуальная"
-                            )
-                        else:
-                            age_group_ru = format_age_group_label(t.age_group, short=True)
-                            slot_desc = (
-                                f"{training_date} — {html.escape(t.sport_type)} ({age_group_ru}) — Групповая"
-                            )
-
-                        if icon == "✅":
-                            status_text = "✅ Был"
-                        else:
-                            status_text = "❌ Не был"
-
-                        rows.append((t.training_date, f"{slot_desc} — {status_text}\n"))
+                        present = _visit_history_slot_present(att)
+                        kind = _visit_training_kind_ru(t, att, subscription=sub)
+                        line = _format_visit_history_slot_line(t, att, subscription=sub)
+                        entries.append((t.training_date, line, present, kind))
             covered_tids = set()
-            for tr in visible_slots:
-                covered_tids.update(individual_slot_training_ids(session, tr))
+            if athlete.sport_type and athlete.age_group:
+                for tr in slots_for_history:
+                    covered_tids.update(individual_slot_training_ids(session, tr))
 
             # Добавляем сохранённые отметки вне видимых слотов (другая дисциплина/группа/старше окна),
             # чтобы не терялась история прежних записей.
@@ -3102,39 +3399,51 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 tr = att.training
                 if tr and tr.training_date:
                     dt = tr.training_date
-                    training_date = tr.training_date.strftime("%d.%m.%Y %H:%M")
-                    is_individual_slot = (
-                        (getattr(tr, "training_format", None) or "").strip().lower()
-                        == TRAINING_FORMAT_INDIVIDUAL
+                    sub = att.subscription or _subscription_for_visit_slot(
+                        session, athlete_id, tr
                     )
-                    if is_individual_slot:
-                        slot_desc = (
-                            f"{training_date} — {html.escape(tr.sport_type)} — Индивидуальная"
-                        )
-                    else:
-                        age_group_ru = format_age_group_label(tr.age_group, short=True)
-                        slot_desc = (
-                            f"{training_date} — {html.escape(tr.sport_type)} ({age_group_ru}) — Групповая"
-                        )
-                else:
+                    present = _visit_history_slot_present(att)
+                    kind = _visit_training_kind_ru(tr, att, subscription=sub)
+                    line = _format_visit_history_slot_line(tr, att, subscription=sub)
+                    entries.append((dt, line, present, kind))
+                elif tr:
                     dt = now
-                    slot_desc = "—"
-                status_text = "✅ Был" if att.attended else "❌ Не был"
-                rows.append((dt, f"{slot_desc} — {status_text}\n"))
+                    sub = att.subscription
+                    present = _visit_history_slot_present(att)
+                    kind = _visit_training_kind_ru(tr, att, subscription=sub)
+                    line = _format_visit_history_slot_line(tr, att, subscription=sub)
+                    entries.append((dt, line, present, kind))
 
-            if not rows:
-                message += "📭 Нет записей посещений.\n"
-            else:
-                rows_sorted = sorted(rows, key=lambda x: x[0])
-                if len(rows_sorted) > max_lines:
-                    rows_sorted = rows_sorted[-max_lines:]
-                for _dt, line in rows_sorted:
-                    message += line
+            lookback_cutoff = now - timedelta(days=_VISIT_HISTORY_LOOKBACK_DAYS)
+            entries_in_window = sorted(
+                (e for e in entries if e[0] >= lookback_cutoff),
+                key=lambda x: x[0],
+            )
+            stats_entries = _visit_history_entries_for_stats(entries_in_window, kind_code)
+            filtered_entries = _visit_history_entries_for_display(
+                entries_in_window,
+                filter_days=filter_days,
+                kind_code=kind_code,
+                now=now,
+            )
+            display_entries = (
+                filtered_entries[-_VISIT_HISTORY_MAX_LINES:]
+                if filtered_entries
+                else []
+            )
+            message = _render_visit_history_message(
+                athlete.full_name,
+                display_entries,
+                stats_entries=stats_entries,
+                now=now,
+                total_matching=len(filtered_entries),
+                filter_days=filter_days,
+                kind_code=kind_code,
+            )
 
-            keyboard = [
-                [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
+            reply_markup = _build_visit_history_filter_keyboard(
+                athlete_id, filter_days, kind_code
+            )
         
             await query.edit_message_text(
                 message,

@@ -2534,9 +2534,14 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     rendered_slots += 1
                     if rendered_slots == 1:
                         message += "<b>Тренировки со спортсменами:</b>\n\n"
-                    message += (
-                        f"• <b>{time_str}</b> - {slot.sport_type} | {age_group_ru}{slot_suffix}\n"
-                    )
+                    if is_individual_slot:
+                        message += (
+                            f"• <b>{time_str}</b> - {slot.sport_type} | Индивидуальная\n"
+                        )
+                    else:
+                        message += (
+                            f"• <b>{time_str}</b> - {slot.sport_type} | {age_group_ru}{slot_suffix}\n"
+                        )
                     message += f"  <b>Спортсменов: {athlete_count}</b>\n"
                     for line in athlete_lines:
                         message += line
