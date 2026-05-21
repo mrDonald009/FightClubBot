@@ -3619,6 +3619,45 @@ def _clear_edit_athlete_state(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("edit_athlete_id", None)
 
 
+# Единые заголовки и подсказки для шагов редактирования карточки
+_EDIT_FIELD_UI = {
+    "name": {
+        "icon": "📝",
+        "title": "РЕДАКТИРОВАНИЕ ФИО",
+        "enter_new": "Введите новое ФИО или нажмите «Отмена».",
+        "empty": "—",
+    },
+    "phone": {
+        "icon": "📞",
+        "title": "РЕДАКТИРОВАНИЕ ТЕЛЕФОНА",
+        "enter_new": "Введите новый телефон или нажмите «Отмена».",
+        "empty": "Не указан",
+        "hint": "Формат: <b>XXX-XXX-XX-XX</b> (<i>пример: 925-123-45-67</i>)",
+    },
+    "medical": {
+        "icon": "🏥",
+        "title": "РЕДАКТИРОВАНИЕ МЕДИЦИНСКОЙ ИНФОРМАЦИИ",
+        "enter_new": "Введите новую медицинскую информацию или нажмите «Отмена».",
+        "empty": "Не указана",
+    },
+}
+
+
+def _edit_athlete_prompt_text(field_key: str, current_value: Optional[str]) -> str:
+    """Текст шага ввода: заголовок, текущее значение, призыв ввести новое."""
+    ui = _EDIT_FIELD_UI[field_key]
+    display = (current_value or "").strip() or ui["empty"]
+    parts = [
+        f"{ui['icon']} <b>{ui['title']}</b>\n",
+        f"{html.escape(display)} — уже используется.\n",
+        ui["enter_new"],
+    ]
+    hint = ui.get("hint")
+    if hint:
+        parts.append(f"\n{hint}")
+    return "\n".join(parts)
+
+
 def _edit_athlete_after_save_keyboard(athlete_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✏️ Продолжить редактирование", callback_data=f"edit_{athlete_id}")],
@@ -3629,16 +3668,13 @@ def _edit_athlete_after_save_keyboard(athlete_id: int) -> InlineKeyboardMarkup:
 async def _edit_athlete_unchanged_reply(
     update: Update,
     *,
-    field_label: str,
+    field_key: str,
     current_value: str,
     cancel_keyboard: InlineKeyboardMarkup,
 ) -> None:
     """Сообщение, если новое значение совпадает с тем, что уже в БД."""
-    display = current_value or "—"
     await update.message.reply_text(
-        f"ℹ️ <b>{field_label} не изменилось</b>\n\n"
-        f"В базе уже: {html.escape(display)}\n\n"
-        "Введите другое значение или нажмите «Отмена».",
+        _edit_athlete_prompt_text(field_key, current_value),
         reply_markup=cancel_keyboard,
         parse_mode="HTML",
     )
@@ -3745,9 +3781,7 @@ async def start_edit_athlete_name(update: Update, context: ContextTypes.DEFAULT_
 
             context.user_data["edit_athlete_id"] = athlete_id
             await query.edit_message_text(
-                "📝 <b>РЕДАКТИРОВАНИЕ ФИО</b>\n\n"
-                f"Текущее: <b>{html.escape(athlete.full_name)}</b>\n\n"
-                "Введите новое ФИО (Фамилия Имя, кириллицей):",
+                _edit_athlete_prompt_text("name", athlete.full_name),
                 reply_markup=_edit_athlete_cancel_keyboard(athlete_id),
                 parse_mode="HTML",
             )
@@ -3775,12 +3809,8 @@ async def start_edit_athlete_phone(update: Update, context: ContextTypes.DEFAULT
                 return ConversationHandler.END
 
             context.user_data["edit_athlete_id"] = athlete_id
-            phone_display = athlete.phone or "Не указан"
             await query.edit_message_text(
-                "📞 <b>РЕДАКТИРОВАНИЕ ТЕЛЕФОНА</b>\n\n"
-                f"Текущий: <b>{html.escape(phone_display)}</b>\n\n"
-                "Введите новый номер в формате <b>XXX-XXX-XX-XX</b>\n"
-                "<i>Пример: 925-123-45-67</i>",
+                _edit_athlete_prompt_text("phone", athlete.phone),
                 reply_markup=_edit_athlete_cancel_keyboard(athlete_id),
                 parse_mode="HTML",
             )
@@ -3808,11 +3838,8 @@ async def start_edit_athlete_medical(update: Update, context: ContextTypes.DEFAU
                 return ConversationHandler.END
 
             context.user_data["edit_athlete_id"] = athlete_id
-            medical_display = athlete.medical_info or "Не указана"
             await query.edit_message_text(
-                "🏥 <b>МЕДИЦИНСКАЯ ИНФОРМАЦИЯ</b>\n\n"
-                f"Текущая: {html.escape(medical_display)}\n\n"
-                "Введите новый текст или напишите <b>нет</b>, если противопоказаний нет:",
+                _edit_athlete_prompt_text("medical", athlete.medical_info),
                 reply_markup=_edit_athlete_cancel_keyboard(athlete_id),
                 parse_mode="HTML",
             )
@@ -3862,7 +3889,7 @@ async def save_edit_athlete_name(update: Update, context: ContextTypes.DEFAULT_T
             if normalize_full_name(athlete.full_name or "") == normalized:
                 await _edit_athlete_unchanged_reply(
                     update,
-                    field_label="ФИО",
+                    field_key="name",
                     current_value=athlete.full_name,
                     cancel_keyboard=_edit_athlete_cancel_keyboard(athlete_id),
                 )
@@ -3939,7 +3966,7 @@ async def save_edit_athlete_phone(update: Update, context: ContextTypes.DEFAULT_
             if (athlete.phone or "") == full_phone:
                 await _edit_athlete_unchanged_reply(
                     update,
-                    field_label="Телефон",
+                    field_key="phone",
                     current_value=athlete.phone,
                     cancel_keyboard=_edit_athlete_cancel_keyboard(athlete_id),
                 )
@@ -3988,7 +4015,7 @@ async def save_edit_athlete_medical(update: Update, context: ContextTypes.DEFAUL
             if stored_medical == medical_info.strip():
                 await _edit_athlete_unchanged_reply(
                     update,
-                    field_label="Медицинская информация",
+                    field_key="medical",
                     current_value=athlete.medical_info,
                     cancel_keyboard=_edit_athlete_cancel_keyboard(athlete_id),
                 )
