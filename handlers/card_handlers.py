@@ -3626,6 +3626,38 @@ def _edit_athlete_after_save_keyboard(athlete_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+async def _edit_athlete_unchanged_reply(
+    update: Update,
+    *,
+    field_label: str,
+    current_value: str,
+    cancel_keyboard: InlineKeyboardMarkup,
+) -> None:
+    """Сообщение, если новое значение совпадает с тем, что уже в БД."""
+    display = current_value or "—"
+    await update.message.reply_text(
+        f"ℹ️ <b>{field_label} не изменилось</b>\n\n"
+        f"В базе уже: {html.escape(display)}\n\n"
+        "Введите другое значение или нажмите «Отмена».",
+        reply_markup=cancel_keyboard,
+        parse_mode="HTML",
+    )
+
+
+async def _edit_athlete_saved_reply(
+    update: Update,
+    athlete_id: int,
+    *,
+    field_label: str,
+    new_value: str,
+) -> None:
+    await update.message.reply_text(
+        f"✅ <b>{field_label} обновлено</b>\n\n{html.escape(new_value)}",
+        reply_markup=_edit_athlete_after_save_keyboard(athlete_id),
+        parse_mode="HTML",
+    )
+
+
 def _edit_athlete_cancel_keyboard(athlete_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("❌ Отмена", callback_data=f"edit_cancel_{athlete_id}")],
@@ -3827,14 +3859,21 @@ async def save_edit_athlete_name(update: Update, context: ContextTypes.DEFAULT_T
                 _clear_edit_athlete_state(context)
                 return ConversationHandler.END
 
+            if normalize_full_name(athlete.full_name or "") == normalized:
+                await _edit_athlete_unchanged_reply(
+                    update,
+                    field_label="ФИО",
+                    current_value=athlete.full_name,
+                    cancel_keyboard=_edit_athlete_cancel_keyboard(athlete_id),
+                )
+                return EDIT_ATHLETE_NAME
+
             athlete.full_name = normalized
             session.commit()
 
         _clear_edit_athlete_state(context)
-        await update.message.reply_text(
-            f"✅ <b>ФИО обновлено</b>\n\n{html.escape(normalized)}",
-            reply_markup=_edit_athlete_after_save_keyboard(athlete_id),
-            parse_mode="HTML",
+        await _edit_athlete_saved_reply(
+            update, athlete_id, field_label="ФИО", new_value=normalized
         )
         return ConversationHandler.END
     except Exception as e:
@@ -3897,14 +3936,21 @@ async def save_edit_athlete_phone(update: Update, context: ContextTypes.DEFAULT_
                 )
                 return EDIT_ATHLETE_PHONE
 
+            if (athlete.phone or "") == full_phone:
+                await _edit_athlete_unchanged_reply(
+                    update,
+                    field_label="Телефон",
+                    current_value=athlete.phone,
+                    cancel_keyboard=_edit_athlete_cancel_keyboard(athlete_id),
+                )
+                return EDIT_ATHLETE_PHONE
+
             athlete.phone = full_phone
             session.commit()
 
         _clear_edit_athlete_state(context)
-        await update.message.reply_text(
-            f"✅ <b>Телефон обновлён</b>\n\n{html.escape(full_phone)}",
-            reply_markup=_edit_athlete_after_save_keyboard(athlete_id),
-            parse_mode="HTML",
+        await _edit_athlete_saved_reply(
+            update, athlete_id, field_label="Телефон", new_value=full_phone
         )
         return ConversationHandler.END
     except Exception as e:
@@ -3938,14 +3984,25 @@ async def save_edit_athlete_medical(update: Update, context: ContextTypes.DEFAUL
                 _clear_edit_athlete_state(context)
                 return ConversationHandler.END
 
+            stored_medical = (athlete.medical_info or "").strip()
+            if stored_medical == medical_info.strip():
+                await _edit_athlete_unchanged_reply(
+                    update,
+                    field_label="Медицинская информация",
+                    current_value=athlete.medical_info,
+                    cancel_keyboard=_edit_athlete_cancel_keyboard(athlete_id),
+                )
+                return EDIT_ATHLETE_MEDICAL
+
             athlete.medical_info = medical_info
             session.commit()
 
         _clear_edit_athlete_state(context)
-        await update.message.reply_text(
-            f"✅ <b>Медицинская информация обновлена</b>\n\n{html.escape(medical_info)}",
-            reply_markup=_edit_athlete_after_save_keyboard(athlete_id),
-            parse_mode="HTML",
+        await _edit_athlete_saved_reply(
+            update,
+            athlete_id,
+            field_label="Медицинская информация",
+            new_value=medical_info,
         )
         return ConversationHandler.END
     except Exception as e:
