@@ -1,5 +1,6 @@
 import logging
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 from database.models import Coach, Athlete, Subscription, Training, Attendance, GlobalFreeze
 from core.database import get_db_session
@@ -2040,9 +2041,24 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             reply_markup = InlineKeyboardMarkup(keyboard)
             if query:
-                await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='HTML')
+                try:
+                    await query.edit_message_text(
+                        message, reply_markup=reply_markup, parse_mode="HTML"
+                    )
+                except BadRequest as br:
+                    if "message is not modified" in str(br).lower():
+                        hint = (
+                            "Список актуален — на сегодня тренировок нет."
+                            if not slot_rows
+                            else "Список без изменений."
+                        )
+                        await query.answer(hint, show_alert=False)
+                        return
+                    raise
             else:
-                await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='HTML')
+                await update.message.reply_text(
+                    message, reply_markup=reply_markup, parse_mode="HTML"
+                )
 
     except Exception as e:
         logger.error("❌ Ошибка в start_training: %s", e, exc_info=True)
