@@ -90,6 +90,17 @@ from handlers.card_handlers import (
     show_restore_menu,
     execute_restore_training,
     show_edit_athlete_menu,
+    start_edit_athlete_name,
+    start_edit_athlete_phone,
+    start_edit_athlete_medical,
+    save_edit_athlete_name,
+    save_edit_athlete_phone,
+    save_edit_athlete_medical,
+    cancel_edit_athlete,
+    cancel_edit_athlete_command,
+    EDIT_ATHLETE_NAME,
+    EDIT_ATHLETE_PHONE,
+    EDIT_ATHLETE_MEDICAL,
     select_subscription,
     view_subscription_card,
     handle_freeze_subscription_start,
@@ -1008,6 +1019,34 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(conv_handler)
     logger.info("✅ Зарегистрирован ConversationHandler для добавления спортсмена")
 
+    edit_athlete_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_edit_athlete_name, pattern=r"^edit_name_\d+$"),
+            CallbackQueryHandler(start_edit_athlete_phone, pattern=r"^edit_phone_\d+$"),
+            CallbackQueryHandler(start_edit_athlete_medical, pattern=r"^edit_medical_\d+$"),
+        ],
+        states={
+            EDIT_ATHLETE_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit_athlete_name),
+            ],
+            EDIT_ATHLETE_PHONE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit_athlete_phone),
+            ],
+            EDIT_ATHLETE_MEDICAL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit_athlete_medical),
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(cancel_edit_athlete, pattern=r"^edit_cancel_\d+$"),
+            CommandHandler("cancel", cancel_edit_athlete_command),
+        ],
+        name="edit_athlete_conversation",
+        persistent=False,
+        allow_reentry=True,
+    )
+    registrar.register(edit_athlete_conv)
+    logger.info("✅ Зарегистрирован ConversationHandler для редактирования спортсмена")
+
     # Обработчики для списка спортсменов
     registrar.register(
         CallbackQueryHandler(handle_back_to_menu_main, pattern="^back_to_menu_main$")
@@ -1059,7 +1098,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(show_restore_menu, pattern="^restore_")
     )
     registrar.register(
-        CallbackQueryHandler(show_edit_athlete_menu, pattern="^edit_")
+        CallbackQueryHandler(show_edit_athlete_menu, pattern=r"^edit_\d+$")
     )
     registrar.register(
         CallbackQueryHandler(select_subscription, pattern="^select_sub_")

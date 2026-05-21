@@ -3,7 +3,15 @@ import re
 from datetime import date, datetime, timedelta
 import calendar as py_calendar
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler
+from telegram.ext import ContextTypes, CallbackQueryHandler, CommandHandler, ConversationHandler
+from handlers.coach_handlers import (
+    MENU_BUTTONS,
+    normalize_full_name,
+    validate_full_name_strict,
+    is_phone_number,
+    has_digits,
+    is_valid_name_format,
+)
 from database.models import Athlete, Subscription, Training, Attendance, Coach, Admin, GlobalFreeze
 from core.database import get_db_session
 from database.db_utils.subscription_activation_payment import (
@@ -3592,52 +3600,401 @@ async def view_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text("❌ Ошибка при загрузке")
 
 
+# --- Редактирование карточки спортсмена ---
+EDIT_ATHLETE_NAME = 110
+EDIT_ATHLETE_PHONE = 111
+EDIT_ATHLETE_MEDICAL = 112
+
+_EDIT_ATHLETE_ID_RE = re.compile(
+    r"^edit_(?:name|phone|medical|cancel)_(\d+)$"
+)
+
+
+def _parse_edit_athlete_callback_id(data: str) -> Optional[int]:
+    m = _EDIT_ATHLETE_ID_RE.match(data or "")
+    return int(m.group(1)) if m else None
+
+
+def _clear_edit_athlete_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop("edit_athlete_id", None)
+
+
+def _edit_athlete_after_save_keyboard(athlete_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Продолжить редактирование", callback_data=f"edit_{athlete_id}")],
+        [InlineKeyboardButton("👤 К карточке", callback_data=f"athlete_{athlete_id}")],
+    ])
+
+
+def _edit_athlete_cancel_keyboard(athlete_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("❌ Отмена", callback_data=f"edit_cancel_{athlete_id}")],
+    ])
+
+
+def _edit_athlete_menu_markup(athlete_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 ФИО", callback_data=f"edit_name_{athlete_id}")],
+        [InlineKeyboardButton("📞 Телефон", callback_data=f"edit_phone_{athlete_id}")],
+        [InlineKeyboardButton("🏥 Медицинская информация", callback_data=f"edit_medical_{athlete_id}")],
+        [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")],
+    ])
+
+
+def _edit_athlete_menu_text(athlete: Athlete) -> str:
+    message = "✏️ <b>РЕДАКТИРОВАНИЕ ДАННЫХ</b>\n\n"
+    message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+    message += "Выберите, что хотите изменить:"
+    return message
+
+
+def _load_athlete_for_edit(session, user, athlete_id: int):
+    """
+    Проверка доступа к редактированию.
+    Возвращает (athlete, error_text) — при ошибке athlete=None.
+    """
+    if not user or get_user_role(user) not in ("coach", "admin"):
+        return None, "❌ У вас нет доступа"
+    athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+    if not athlete:
+        return None, "❌ Спортсмен не найден"
+    if isinstance(user, Coach) and athlete.created_by != user.id:
+        return None, "❌ Вы не можете редактировать этого спортсмена"
+    return athlete, None
+
+
 async def show_edit_athlete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать меню редактирования данных спортсмена"""
     query = update.callback_query
     await query.answer()
-    
-    athlete_id = int(query.data.replace("edit_", ""))
-    
+
+    try:
+        athlete_id = int(query.data.replace("edit_", ""))
+    except ValueError:
+        await query.edit_message_text("❌ Некорректный запрос")
+        return
+
+    _clear_edit_athlete_state(context)
+
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-        
-            if not user or get_user_role(user) not in ['coach', 'admin']:
-                await query.edit_message_text("❌ У вас нет доступа")
+            athlete, err = _load_athlete_for_edit(session, user, athlete_id)
+            if err:
+                await query.edit_message_text(err)
                 return
-        
-            athlete = session.query(Athlete).filter_by(id=athlete_id).first()
-            if not athlete:
-                await query.edit_message_text("❌ Спортсмен не найден")
-                return
-        
-            # Проверяем права
-            if isinstance(user, Coach) and athlete.created_by != user.id:
-                await query.edit_message_text("❌ Вы не можете редактировать этого спортсмена")
-                return
-        
-            message = f"✏️ <b>РЕДАКТИРОВАНИЕ ДАННЫХ</b>\n\n"
-            message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
-            message += "Выберите, что хотите изменить:"
-        
-            keyboard = [
-                [InlineKeyboardButton("📝 ФИО", callback_data=f"edit_name_{athlete_id}")],
-                [InlineKeyboardButton("📞 Телефон", callback_data=f"edit_phone_{athlete_id}")],
-                [InlineKeyboardButton("🏥 Медицинская информация", callback_data=f"edit_medical_{athlete_id}")],
-                [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
             await query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
+                _edit_athlete_menu_text(athlete),
+                reply_markup=_edit_athlete_menu_markup(athlete_id),
+                parse_mode="HTML",
             )
-    
+
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ МЕНЮ РЕДАКТИРОВАНИЯ: {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка при загрузке меню редактирования")
+
+
+async def start_edit_athlete_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    athlete_id = _parse_edit_athlete_callback_id(query.data)
+    if athlete_id is None:
+        await query.edit_message_text("❌ Некорректный запрос")
+        return ConversationHandler.END
+
+    try:
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, query.from_user.id)
+            athlete, err = _load_athlete_for_edit(session, user, athlete_id)
+            if err:
+                await query.edit_message_text(err)
+                return ConversationHandler.END
+
+            context.user_data["edit_athlete_id"] = athlete_id
+            await query.edit_message_text(
+                "📝 <b>РЕДАКТИРОВАНИЕ ФИО</b>\n\n"
+                f"Текущее: <b>{html.escape(athlete.full_name)}</b>\n\n"
+                "Введите новое ФИО (Фамилия Имя, кириллицей):",
+                reply_markup=_edit_athlete_cancel_keyboard(athlete_id),
+                parse_mode="HTML",
+            )
+            return EDIT_ATHLETE_NAME
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА СТАРТА РЕДАКТИРОВАНИЯ ФИО: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка")
+        return ConversationHandler.END
+
+
+async def start_edit_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    athlete_id = _parse_edit_athlete_callback_id(query.data)
+    if athlete_id is None:
+        await query.edit_message_text("❌ Некорректный запрос")
+        return ConversationHandler.END
+
+    try:
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, query.from_user.id)
+            athlete, err = _load_athlete_for_edit(session, user, athlete_id)
+            if err:
+                await query.edit_message_text(err)
+                return ConversationHandler.END
+
+            context.user_data["edit_athlete_id"] = athlete_id
+            phone_display = athlete.phone or "Не указан"
+            await query.edit_message_text(
+                "📞 <b>РЕДАКТИРОВАНИЕ ТЕЛЕФОНА</b>\n\n"
+                f"Текущий: <b>{html.escape(phone_display)}</b>\n\n"
+                "Введите новый номер в формате <b>XXX-XXX-XX-XX</b>\n"
+                "<i>Пример: 925-123-45-67</i>",
+                reply_markup=_edit_athlete_cancel_keyboard(athlete_id),
+                parse_mode="HTML",
+            )
+            return EDIT_ATHLETE_PHONE
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА СТАРТА РЕДАКТИРОВАНИЯ ТЕЛЕФОНА: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка")
+        return ConversationHandler.END
+
+
+async def start_edit_athlete_medical(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    athlete_id = _parse_edit_athlete_callback_id(query.data)
+    if athlete_id is None:
+        await query.edit_message_text("❌ Некорректный запрос")
+        return ConversationHandler.END
+
+    try:
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, query.from_user.id)
+            athlete, err = _load_athlete_for_edit(session, user, athlete_id)
+            if err:
+                await query.edit_message_text(err)
+                return ConversationHandler.END
+
+            context.user_data["edit_athlete_id"] = athlete_id
+            medical_display = athlete.medical_info or "Не указана"
+            await query.edit_message_text(
+                "🏥 <b>МЕДИЦИНСКАЯ ИНФОРМАЦИЯ</b>\n\n"
+                f"Текущая: {html.escape(medical_display)}\n\n"
+                "Введите новый текст или напишите <b>нет</b>, если противопоказаний нет:",
+                reply_markup=_edit_athlete_cancel_keyboard(athlete_id),
+                parse_mode="HTML",
+            )
+            return EDIT_ATHLETE_MEDICAL
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА СТАРТА РЕДАКТИРОВАНИЯ МЕДИЦИНЫ: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка")
+        return ConversationHandler.END
+
+
+async def save_edit_athlete_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    athlete_id = context.user_data.get("edit_athlete_id")
+    if not athlete_id:
+        return ConversationHandler.END
+
+    user_text = (update.message.text or "").strip()
+    if user_text in MENU_BUTTONS:
+        _clear_edit_athlete_state(context)
+        await update.message.reply_text("✅ Редактирование отменено.")
+        return ConversationHandler.END
+
+    full_name = normalize_full_name(user_text)
+    if is_phone_number(full_name):
+        await update.message.reply_text(
+            "❌ <b>Это похоже на телефон, а не на ФИО.</b>\n\nВведите ФИО кириллицей:",
+            parse_mode="HTML",
+        )
+        return EDIT_ATHLETE_NAME
+
+    ok, normalized, error = validate_full_name_strict(full_name)
+    if not ok:
+        await update.message.reply_text(
+            f"❌ {html.escape(error or 'Некорректное ФИО')}\n\nПопробуйте ещё раз:",
+            parse_mode="HTML",
+        )
+        return EDIT_ATHLETE_NAME
+
+    try:
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, update.effective_user.id)
+            athlete, err = _load_athlete_for_edit(session, user, athlete_id)
+            if err:
+                await update.message.reply_text(err)
+                _clear_edit_athlete_state(context)
+                return ConversationHandler.END
+
+            athlete.full_name = normalized
+            session.commit()
+
+        _clear_edit_athlete_state(context)
+        await update.message.reply_text(
+            f"✅ <b>ФИО обновлено</b>\n\n{html.escape(normalized)}",
+            reply_markup=_edit_athlete_after_save_keyboard(athlete_id),
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА СОХРАНЕНИЯ ФИО: {e}", exc_info=True)
+        await update.message.reply_text("❌ Ошибка при сохранении")
+        return EDIT_ATHLETE_NAME
+
+
+async def save_edit_athlete_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    athlete_id = context.user_data.get("edit_athlete_id")
+    if not athlete_id:
+        return ConversationHandler.END
+
+    user_text = update.message.text or ""
+    if user_text in MENU_BUTTONS:
+        _clear_edit_athlete_state(context)
+        await update.message.reply_text("✅ Редактирование отменено.")
+        return ConversationHandler.END
+
+    if not has_digits(user_text) or is_valid_name_format(user_text):
+        await update.message.reply_text(
+            "❌ <b>Это похоже на ФИО, а не на телефон!</b>\n\n"
+            "Введите номер в формате <b>XXX-XXX-XX-XX</b>",
+            parse_mode="HTML",
+        )
+        return EDIT_ATHLETE_PHONE
+
+    cleaned_input = re.sub(r"[^\d-]", "", user_text)
+    phone_pattern = r"^\d{3}-\d{3}-\d{2}-\d{2}$"
+    if not re.match(phone_pattern, cleaned_input):
+        await update.message.reply_text(
+            "❌ <b>Неверный формат телефона!</b>\n\n"
+            "Формат: <b>XXX-XXX-XX-XX</b>\n<i>Пример: 925-123-45-67</i>",
+            parse_mode="HTML",
+        )
+        return EDIT_ATHLETE_PHONE
+
+    full_phone = f"+7-{cleaned_input}"
+
+    try:
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, update.effective_user.id)
+            athlete, err = _load_athlete_for_edit(session, user, athlete_id)
+            if err:
+                await update.message.reply_text(err)
+                _clear_edit_athlete_state(context)
+                return ConversationHandler.END
+
+            existing = (
+                session.query(Athlete)
+                .filter(Athlete.phone == full_phone, Athlete.id != athlete_id)
+                .first()
+            )
+            if existing:
+                await update.message.reply_text(
+                    f"❌ <b>Этот телефон уже занят</b>\n\n"
+                    f"ФИО: {html.escape(existing.full_name)}\n\n"
+                    "Введите другой номер:",
+                    parse_mode="HTML",
+                )
+                return EDIT_ATHLETE_PHONE
+
+            athlete.phone = full_phone
+            session.commit()
+
+        _clear_edit_athlete_state(context)
+        await update.message.reply_text(
+            f"✅ <b>Телефон обновлён</b>\n\n{html.escape(full_phone)}",
+            reply_markup=_edit_athlete_after_save_keyboard(athlete_id),
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА СОХРАНЕНИЯ ТЕЛЕФОНА: {e}", exc_info=True)
+        await update.message.reply_text("❌ Ошибка при сохранении")
+        return EDIT_ATHLETE_PHONE
+
+
+async def save_edit_athlete_medical(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    athlete_id = context.user_data.get("edit_athlete_id")
+    if not athlete_id:
+        return ConversationHandler.END
+
+    user_text = (update.message.text or "").strip()
+    if user_text in MENU_BUTTONS:
+        _clear_edit_athlete_state(context)
+        await update.message.reply_text("✅ Редактирование отменено.")
+        return ConversationHandler.END
+
+    if user_text.lower() == "нет":
+        medical_info = "Нет противопоказаний"
+    else:
+        medical_info = user_text
+
+    try:
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, update.effective_user.id)
+            athlete, err = _load_athlete_for_edit(session, user, athlete_id)
+            if err:
+                await update.message.reply_text(err)
+                _clear_edit_athlete_state(context)
+                return ConversationHandler.END
+
+            athlete.medical_info = medical_info
+            session.commit()
+
+        _clear_edit_athlete_state(context)
+        await update.message.reply_text(
+            f"✅ <b>Медицинская информация обновлена</b>\n\n{html.escape(medical_info)}",
+            reply_markup=_edit_athlete_after_save_keyboard(athlete_id),
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА СОХРАНЕНИЯ МЕДИЦИНЫ: {e}", exc_info=True)
+        await update.message.reply_text("❌ Ошибка при сохранении")
+        return EDIT_ATHLETE_MEDICAL
+
+
+async def cancel_edit_athlete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена редактирования по inline-кнопке — возврат в меню редактирования."""
+    query = update.callback_query
+    await query.answer()
+    athlete_id = _parse_edit_athlete_callback_id(query.data)
+    _clear_edit_athlete_state(context)
+    if athlete_id is None:
+        await query.edit_message_text("✅ Редактирование отменено.")
+        return ConversationHandler.END
+
+    try:
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, query.from_user.id)
+            athlete, err = _load_athlete_for_edit(session, user, athlete_id)
+            if err:
+                await query.edit_message_text(err)
+                return ConversationHandler.END
+
+            await query.edit_message_text(
+                _edit_athlete_menu_text(athlete),
+                reply_markup=_edit_athlete_menu_markup(athlete_id),
+                parse_mode="HTML",
+            )
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ОТМЕНЫ РЕДАКТИРОВАНИЯ: {e}", exc_info=True)
+        await query.edit_message_text("✅ Редактирование отменено.")
+    return ConversationHandler.END
+
+
+async def cancel_edit_athlete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена редактирования командой /cancel."""
+    athlete_id = context.user_data.get("edit_athlete_id")
+    _clear_edit_athlete_state(context)
+    if athlete_id:
+        await update.message.reply_text(
+            "✅ Редактирование отменено.\n"
+            "Откройте карточку спортсмена снова из списка.",
+        )
+    else:
+        await update.message.reply_text("Нет активного редактирования.")
+    return ConversationHandler.END
 
 
 _FREEZE_CAL_RE = re.compile(r"^freeze_cal_(\d+)_(\d+)_(\d{4})_(\d{1,2})$")
