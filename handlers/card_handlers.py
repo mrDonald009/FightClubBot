@@ -3624,37 +3624,50 @@ _EDIT_FIELD_UI = {
     "name": {
         "icon": "📝",
         "title": "РЕДАКТИРОВАНИЕ ФИО",
-        "enter_new": "Введите новое ФИО или нажмите «Отмена».",
+        "enter_new_start": "Введите новое ФИО",
+        "enter_new_retry": "Введите новое ФИО или нажмите «Отмена».",
         "empty": "—",
     },
     "phone": {
         "icon": "📞",
         "title": "РЕДАКТИРОВАНИЕ ТЕЛЕФОНА",
-        "enter_new": "Введите новый телефон или нажмите «Отмена».",
+        "enter_new_start": "Введите новый телефон",
+        "enter_new_retry": "Введите новый телефон или нажмите «Отмена».",
         "empty": "Не указан",
         "hint": "Формат: <b>XXX-XXX-XX-XX</b> (<i>пример: 925-123-45-67</i>)",
     },
     "medical": {
         "icon": "🏥",
         "title": "РЕДАКТИРОВАНИЕ МЕДИЦИНСКОЙ ИНФОРМАЦИИ",
-        "enter_new": "Введите новую медицинскую информацию или нажмите «Отмена».",
+        "enter_new_start": "Введите новую медицинскую информацию",
+        "enter_new_retry": "Введите новую медицинскую информацию или нажмите «Отмена».",
         "empty": "Не указана",
     },
 }
 
 
-def _edit_athlete_prompt_text(field_key: str, current_value: Optional[str]) -> str:
-    """Текст шага ввода: заголовок, текущее значение, призыв ввести новое."""
+def _edit_athlete_field_message(
+    field_key: str,
+    current_value: Optional[str],
+    *,
+    unchanged: bool = False,
+) -> str:
+    """
+    Текст шага редактирования.
+    unchanged=False — открытие поля: только заголовок и «Введите новое …».
+    unchanged=True — ввод совпал с БД: значение и «— уже используется.».
+    """
     ui = _EDIT_FIELD_UI[field_key]
-    display = (current_value or "").strip() or ui["empty"]
-    parts = [
-        f"{ui['icon']} <b>{ui['title']}</b>\n",
-        f"{html.escape(display)} — уже используется.\n",
-        ui["enter_new"],
-    ]
-    hint = ui.get("hint")
-    if hint:
-        parts.append(f"\n{hint}")
+    parts = [f"{ui['icon']} <b>{ui['title']}</b>\n"]
+    if unchanged:
+        display = (current_value or "").strip() or ui["empty"]
+        parts.append(f"{html.escape(display)} — уже используется.\n")
+        parts.append(ui["enter_new_retry"])
+    else:
+        parts.append(ui["enter_new_start"])
+        hint = ui.get("hint")
+        if hint:
+            parts.append(f"\n{hint}")
     return "\n".join(parts)
 
 
@@ -3674,7 +3687,7 @@ async def _edit_athlete_unchanged_reply(
 ) -> None:
     """Сообщение, если новое значение совпадает с тем, что уже в БД."""
     await update.message.reply_text(
-        _edit_athlete_prompt_text(field_key, current_value),
+        _edit_athlete_field_message(field_key, current_value, unchanged=True),
         reply_markup=cancel_keyboard,
         parse_mode="HTML",
     )
@@ -3781,7 +3794,7 @@ async def start_edit_athlete_name(update: Update, context: ContextTypes.DEFAULT_
 
             context.user_data["edit_athlete_id"] = athlete_id
             await query.edit_message_text(
-                _edit_athlete_prompt_text("name", athlete.full_name),
+                _edit_athlete_field_message("name", athlete.full_name),
                 reply_markup=_edit_athlete_cancel_keyboard(athlete_id),
                 parse_mode="HTML",
             )
@@ -3810,7 +3823,7 @@ async def start_edit_athlete_phone(update: Update, context: ContextTypes.DEFAULT
 
             context.user_data["edit_athlete_id"] = athlete_id
             await query.edit_message_text(
-                _edit_athlete_prompt_text("phone", athlete.phone),
+                _edit_athlete_field_message("phone", athlete.phone),
                 reply_markup=_edit_athlete_cancel_keyboard(athlete_id),
                 parse_mode="HTML",
             )
@@ -3839,7 +3852,7 @@ async def start_edit_athlete_medical(update: Update, context: ContextTypes.DEFAU
 
             context.user_data["edit_athlete_id"] = athlete_id
             await query.edit_message_text(
-                _edit_athlete_prompt_text("medical", athlete.medical_info),
+                _edit_athlete_field_message("medical", athlete.medical_info),
                 reply_markup=_edit_athlete_cancel_keyboard(athlete_id),
                 parse_mode="HTML",
             )
