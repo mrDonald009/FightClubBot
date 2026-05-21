@@ -1988,17 +1988,19 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return f"{n} {word}"
 
             today_str = now.strftime("%d.%m.%Y")
-            planned_count = len(slot_rows)
-            planned_label = _trainings_count_label(planned_count)
             message = "📝 <b>Отметить посещения</b>\n\n"
-            message += (
-                f"Сегодня: <b>{today_str}</b> — У Вас запланировано: "
-                f"<b>{planned_label}</b>.\n"
-            )
             if slot_rows:
-                message += "Выберите тренировку.\n\n"
+                planned_label = _trainings_count_label(len(slot_rows))
+                message += (
+                    f"Сегодня: <b>{today_str}</b> — У Вас запланировано: "
+                    f"<b>{planned_label}</b>.\n"
+                    "Выберите тренировку.\n\n"
+                )
             else:
-                message += "На сегодня тренировок нет.\n\n"
+                message += (
+                    f"Сегодня — <b>{today_str}</b>\n"
+                    "У Вас нет запланированных тренировок.\n\n"
+                )
 
             keyboard = []
             for slot in slot_rows:
