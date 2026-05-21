@@ -1998,7 +1998,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if slot_rows:
                 message += "Выберите тренировку.\n\n"
             else:
-                message += "На сегодня тренировок нет. Нажмите «🔄 Обновить».\n\n"
+                message += "На сегодня тренировок нет.\n\n"
 
             keyboard = []
             for slot in slot_rows:
@@ -2034,9 +2034,6 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     callback_data = "attendance_slot_locked"
                 keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
-            if not slot_rows:
-                keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data="attendance_training_list")])
-
             keyboard.append([InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")])
 
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -2069,7 +2066,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_attendance_training_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Снова показать список тренировок на сегодня (кнопка «Обновить» или «назад»)."""
+    """Снова показать список тренировок на сегодня (например «🔙 К тренировкам на сегодня»)."""
     await start_training(update, context)
 
 
