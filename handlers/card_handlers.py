@@ -183,50 +183,15 @@ def _subscription_history_list_callback(
 
 _VISIT_HISTORY_LOOKBACK_DAYS = 120
 _VISIT_HISTORY_MAX_LINES = 28
-# (дней, подпись в сводке) — считаются по всем слотам в окне lookback, не по строкам списка
-_VISIT_HISTORY_SUMMARY_PERIODS = (
-    (7, "7 дней"),
-    (30, "30 дней"),
-    (90, "3 мес."),
-    (_VISIT_HISTORY_LOOKBACK_DAYS, "120 дней"),
-)
-_VISIT_HISTORY_FILTER_DAYS = tuple(days for days, _label in _VISIT_HISTORY_SUMMARY_PERIODS)
-_VISIT_KIND_FILTER_ALL = "all"
-_VISIT_KIND_FILTER_GROUP = "grp"
-_VISIT_KIND_FILTER_INDIVIDUAL = "ind"
-_VISIT_KIND_FILTER_SINGLE = "sgl"
-_VISIT_KIND_FILTER_CODES = frozenset(
-    {
-        _VISIT_KIND_FILTER_ALL,
-        _VISIT_KIND_FILTER_GROUP,
-        _VISIT_KIND_FILTER_INDIVIDUAL,
-        _VISIT_KIND_FILTER_SINGLE,
-    }
-)
-_VISIT_KIND_CODE_TO_LABEL = {
-    _VISIT_KIND_FILTER_ALL: None,
-    _VISIT_KIND_FILTER_GROUP: "Групповая",
-    _VISIT_KIND_FILTER_INDIVIDUAL: "Индивидуальная",
-    _VISIT_KIND_FILTER_SINGLE: "Разовая",
-}
-_VISIT_KIND_CODE_TO_BUTTON = {
-    _VISIT_KIND_FILTER_ALL: "Все",
-    _VISIT_KIND_FILTER_GROUP: "Групп",
-    _VISIT_KIND_FILTER_INDIVIDUAL: "Индив",
-    _VISIT_KIND_FILTER_SINGLE: "Разов",
-}
-_VISIT_KIND_CODE_TO_FILTER_TEXT = {
-    _VISIT_KIND_FILTER_ALL: "все типы",
-    _VISIT_KIND_FILTER_GROUP: "групповые",
-    _VISIT_KIND_FILTER_INDIVIDUAL: "индивидуальные",
-    _VISIT_KIND_FILTER_SINGLE: "разовые",
-}
-_VISIT_PERIOD_CODE_TO_BUTTON = {
-    7: "7 дн",
-    30: "30 дн",
-    90: "90 дн",
-    120: "120 дн",
-}
+
+
+def _parse_visits_athlete_id(callback_data: str) -> int:
+    """visits_{athlete_id} (устаревшие visits_{id}_{days}_{kind} — только id)."""
+    if not callback_data.startswith("visits_"):
+        raise ValueError("invalid visits callback")
+    return int(callback_data[7:].split("_")[0])
+
+
 def _is_individual_training_slot(training: Training) -> bool:
     return (
         (getattr(training, "training_format", None) or "").strip().lower()
@@ -305,129 +270,6 @@ def _format_visit_history_slot_line(
     return f"{icon} {time_str} · {sport} | {kind}\n"
 
 
-def _parse_visits_callback(callback_data: str) -> tuple:
-    """
-    visits_{athlete_id} или visits_{athlete_id}_{days}_{kind}.
-    kind: all | grp | ind | sgl
-    """
-    if not callback_data.startswith("visits_"):
-        raise ValueError("invalid visits callback")
-    parts = callback_data[7:].split("_")
-    athlete_id = int(parts[0])
-    filter_days = _VISIT_HISTORY_LOOKBACK_DAYS
-    kind_code = _VISIT_KIND_FILTER_ALL
-    if len(parts) >= 2:
-        filter_days = int(parts[1])
-    if len(parts) >= 3:
-        kind_code = parts[2]
-    if filter_days not in _VISIT_HISTORY_FILTER_DAYS:
-        filter_days = _VISIT_HISTORY_LOOKBACK_DAYS
-    if kind_code not in _VISIT_KIND_FILTER_CODES:
-        kind_code = _VISIT_KIND_FILTER_ALL
-    return athlete_id, filter_days, kind_code
-
-
-def _visits_filter_callback(athlete_id: int, filter_days: int, kind_code: str) -> str:
-    return f"visits_{athlete_id}_{filter_days}_{kind_code}"
-
-
-def _visit_filter_button_label(caption: str, *, active: bool) -> str:
-    return f"[{caption}]" if active else caption
-
-
-def _visit_history_filter_caption(filter_days: int, kind_code: str) -> str:
-    period = dict(_VISIT_HISTORY_SUMMARY_PERIODS).get(
-        filter_days, f"{filter_days} дней"
-    )
-    kind = _VISIT_KIND_CODE_TO_FILTER_TEXT.get(kind_code, kind_code)
-    return f"{period} · {kind}"
-
-
-def _visit_history_entries_for_stats(
-    entries: List[tuple], kind_code: str
-) -> List[tuple]:
-    """Оставить (dt, line, present) с учётом фильтра по типу тренировки."""
-    kind_label = _VISIT_KIND_CODE_TO_LABEL.get(kind_code)
-    if not kind_label:
-        return [(dt, line, present) for dt, line, present, _kind in entries]
-    return [
-        (dt, line, present)
-        for dt, line, present, kind in entries
-        if kind == kind_label
-    ]
-
-
-def _visit_history_entries_for_display(
-    entries: List[tuple],
-    *,
-    filter_days: int,
-    kind_code: str,
-    now: datetime,
-) -> List[tuple]:
-    """(dt, line, present) в выбранном периоде и типе."""
-    cutoff = now - timedelta(days=filter_days)
-    kind_label = _VISIT_KIND_CODE_TO_LABEL.get(kind_code)
-    filtered = []
-    for dt, line, present, kind in entries:
-        if dt < cutoff:
-            continue
-        if kind_label and kind != kind_label:
-            continue
-        filtered.append((dt, line, present))
-    return sorted(filtered, key=lambda x: x[0])
-
-
-def _build_visit_history_filter_keyboard(
-    athlete_id: int, filter_days: int, kind_code: str
-) -> InlineKeyboardMarkup:
-    period_row = [
-        InlineKeyboardButton(
-            _visit_filter_button_label(
-                _VISIT_PERIOD_CODE_TO_BUTTON[days], active=(filter_days == days)
-            ),
-            callback_data=_visits_filter_callback(athlete_id, days, kind_code),
-        )
-        for days in _VISIT_HISTORY_FILTER_DAYS
-    ]
-    kind_row = [
-        InlineKeyboardButton(
-            _visit_filter_button_label(
-                _VISIT_KIND_CODE_TO_BUTTON[code], active=(kind_code == code)
-            ),
-            callback_data=_visits_filter_callback(athlete_id, filter_days, code),
-        )
-        for code in (
-            _VISIT_KIND_FILTER_ALL,
-            _VISIT_KIND_FILTER_GROUP,
-            _VISIT_KIND_FILTER_INDIVIDUAL,
-            _VISIT_KIND_FILTER_SINGLE,
-        )
-    ]
-    return InlineKeyboardMarkup(
-        [
-            period_row,
-            kind_row,
-            [InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")],
-        ]
-    )
-
-
-def _visit_history_period_stats(
-    entries: List[tuple],
-    *,
-    now: datetime,
-) -> List[tuple]:
-    """Сводка по периодам: [(label, present, absent, total), ...]."""
-    stats = []
-    for days, label in _VISIT_HISTORY_SUMMARY_PERIODS:
-        cutoff = now - timedelta(days=days)
-        in_period = [(dt, line, present) for dt, line, present in entries if dt >= cutoff]
-        present_count = sum(1 for _dt, _line, present in in_period if present)
-        total = len(in_period)
-        stats.append((label, present_count, total - present_count, total))
-    return stats
-
-
 def _format_visit_history_compact_list(display_entries: List[tuple]) -> str:
     """Список: дни с новых к старым, внутри дня — по времени; дата на каждой строке."""
     if not display_entries:
@@ -448,10 +290,8 @@ def _render_visit_history_message(
     display_entries: List[tuple],
     *,
     total_matching: Optional[int] = None,
-    filter_days: int = _VISIT_HISTORY_LOOKBACK_DAYS,
-    kind_code: str = _VISIT_KIND_FILTER_ALL,
 ) -> str:
-    """display_entries — последние N записей по активному фильтру."""
+    """display_entries — последние N записей за окно lookback."""
     message = "📅 <b>История посещений</b>\n\n"
     message += f"👤 <b>{html.escape(athlete_name)}</b>\n\n"
 
@@ -462,10 +302,7 @@ def _render_visit_history_message(
         )
 
     if not display_entries:
-        if total_all <= 0:
-            message += "📭 Нет записей посещений.\n"
-        else:
-            message += "📭 По выбранному фильтру записей нет.\n"
+        message += "📭 Нет записей посещений.\n"
         return message
 
     message += _format_visit_history_compact_list(display_entries)
@@ -3209,7 +3046,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
 
     try:
-        athlete_id, filter_days, kind_code = _parse_visits_callback(query.data)
+        athlete_id = _parse_visits_athlete_id(query.data)
     except (ValueError, IndexError):
         await query.edit_message_text("❌ Неверная ссылка на историю посещений")
         return
@@ -3399,27 +3236,30 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 (e for e in entries if e[0] >= lookback_cutoff),
                 key=lambda x: x[0],
             )
-            filtered_entries = _visit_history_entries_for_display(
-                entries_in_window,
-                filter_days=filter_days,
-                kind_code=kind_code,
-                now=now,
-            )
+            display_rows = [
+                (dt, line, present)
+                for dt, line, present, _kind in entries_in_window
+            ]
             display_entries = (
-                filtered_entries[-_VISIT_HISTORY_MAX_LINES:]
-                if filtered_entries
+                display_rows[-_VISIT_HISTORY_MAX_LINES:]
+                if display_rows
                 else []
             )
             message = _render_visit_history_message(
                 athlete.full_name,
                 display_entries,
-                total_matching=len(filtered_entries),
-                filter_days=filter_days,
-                kind_code=kind_code,
+                total_matching=len(display_rows),
             )
 
-            reply_markup = _build_visit_history_filter_keyboard(
-                athlete_id, filter_days, kind_code
+            reply_markup = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔙 Назад к карточке",
+                            callback_data=f"athlete_{athlete_id}",
+                        )
+                    ]
+                ]
             )
         
             await query.edit_message_text(

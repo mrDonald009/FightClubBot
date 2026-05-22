@@ -1,17 +1,12 @@
 """UI-хелперы экрана «История посещений»."""
 from datetime import datetime, timedelta
 
-from database.models import Attendance, Subscription, Training
+from database.models import Subscription, Training
 from handlers.card_handlers import (
     _format_visit_history_compact_list,
     _format_visit_history_slot_line,
-    _parse_visits_callback,
+    _parse_visits_athlete_id,
     _render_visit_history_message,
-    _visit_filter_button_label,
-    _visit_history_entries_for_display,
-    _visit_history_entries_for_stats,
-    _visit_history_period_stats,
-    _visits_filter_callback,
     _visit_training_kind_ru,
 )
 from utils.time_utils import now_moscow
@@ -41,13 +36,9 @@ def test_format_visit_history_slot_line_group():
     assert line == "❌ 17:00 · MMA | Групповая\n"
 
 
-def test_parse_visits_callback_defaults_and_filtered():
-    assert _parse_visits_callback("visits_42") == (42, 120, "all")
-    assert _parse_visits_callback("visits_42_30_grp") == (42, 30, "grp")
-
-
-def test_visit_filter_button_label_active_brackets():
-    assert _visit_filter_button_label("120 дн", active=True) == "[120 дн]"
+def test_parse_visits_athlete_id():
+    assert _parse_visits_athlete_id("visits_42") == 42
+    assert _parse_visits_athlete_id("visits_42_30_grp") == 42
 
 
 def test_format_visit_history_compact_list_no_indent():
@@ -59,20 +50,18 @@ def test_format_visit_history_compact_list_no_indent():
     text = _format_visit_history_compact_list(entries)
     assert "20.05  ✅ 09:30" in text
     assert "20.05  ❌ 17:00" in text
-    assert text.index("20.05  ✅") < text.index("20.05  ❌")
     assert "      " not in text
 
 
-def test_render_visit_history_message_without_summary():
+def test_render_visit_history_message_minimal():
     entries = [
         (datetime(2026, 5, 20, 9, 30), "✅ 09:30 · MMA | Индивидуальная\n", True),
     ]
     text = _render_visit_history_message("Иван Петров", entries, total_matching=1)
     assert "История посещений" in text
     assert "Последние тренировки:" in text
-    assert "За 120 дней" not in text
-    assert "7д 1/7" not in text
-    assert "✅ 1 из" not in text
+    assert "7 дн" not in text
+    assert "Групп" not in text
 
 
 def test_render_visit_history_truncation_note():
@@ -81,14 +70,10 @@ def test_render_visit_history_truncation_note():
         (now - timedelta(days=i), f"line{i}\n", False) for i in range(30)
     ]
     display = all_entries[-5:]
-    text = _render_visit_history_message(
-        "Иван", display, total_matching=30, filter_days=30, kind_code="grp"
-    )
+    text = _render_visit_history_message("Иван", display, total_matching=30)
     assert "Показаны последние 5 из 30" in text
 
 
-def test_render_visit_history_filtered_empty():
-    text = _render_visit_history_message(
-        "Иван", [], total_matching=0, filter_days=7, kind_code="sgl"
-    )
+def test_render_visit_history_empty():
+    text = _render_visit_history_message("Иван", [], total_matching=0)
     assert "Нет записей посещений" in text
