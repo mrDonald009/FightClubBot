@@ -314,21 +314,12 @@ async def _run_attendance_mark_query(
     session.commit()
 
     page = context.user_data.get("attendance_slot_page", 0)
-    name_esc = html.escape((athlete.full_name or "").strip())
-    status_ru = "на паре" if attended else "нет на паре"
-    flash_icon = "✅" if attended else "❌"
-    flash = (
-        f"{flash_icon} <b>{name_esc}</b> — {status_ru}.\n"
-        "<i>Отметка сохранена.</i>"
-    )
 
     if clear_legacy_mark_flow_keys:
         context.user_data.pop("mark_attendance_athlete_id", None)
         context.user_data.pop("selected_training_id", None)
 
-    await _render_attendance_step2(
-        query, context, session, user, training, page, flash_html=flash
-    )
+    await _render_attendance_step2(query, context, session, user, training, page)
     return "__handled__"
 
 
