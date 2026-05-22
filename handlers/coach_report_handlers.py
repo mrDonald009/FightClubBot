@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from sqlalchemy.orm import joinedload
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from core.database import get_db_session
@@ -23,6 +24,26 @@ from database.models import Coach
 from utils.time_utils import now_moscow
 
 logger = logging.getLogger(__name__)
+
+
+async def _edit_query_message_html(
+    query,
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+) -> None:
+    """edit_message_text; повтор того же раздела — Telegram «message is not modified»."""
+    try:
+        await query.edit_message_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+    except BadRequest as e:
+        if "message is not modified" in str(e).lower():
+            logger.debug("Статистика: сообщение не изменилось, пропускаем edit")
+            return
+        raise
+
 
 _MONTH_NAMES_NOM = (
     "",
@@ -303,30 +324,30 @@ async def coach_statistics_callback(update: Update, context: ContextTypes.DEFAUL
             m_y = re.match(r"^csty_(\d{4})$", data)
             if m_y:
                 y = _clamp_year(int(m_y.group(1)))
-                await query.edit_message_text(
+                await _edit_query_message_html(
+                    query,
                     statistics_year_month_message_html(y),
-                    reply_markup=statistics_year_month_keyboard(y),
-                    parse_mode="HTML",
+                    statistics_year_month_keyboard(y),
                 )
                 return
 
             m_yp = re.match(r"^cstyp_(\d{4})$", data)
             if m_yp:
                 y = _clamp_year(int(m_yp.group(1)) - 1)
-                await query.edit_message_text(
+                await _edit_query_message_html(
+                    query,
                     statistics_year_month_message_html(y),
-                    reply_markup=statistics_year_month_keyboard(y),
-                    parse_mode="HTML",
+                    statistics_year_month_keyboard(y),
                 )
                 return
 
             m_yn = re.match(r"^cstyn_(\d{4})$", data)
             if m_yn:
                 y = _clamp_year(int(m_yn.group(1)) + 1)
-                await query.edit_message_text(
+                await _edit_query_message_html(
+                    query,
                     statistics_year_month_message_html(y),
-                    reply_markup=statistics_year_month_keyboard(y),
-                    parse_mode="HTML",
+                    statistics_year_month_keyboard(y),
                 )
                 return
 
@@ -340,10 +361,10 @@ async def coach_statistics_callback(update: Update, context: ContextTypes.DEFAUL
                 if year == now_moscow().year and month > now_moscow().month:
                     await query.answer("Нельзя выбрать будущий месяц", show_alert=True)
                     return
-                await query.edit_message_text(
+                await _edit_query_message_html(
+                    query,
                     statistics_section_message_html(year, month),
-                    reply_markup=statistics_section_keyboard(year, month),
-                    parse_mode="HTML",
+                    statistics_section_keyboard(year, month),
                 )
                 return
 
@@ -377,10 +398,10 @@ async def coach_statistics_callback(update: Update, context: ContextTypes.DEFAUL
                 )
                 if len(text) > 4000:
                     text = text[:3900] + "\n\n<i>… обрезано (лимит Telegram).</i>"
-                await query.edit_message_text(
+                await _edit_query_message_html(
+                    query,
                     text,
-                    parse_mode="HTML",
-                    reply_markup=statistics_section_keyboard(year, month),
+                    statistics_section_keyboard(year, month),
                 )
                 return
 
