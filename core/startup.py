@@ -84,11 +84,15 @@ def _mark_daily_summary_sent(session, *, summary_date: date, coach_telegram_id: 
 
 def _slot_summary_line(slot) -> str:
     """Короткая строка тренировки для уведомлений."""
+    from utils.training_slot_display import SEP_TIME_SPORT, format_training_slot_body
+
     t_str = slot.training_datetime.strftime("%H:%M")
-    if getattr(slot, "is_individual_format", False):
-        return f"🕒 {t_str} | {slot.sport_type} — Индивидуальная"
-    age_group = format_age_group_label(slot.age_group, short=True)
-    return f"🕒 {t_str} | {slot.sport_type} ({age_group}) — Групповая"
+    body = format_training_slot_body(
+        slot.sport_type,
+        age_group=getattr(slot, "age_group", None),
+        is_individual=getattr(slot, "is_individual_format", False),
+    )
+    return f"🕒 {t_str}{SEP_TIME_SPORT}{body}"
 
 
 def format_coach_daily_summary_message(today: date, slots: List) -> str:
@@ -109,14 +113,16 @@ def format_coach_daily_summary_message(today: date, slots: List) -> str:
         "",
     ]
     ordered = sorted(slots, key=lambda s: s.training_datetime)
+    from utils.training_slot_display import SEP_TIME_SPORT, format_training_slot_body
+
     for index, slot in enumerate(ordered, start=1):
         t_str = slot.training_datetime.strftime("%H:%M")
-        if getattr(slot, "is_individual_format", False):
-            detail = f"{slot.sport_type} | Индивидуальная"
-        else:
-            age = format_age_group_label(slot.age_group, short=True)
-            detail = f"{slot.sport_type} | {age} — Групповая"
-        lines.append(f"{index}. {t_str} — {detail}")
+        detail = format_training_slot_body(
+            slot.sport_type,
+            age_group=getattr(slot, "age_group", None),
+            is_individual=getattr(slot, "is_individual_format", False),
+        )
+        lines.append(f"{index}. {t_str}{SEP_TIME_SPORT}{detail}")
     return "\n".join(lines)
 
 

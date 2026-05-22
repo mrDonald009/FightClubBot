@@ -28,6 +28,11 @@ from utils.coach_sport import coach_sport_type_name
 from utils.training_manager import TrainingManager
 from utils.subscription_resolve import subscription_for_coach_sport
 from utils.attendance_display import attendance_icon_for_slot
+from utils.training_slot_display import (
+    format_athlete_age_suffix,
+    format_coach_calendar_slot_bullet,
+    format_training_slot_body,
+)
 from utils.time_utils import (
     now_moscow,
     ACTIVATION_GRACE_AFTER_START,
@@ -2010,8 +2015,11 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for slot in slot_rows:
                 from utils.age_groups import format_age_group_label
 
-                age_group_ru = format_age_group_label(slot.age_group, short=True)
-                format_label = "Индивидуальная" if slot.is_individual_format else "Групповая"
+                slot_body = format_training_slot_body(
+                    slot.sport_type,
+                    age_group=slot.age_group,
+                    is_individual=slot.is_individual_format,
+                )
                 slot_start = slot.training_datetime
                 slot_end = (
                     individual_training_end_time(slot_start)
@@ -2020,16 +2028,8 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 is_live = slot_start <= now <= slot_end
                 prefix = "" if is_live else "🔒 "
-                if slot.is_individual_format:
-                    button_text = (
-                        f"{prefix}🕒 {slot.training_datetime.strftime('%H:%M')} | "
-                        f"{slot.sport_type} — {format_label}"
-                    )
-                else:
-                    button_text = (
-                        f"{prefix}🕒 {slot.training_datetime.strftime('%H:%M')} | "
-                        f"{slot.sport_type} ({age_group_ru}) — {format_label}"
-                    )
+                time_str = slot.training_datetime.strftime("%H:%M")
+                button_text = f"{prefix}🕒 {time_str} - {slot_body}"
                 if is_live:
                     callback_data = (
                         f"select_mark_training_virtual_{slot.virtual_token}"
@@ -2369,10 +2369,8 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                 rendered_slots = 0
                 for slot in visible_slots:
                     training = training_by_id.get(slot.training_id)
-                    age_group_ru = format_age_group_label(slot.age_group, short=True)
                     time_str = slot.training_datetime.strftime("%H:%M")
                     is_individual_slot = bool(slot.is_individual_format)
-                    slot_suffix = " — Индивидуальная" if is_individual_slot else " — Групповая"
                     training_date_only = slot.training_datetime.date()
 
                     athlete_lines = []
@@ -2418,12 +2416,12 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                     att, slot.training_datetime, now=now
                                 )
                                 age_suffix = ""
-                                if getattr(ath, "age_group", None):
-                                    athlete_age_ru = format_age_group_label(ath.age_group, short=True)
-                                    if athlete_age_ru:
-                                        age_suffix = f" - {athlete_age_ru}"
+                                age_suffix = format_athlete_age_suffix(
+                                    getattr(ath, "age_group", None)
+                                )
                                 athlete_lines.append(
-                                    f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
+                                    f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}"
+                                    f"{html.escape(age_suffix)}\n"
                                 )
                             if len(subs) > 10:
                                 athlete_lines.append(f"    ... и еще {len(subs) - 10}\n")
@@ -2454,13 +2452,12 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                     status_icon = attendance_icon_for_slot(
                                         att, slot.training_datetime, now=now
                                     )
-                                    age_suffix = ""
-                                    if getattr(ath, "age_group", None):
-                                        athlete_age_ru = format_age_group_label(ath.age_group, short=True)
-                                        if athlete_age_ru:
-                                            age_suffix = f" - {athlete_age_ru}"
+                                    age_suffix = format_athlete_age_suffix(
+                                        getattr(ath, "age_group", None)
+                                    )
                                     athlete_lines.append(
-                                        f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}{html.escape(age_suffix)}\n"
+                                        f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}"
+                                        f"{html.escape(age_suffix)}\n"
                                     )
                                 if len(fallback_atts) > 10:
                                     athlete_lines.append(
@@ -2534,14 +2531,12 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     rendered_slots += 1
                     if rendered_slots == 1:
                         message += "<b>Тренировки со спортсменами:</b>\n\n"
-                    if is_individual_slot:
-                        message += (
-                            f"• <b>{time_str}</b> - {slot.sport_type} | Индивидуальная\n"
-                        )
-                    else:
-                        message += (
-                            f"• <b>{time_str}</b> - {slot.sport_type} | {age_group_ru}{slot_suffix}\n"
-                        )
+                    message += format_coach_calendar_slot_bullet(
+                        time_str,
+                        slot.sport_type,
+                        age_group=slot.age_group,
+                        is_individual=is_individual_slot,
+                    )
                     message += f"  <b>Спортсменов: {athlete_count}</b>\n"
                     for line in athlete_lines:
                         message += line

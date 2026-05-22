@@ -25,6 +25,7 @@ from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
 from utils.coach_sport import sport_type_label_from_user
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow, training_end_time
+from utils.training_slot_display import format_attendance_step2_slot_title
 
 # Размер страницы списка спортсменов на шаге 2 (inline-кнопки Telegram)
 ATTENDANCE_LIST_PAGE_SIZE = 20
@@ -395,20 +396,6 @@ def _surname_initials_button_label(full_name: str, max_len: int = 40) -> str:
     if len(s) <= max_len:
         return s
     return s[: max(max_len - 2, 4)] + ".."
-
-
-def format_attendance_step2_slot_title(training: Training) -> str:
-    """Заголовок шага 2: «ДД.ММ.ГГГГ ЧЧ:ММ - Вид | … — Групповая» или «| Индивидуальная»."""
-    dt = training.training_date.strftime("%d.%m.%Y %H:%M")
-    sport = html.escape(training.sport_type)
-    is_individual = (
-        (getattr(training, "training_format", None) or "").strip().lower()
-        == TRAINING_FORMAT_INDIVIDUAL
-    )
-    if is_individual:
-        return f"{dt} - {sport} | Индивидуальная\n\n"
-    age = format_age_group_label(training.age_group, short=True)
-    return f"{dt} - {sport} | {age} — Групповая\n\n"
 
 
 def _name_column_button_with_status(full_name: str, att: Optional[Attendance]) -> str:
