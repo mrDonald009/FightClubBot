@@ -59,6 +59,10 @@ from handlers.coach_handlers import (
     handle_calendar_navigation,
     handle_calendar_date_click,
     handle_calendar_empty_click,
+    handle_calendar_individual_book_start,
+    handle_calendar_individual_time_pick,
+    handle_calendar_individual_athlete_pick,
+    handle_calendar_individual_athlete_page,
     ATHLETE_FULL_NAME,
     ATHLETE_PHONE,
     ATHLETE_BIRTH_DATE,
@@ -1180,6 +1184,27 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         MessageHandler(filters.Regex("^(⚙️ Настройки)$"), handle_settings)
     )
 
+    # Быстрая запись на individual из календаря (до cal_date_, префиксы cal_ind_*)
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_individual_book_start, pattern=r"^cal_ind_book_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_individual_time_pick, pattern=r"^cal_ind_ts_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_individual_athlete_pick, pattern=r"^cal_ind_a_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_individual_athlete_page, pattern=r"^cal_ind_pg_"
+        )
+    )
     # Обработчик навигации по календарю
     registrar.register(
         CallbackQueryHandler(handle_calendar_navigation, pattern="^calendar_")
