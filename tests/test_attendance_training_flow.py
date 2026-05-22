@@ -178,18 +178,29 @@ def test_build_step2_no_nav_when_few_athletes():
 def test_build_step2_individual_slot_title_without_age_group():
     training = SimpleNamespace(
         id=3,
-        training_date=datetime(2026, 5, 11, 14, 0),
+        training_date=datetime(2026, 5, 22, 9, 0),
         sport_type="MMA",
         age_group="adults",
         training_format="individual",
     )
     athletes = [SimpleNamespace(id=1, full_name="Тестов Тест Тестович")]
     msg, _rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
-    assert "11.05.2026 14:00" in msg
-    assert "Индивидуальная" in msg
-    assert "MMA" in msg
+    assert "22.05.2026 09:00 - MMA | Индивидуальная" in msg
     assert "взрослая группа" not in msg
     assert "детская группа" not in msg
+
+
+def test_build_step2_group_slot_title_format():
+    training = SimpleNamespace(
+        id=4,
+        training_date=datetime(2026, 5, 22, 17, 0),
+        sport_type="MMA",
+        age_group="children",
+        training_format=None,
+    )
+    athletes = [SimpleNamespace(id=1, full_name="Иванов Иван Петрович")]
+    msg, _rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
+    assert "22.05.2026 17:00 - MMA | Детская — Групповая" in msg
 
 
 @pytest.mark.parametrize(

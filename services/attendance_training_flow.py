@@ -397,6 +397,20 @@ def _surname_initials_button_label(full_name: str, max_len: int = 40) -> str:
     return s[: max(max_len - 2, 4)] + ".."
 
 
+def format_attendance_step2_slot_title(training: Training) -> str:
+    """Заголовок шага 2: «ДД.ММ.ГГГГ ЧЧ:ММ - Вид | … — Групповая» или «| Индивидуальная»."""
+    dt = training.training_date.strftime("%d.%m.%Y %H:%M")
+    sport = html.escape(training.sport_type)
+    is_individual = (
+        (getattr(training, "training_format", None) or "").strip().lower()
+        == TRAINING_FORMAT_INDIVIDUAL
+    )
+    if is_individual:
+        return f"{dt} - {sport} | Индивидуальная\n\n"
+    age = format_age_group_label(training.age_group, short=True)
+    return f"{dt} - {sport} | {age} — Групповая\n\n"
+
+
 def _name_column_button_with_status(full_name: str, att: Optional[Attendance]) -> str:
     """Кнопка колонки ФИО: ⏳ до отметки, затем ✅ или ❌ (в одной строке с «Был»/«Не был»)."""
     base = _surname_initials_button_label(full_name)
@@ -431,21 +445,7 @@ def build_step2_message_and_keyboard_rows(
     start = page * page_size
     chunk = athletes[start : start + page_size]
 
-    is_individual_slot = (
-        (getattr(training, "training_format", None) or "").strip().lower()
-        == TRAINING_FORMAT_INDIVIDUAL
-    )
-    if is_individual_slot:
-        slot_title = (
-            f"{training.training_date.strftime('%d.%m.%Y %H:%M')} — "
-            f"{html.escape(training.sport_type)} — Индивидуальная\n\n"
-        )
-    else:
-        age_group_ru = f"{format_age_group_label(training.age_group).lower()} группа"
-        slot_title = (
-            f"{training.training_date.strftime('%d.%m.%Y %H:%M')} — "
-            f"{html.escape(training.sport_type)}, {age_group_ru}\n\n"
-        )
+    slot_title = format_attendance_step2_slot_title(training)
     parts: List[str] = []
     if flash_html:
         parts.append(flash_html + "\n\n")
