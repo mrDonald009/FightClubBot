@@ -146,6 +146,7 @@ def test_build_step2_name_button_shows_status_icon_when_marked():
         training, athletes, {1: att_present}, page=0
     )
     assert rows[0][0][0] == "✅ Иванов И.П."
+    assert rows[1][0][0] == "✅ Был"
 
     att_absent = SimpleNamespace(attended=False, locked_at=None)
     _msg2, rows2 = build_step2_message_and_keyboard_rows(
@@ -166,8 +167,8 @@ def test_build_step2_no_nav_when_few_athletes():
     assert "Отметьте присутсвтующих до окончания тренировки." in msg
     assert "при отсутствии отметки" in msg
     assert rows[0][0] == ("⏳ Иванов И.П.", "attnm_2_1")
-    assert rows[0][1] == ("✅ Был", "atmark_2_1_1")
-    assert rows[0][2] == ("❌ Не был", "atmark_2_1_0")
+    assert rows[1][0] == ("✅ Был", "atmark_2_1_1")
+    assert rows[1][1] == ("❌ Не был", "atmark_2_1_0")
     assert rows[-2] == [("🔙 К тренировкам на сегодня", "attendance_training_list")]
     assert rows[-1] == [("🏠 В меню", "back_to_menu_main")]
     assert not any("attpg_" in str(row) for row in rows[:-2])

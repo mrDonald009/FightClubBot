@@ -462,7 +462,14 @@ def build_step2_message_and_keyboard_rows(
         att_row = attendance_map.get(athlete.id)
         keyboard_rows.append(
             [
-                (_name_column_button_with_status(full, att_row), f"attnm_{tid}_{athlete.id}"),
+                (
+                    _name_column_button_with_status(full, att_row),
+                    f"attnm_{tid}_{athlete.id}",
+                ),
+            ]
+        )
+        keyboard_rows.append(
+            [
                 ("✅ Был", f"atmark_{tid}_{athlete.id}_1"),
                 ("❌ Не был", f"atmark_{tid}_{athlete.id}_0"),
             ]
