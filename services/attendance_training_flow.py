@@ -398,13 +398,19 @@ def _surname_initials_button_label(full_name: str, max_len: int = 40) -> str:
 
 
 def _name_column_button_with_status(full_name: str, att: Optional[Attendance]) -> str:
-    """Кнопка колонки ФИО: ⏳ до отметки, затем ✅ или ❌."""
+    """Кнопка колонки ФИО: ⏳ до отметки, затем ✅ или ❌ (в одной строке с «Был»/«Не был»)."""
     base = _surname_initials_button_label(full_name)
     if att is None:
-        return f"⏳ {base}"
-    if att.attended:
-        return f"✅ {base}"
-    return f"❌ {base}"
+        label = f"⏳ {base}"
+    elif att.attended:
+        label = f"✅ {base}"
+    else:
+        label = f"❌ {base}"
+    # Telegram центрирует текст кнопки; пробелы справа визуально смещают подпись к левому краю ячейки.
+    pad_to = 22
+    if len(label) < pad_to:
+        label += " " * (pad_to - len(label))
+    return label[:64]
 
 
 def build_step2_message_and_keyboard_rows(
@@ -466,10 +472,6 @@ def build_step2_message_and_keyboard_rows(
                     _name_column_button_with_status(full, att_row),
                     f"attnm_{tid}_{athlete.id}",
                 ),
-            ]
-        )
-        keyboard_rows.append(
-            [
                 ("✅ Был", f"atmark_{tid}_{athlete.id}_1"),
                 ("❌ Не был", f"atmark_{tid}_{athlete.id}_0"),
             ]
