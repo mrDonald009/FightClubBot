@@ -215,7 +215,19 @@ _VISIT_KIND_CODE_TO_BUTTON = {
     _VISIT_KIND_FILTER_INDIVIDUAL: "Индив",
     _VISIT_KIND_FILTER_SINGLE: "Разов",
 }
+_VISIT_KIND_CODE_TO_FILTER_TEXT = {
+    _VISIT_KIND_FILTER_ALL: "все типы",
+    _VISIT_KIND_FILTER_GROUP: "групповые",
+    _VISIT_KIND_FILTER_INDIVIDUAL: "индивидуальные",
+    _VISIT_KIND_FILTER_SINGLE: "разовые",
+}
 _VISIT_PERIOD_CODE_TO_BUTTON = {
+    7: "7 дн",
+    30: "30 дн",
+    90: "90 дн",
+    120: "120 дн",
+}
+_VISIT_PERIOD_DAYS_TO_SHORT = {
     7: "7д",
     30: "30д",
     90: "90д",
@@ -328,14 +340,14 @@ def _visits_filter_callback(athlete_id: int, filter_days: int, kind_code: str) -
 
 
 def _visit_filter_button_label(caption: str, *, active: bool) -> str:
-    return f"• {caption}" if active else caption
+    return f"[{caption}]" if active else caption
 
 
 def _visit_history_filter_caption(filter_days: int, kind_code: str) -> str:
     period = dict(_VISIT_HISTORY_SUMMARY_PERIODS).get(
-        filter_days, f"{filter_days} дн."
+        filter_days, f"{filter_days} дней"
     )
-    kind = _VISIT_KIND_CODE_TO_BUTTON.get(kind_code, kind_code)
+    kind = _VISIT_KIND_CODE_TO_FILTER_TEXT.get(kind_code, kind_code)
     return f"{period} · {kind}"
 
 
@@ -424,13 +436,38 @@ def _visit_history_period_stats(
     return stats
 
 
-def _format_visit_history_summary_block(stats: List[tuple]) -> str:
-    lines = ["<b>Сводка:</b>"]
-    for label, present_count, absent_count, total in stats:
-        lines.append(
-            f"• {label}: ✅ {present_count} · ❌ {absent_count} · всего {total}"
-        )
-    return "\n".join(lines) + "\n\n"
+def _format_visit_history_period_scale(stats: List[tuple]) -> str:
+    """Компактная шкала: 7д 1/7 · 30д 1/10 · …"""
+    label_to_days = {label: days for days, label in _VISIT_HISTORY_SUMMARY_PERIODS}
+    parts = []
+    for label, present_count, _absent, total in stats:
+        days = label_to_days.get(label)
+        short = _VISIT_PERIOD_DAYS_TO_SHORT.get(days, label)
+        parts.append(f"{short} {present_count}/{total}")
+    return " · ".join(parts)
+
+
+def _format_visit_history_attendance_rate(present: int, total: int) -> str:
+    if total <= 0:
+        return "0%"
+    return f"{int(round(100.0 * present / total))}%"
+
+
+def _format_visit_history_compact_list(display_entries: List[tuple]) -> str:
+    """Список: новые сверху, дата только у первой строки дня."""
+    if not display_entries:
+        return ""
+    lines = ["<b>Последние тренировки:</b>\n"]
+    prev_day = None
+    for dt, row_line, _present in sorted(display_entries, key=lambda x: x[0], reverse=True):
+        day = dt.date()
+        body = row_line.strip()
+        if day != prev_day:
+            lines.append(f"{dt.strftime('%d.%m')}  {body}\n")
+            prev_day = day
+        else:
+            lines.append(f"      {body}\n")
+    return "".join(lines)
 
 
 def _render_visit_history_message(
@@ -440,57 +477,52 @@ def _render_visit_history_message(
     stats_entries: Optional[List[tuple]] = None,
     now: Optional[datetime] = None,
     total_matching: Optional[int] = None,
+    active_present: Optional[int] = None,
+    active_total: Optional[int] = None,
     filter_days: int = _VISIT_HISTORY_LOOKBACK_DAYS,
     kind_code: str = _VISIT_KIND_FILTER_ALL,
 ) -> str:
     """
-    display_entries — строки в списке (последние N).
-    stats_entries — все записи в окне lookback для сводки по периодам.
+    display_entries — строки в списке (последние N, от новых к старым при выводе).
+    stats_entries — записи в окне 120 дн. (для шкалы периодов), с учётом типа.
     """
     now = now or now_moscow()
     stats_source = stats_entries if stats_entries is not None else display_entries
     stats = _visit_history_period_stats(stats_source, now=now)
 
-    message = "📅 <b>ИСТОРИЯ ПОСЕЩЕНИЙ</b>\n\n"
-    message += f"👤 <b>{html.escape(athlete_name)}</b>\n"
-    is_default_filter = (
-        filter_days == _VISIT_HISTORY_LOOKBACK_DAYS
-        and kind_code == _VISIT_KIND_FILTER_ALL
-    )
-    if not is_default_filter:
-        message += (
-            f"<i>Фильтр: {html.escape(_visit_history_filter_caption(filter_days, kind_code))}</i>\n"
-        )
-    message += _format_visit_history_summary_block(stats)
+    present = active_present if active_present is not None else 0
+    total = active_total if active_total is not None else 0
+    if active_present is None and display_entries:
+        present = sum(1 for _dt, _line, p in display_entries if p)
+        total = total_matching if total_matching is not None else len(display_entries)
 
-    total_all = total_matching if total_matching is not None else len(stats_source)
+    message = "📅 <b>История посещений</b>\n\n"
+    message += f"👤 <b>{html.escape(athlete_name)}</b>\n\n"
+    message += (
+        f"За {html.escape(_visit_history_filter_caption(filter_days, kind_code))}\n"
+    )
+    message += (
+        f"✅ {present} из {total}  "
+        f"({_format_visit_history_attendance_rate(present, total)})\n"
+    )
+    message += f"<i>{html.escape(_format_visit_history_period_scale(stats))}</i>\n\n"
+
+    total_all = total_matching if total_matching is not None else total
     if total_all > len(display_entries) and display_entries:
-        filter_hint = ""
-        if not is_default_filter:
-            filter_hint = f" ({_visit_history_filter_caption(filter_days, kind_code)})"
         message += (
-            f"<i>Показаны последние {len(display_entries)} "
-            f"из {total_all}{filter_hint}</i>\n\n"
+            f"<i>Показаны последние {len(display_entries)} из {total_all}</i>\n\n"
         )
 
     if not display_entries:
-        if not is_default_filter:
-            message += "📭 По выбранному фильтру записей нет.\n"
-        else:
+        if total <= 0:
             message += "📭 Нет записей посещений.\n"
+        else:
+            message += "📭 По выбранному фильтру в списке пусто.\n"
         return message
 
-    by_day = {}
-    for dt, line, _present in display_entries:
-        day = dt.date()
-        by_day.setdefault(day, []).append((dt, line))
-
-    for day in sorted(by_day.keys()):
-        message += f"▸ {day.strftime('%d.%m.%Y')}\n"
-        for _dt, line in sorted(by_day[day], key=lambda x: x[0]):
-            message += line
+    message += _format_visit_history_compact_list(display_entries)
+    if not message.endswith("\n"):
         message += "\n"
-
     return message
 
 
@@ -3426,6 +3458,8 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 kind_code=kind_code,
                 now=now,
             )
+            active_present = sum(1 for _dt, _line, p in filtered_entries if p)
+            active_total = len(filtered_entries)
             display_entries = (
                 filtered_entries[-_VISIT_HISTORY_MAX_LINES:]
                 if filtered_entries
@@ -3436,7 +3470,9 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 display_entries,
                 stats_entries=stats_entries,
                 now=now,
-                total_matching=len(filtered_entries),
+                total_matching=active_total,
+                active_present=active_present,
+                active_total=active_total,
                 filter_days=filter_days,
                 kind_code=kind_code,
             )

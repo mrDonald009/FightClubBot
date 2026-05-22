@@ -1,11 +1,14 @@
-"""UI-хелперы экрана «История посещений»."""
+"""UI-хелперы экрана «История посещений» (вариант A — компактный)."""
 from datetime import datetime, timedelta
 
 from database.models import Attendance, Subscription, Training
 from handlers.card_handlers import (
+    _format_visit_history_compact_list,
+    _format_visit_history_period_scale,
     _format_visit_history_slot_line,
     _parse_visits_callback,
     _render_visit_history_message,
+    _visit_filter_button_label,
     _visit_history_entries_for_display,
     _visit_history_entries_for_stats,
     _visit_history_period_stats,
@@ -80,6 +83,11 @@ def test_visits_filter_callback_format():
     assert _visits_filter_callback(5, 30, "ind") == "visits_5_30_ind"
 
 
+def test_visit_filter_button_label_active_brackets():
+    assert _visit_filter_button_label("120 дн", active=True) == "[120 дн]"
+    assert _visit_filter_button_label("120 дн", active=False) == "120 дн"
+
+
 def test_visit_history_entries_filter_by_kind_and_period():
     now = datetime(2026, 5, 22, 12, 0)
     entries = [
@@ -114,43 +122,77 @@ def test_visit_history_period_stats_filters_by_days():
     assert stats["120 дней"] == (1, 2, 3)
 
 
-def test_render_visit_history_message_grouped_by_day():
+def test_format_visit_history_period_scale():
+    stats = [
+        ("7 дней", 1, 6, 7),
+        ("30 дней", 1, 9, 10),
+        ("3 мес.", 1, 9, 10),
+        ("120 дней", 1, 9, 10),
+    ]
+    assert _format_visit_history_period_scale(stats) == (
+        "7д 1/7 · 30д 1/10 · 90д 1/10 · 120д 1/10"
+    )
+
+
+def test_format_visit_history_compact_list_newest_first():
+    entries = [
+        (datetime(2026, 5, 18, 17, 0), "❌ 17:00 · MMA | Групповая\n", False),
+        (datetime(2026, 5, 18, 18, 30), "❌ 18:30 · MMA | Групповая\n", False),
+        (datetime(2026, 5, 20, 9, 30), "✅ 09:30 · MMA | Индивидуальная\n", True),
+    ]
+    text = _format_visit_history_compact_list(entries)
+    assert "20.05" in text
+    assert text.index("20.05") < text.index("18.05")
+    assert "      ❌ 17:00" in text
+    assert "▸" not in text
+
+
+def test_render_visit_history_message_variant_a():
     now = datetime(2026, 5, 22, 12, 0)
     raw = [
         (datetime(2026, 5, 18, 17, 0), "❌ 17:00 · MMA | Групповая\n", False, "Групповая"),
-        (datetime(2026, 5, 18, 18, 30), "❌ 18:30 · MMA | Групповая\n", False, "Групповая"),
         (datetime(2026, 5, 20, 9, 30), "✅ 09:30 · MMA | Индивидуальная\n", True, "Индивидуальная"),
-        (datetime(2026, 5, 20, 17, 0), "❌ 17:00 · MMA | Групповая\n", False, "Групповая"),
     ]
     entries = [(dt, line, present) for dt, line, present, _k in raw]
     text = _render_visit_history_message(
-        "Иван Петров", entries, stats_entries=entries, now=now
+        "Иван Петров",
+        entries,
+        stats_entries=entries,
+        now=now,
+        active_present=1,
+        active_total=2,
     )
-    assert "• 7 дней: ✅ 1 · ❌ 3 · всего 4" in text
-    assert "• 120 дней: ✅ 1 · ❌ 3 · всего 4" in text
-    assert "▸ 18.05.2026" in text
-    assert "▸ 20.05.2026" in text
-    assert text.index("▸ 18.05.2026") < text.index("▸ 20.05.2026")
+    assert "История посещений" in text
+    assert "За 120 дней · все типы" in text
+    assert "✅ 1 из 2  (50%)" in text
+    assert "7д 1/2" in text
+    assert "Последние тренировки:" in text
+    assert "20.05" in text
+    assert "• 7 дней" not in text
+    assert "▸" not in text
 
 
 def test_render_visit_history_truncation_note():
     now = now_moscow()
     all_entries = [
-        (now - timedelta(days=i), f"line{i}\n", False, "Групповая") for i in range(30)
+        (now - timedelta(days=i), f"line{i}\n", i == 0, "Групповая")
+        for i in range(30)
     ]
-    display = [(e[0], e[1], e[2]) for e in all_entries[-5:]]
     stats = [(e[0], e[1], e[2]) for e in all_entries]
+    display = stats[-5:]
     text = _render_visit_history_message(
         "Иван",
         display,
         stats_entries=stats,
         now=now,
         total_matching=30,
+        active_present=1,
+        active_total=30,
         filter_days=30,
         kind_code="grp",
     )
     assert "Показаны последние 5 из 30" in text
-    assert "Фильтр:" in text
+    assert "групповые" in text
 
 
 def test_render_visit_history_filtered_empty():
@@ -160,7 +202,9 @@ def test_render_visit_history_filtered_empty():
         [],
         stats_entries=[],
         now=now,
+        active_present=0,
+        active_total=0,
         filter_days=7,
         kind_code="sgl",
     )
-    assert "По выбранному фильтру записей нет" in text
+    assert "Нет записей посещений" in text
