@@ -200,7 +200,7 @@ def test_build_step2_group_slot_title_format():
     )
     athletes = [SimpleNamespace(id=1, full_name="Иванов Иван Петрович")]
     msg, _rows = build_step2_message_and_keyboard_rows(training, athletes, {}, page=0)
-    assert "22.05.2026 17:00 - MMA | Детская — Групповая" in msg
+    assert "22.05.2026 17:00 - MMA | Групповая — Детская" in msg
 
 
 @pytest.mark.parametrize(

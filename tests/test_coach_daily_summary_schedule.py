@@ -86,8 +86,8 @@ def test_format_coach_daily_summary_message_with_details():
     assert "Сегодня - 19.05.2026" in text
     assert "У Вас запланировано 3 тренировки:" in text
     assert "1. 08:00 - MMA | Индивидуальная" in text
-    assert "2. 17:00 - MMA | Детская — Групповая" in text
-    assert "3. 18:30 - MMA | Средняя — Групповая" in text
+    assert "2. 17:00 - MMA | Групповая — Детская" in text
+    assert "3. 18:30 - MMA | Групповая — Средняя" in text
 
 
 def test_format_coach_daily_summary_message_empty():

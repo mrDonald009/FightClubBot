@@ -1,4 +1,4 @@
-"""Единый формат строк тренировочного слота: «ЧЧ:ММ - вид | … — Групповая»."""
+"""Единый формат строк тренировочного слота: «ЧЧ:ММ - вид | Групповая — …» / «| Индивидуальная»."""
 from __future__ import annotations
 
 import html
@@ -12,7 +12,7 @@ from utils.age_groups import format_age_group_label
 SEP_TIME_SPORT = " - "
 # «MMA | Детская», «MMA | Индивидуальная»
 SEP_SPORT_TAIL = " | "
-# «Детская — Групповая»
+# «Групповая — Детская», «Петров Е.П. — Взрослая»
 SEP_AGE_FORMAT = " — "
 
 
@@ -23,12 +23,12 @@ def format_training_slot_body(
     is_individual: bool = False,
     escape_html: bool = False,
 ) -> str:
-    """Тело слота без времени: «MMA | Индивидуальная» или «MMA | Детская — Групповая»."""
+    """Тело слота без времени: «MMA | Индивидуальная» или «MMA | Групповая — Детская»."""
     sport = html.escape(sport_type) if escape_html else sport_type
     if is_individual:
         return f"{sport}{SEP_SPORT_TAIL}Индивидуальная"
     age = format_age_group_label(age_group, short=True)
-    return f"{sport}{SEP_SPORT_TAIL}{age}{SEP_AGE_FORMAT}Групповая"
+    return f"{sport}{SEP_SPORT_TAIL}Групповая{SEP_AGE_FORMAT}{age}"
 
 
 def format_training_slot_line(
