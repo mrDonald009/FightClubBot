@@ -5,11 +5,16 @@ import pytest
 
 from database.models import Subscription
 from handlers.card_handlers import (
+    _count_past_individual_subscriptions,
     _history_subscription_button_label,
     _history_subscription_list_lines,
+    _individual_slot_relative_hint,
+    _individual_subscription_button_label,
+    _individual_subscription_is_past_or_completed,
     _is_individual_subscription,
     _parse_subscription_history_callback,
     _subscription_history_list_callback,
+    _subscription_picker_should_show,
 )
 
 
@@ -86,3 +91,97 @@ def test_group_history_button_shows_type_and_date():
     assert "Абонемент #50" in block
     assert "Месячный" in block
     assert "12" in block
+
+
+def _make_individual_sub(**kwargs):
+    defaults = dict(
+        subscription_type="individual",
+        discipline_key="mma_individual",
+        sport_type="MMA",
+        is_active=True,
+        trainings_total=1,
+        trainings_remaining=1,
+    )
+    defaults.update(kwargs)
+    return Subscription(**defaults)
+
+
+def test_individual_past_or_completed_by_end_date():
+    now = datetime(2026, 5, 24, 12, 0)
+    sub = _make_individual_sub(
+        start_date=datetime(2026, 5, 23, 16, 0),
+        end_date=datetime(2026, 5, 23, 17, 0),
+    )
+    assert _individual_subscription_is_past_or_completed(sub, now=now)
+
+
+def test_individual_past_or_completed_by_zero_trainings():
+    now = datetime(2026, 5, 24, 12, 0)
+    sub = _make_individual_sub(
+        start_date=datetime(2026, 5, 25, 10, 30),
+        end_date=datetime(2026, 5, 25, 11, 30),
+        trainings_remaining=0,
+    )
+    assert _individual_subscription_is_past_or_completed(sub, now=now)
+
+
+def test_individual_upcoming_not_past():
+    now = datetime(2026, 5, 23, 12, 0)
+    sub = _make_individual_sub(
+        start_date=datetime(2026, 5, 24, 10, 30),
+        end_date=datetime(2026, 5, 24, 11, 30),
+    )
+    assert not _individual_subscription_is_past_or_completed(sub, now=now)
+
+
+def test_individual_slot_relative_hint_tomorrow():
+    now = datetime(2026, 5, 23, 12, 0)
+    sub = _make_individual_sub(start_date=datetime(2026, 5, 24, 10, 30))
+    assert _individual_slot_relative_hint(sub, now=now) == "завтра в 10:30"
+
+
+def test_individual_picker_button_label_shows_relative_time():
+    now = datetime(2026, 5, 23, 12, 0)
+    sub = _make_individual_sub(start_date=datetime(2026, 5, 24, 10, 30))
+    label = _individual_subscription_button_label(sub, now=now)
+    assert "24.05 10:30" in label
+    assert "завтра в 10:30" in label
+    assert "(MMA)" in label
+    assert label.startswith("🟢")
+
+
+def test_individual_picker_button_label_today_uses_yellow_icon():
+    now = datetime(2026, 5, 24, 9, 0)
+    sub = _make_individual_sub(start_date=datetime(2026, 5, 24, 10, 30))
+    label = _individual_subscription_button_label(sub, now=now)
+    assert label.startswith("🟡")
+    assert "сегодня в 10:30" in label
+
+
+def test_count_past_individual_subscriptions():
+    now = datetime(2026, 5, 24, 12, 0)
+    past = _make_individual_sub(
+        id=1,
+        start_date=datetime(2026, 5, 23, 16, 0),
+        end_date=datetime(2026, 5, 23, 17, 0),
+    )
+    upcoming = _make_individual_sub(
+        id=2,
+        start_date=datetime(2026, 5, 25, 10, 30),
+        end_date=datetime(2026, 5, 25, 11, 30),
+    )
+    group = Subscription(
+        id=3,
+        subscription_type="monthly",
+        discipline_key="mma_group",
+        sport_type="MMA",
+        is_active=True,
+    )
+    assert _count_past_individual_subscriptions([past, upcoming, group], now=now) == 1
+
+
+def test_subscription_picker_should_show_when_only_past_individual():
+    assert _subscription_picker_should_show([], [], past_individual_count=2)
+    assert _subscription_picker_should_show([object()], [], past_individual_count=1)
+    assert not _subscription_picker_should_show([object()], [], past_individual_count=0)
+    assert _subscription_picker_should_show([object()], [object()], past_individual_count=0)

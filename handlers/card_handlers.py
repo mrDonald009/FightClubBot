@@ -80,15 +80,106 @@ def _is_individual_subscription(sub: Subscription) -> bool:
     return "individual" in dk
 
 
-def _individual_subscription_button_label(sub: Subscription) -> str:
-    """Подпись кнопки: индивидуальная бронь с датой/временем слота."""
-    status_icon = _status_icon_from_status_text(_format_subscription_status_ui(sub))
-    if sub.start_date:
-        slot = sub.start_date.strftime("%d.%m.%Y %H:%M")
+def _individual_subscription_is_past_or_completed(
+    sub: Subscription,
+    now: datetime = None,
+) -> bool:
+    """Individual-бронь считается прошедшей: истёк слот или списаны все тренировки."""
+    if not _is_individual_subscription(sub):
+        return False
+    now = now or now_moscow()
+    if sub.trainings_remaining is not None and sub.trainings_remaining <= 0:
+        return True
+    if sub.end_date and sub.end_date < now:
+        return True
+    return False
+
+
+def _individual_slot_relative_hint(sub: Subscription, now: datetime = None) -> str:
+    """Краткая подсказка «сегодня / завтра / через N дн.» для слота individual."""
+    if not sub.start_date:
+        return "без даты"
+    now = now or now_moscow()
+    slot = sub.start_date
+    if slot.date() == now.date():
+        return f"сегодня в {slot.strftime('%H:%M')}"
+    tomorrow = (now + timedelta(days=1)).date()
+    if slot.date() == tomorrow:
+        return f"завтра в {slot.strftime('%H:%M')}"
+    days = (slot.date() - now.date()).days
+    if days > 1:
+        return f"через {days} дн."
+    return "завершена"
+
+
+def _individual_attendance_suffix(session, sub: Subscription) -> str:
+    """Суффикс посещения для кнопки individual, если отметка уже есть."""
+    if session is None:
+        return ""
+    att = (
+        session.query(Attendance)
+        .filter_by(subscription_id=sub.id)
+        .order_by(Attendance.id.desc())
+        .first()
+    )
+    if not att:
+        return ""
+    if att.attended:
+        return " · ✅ был"
+    return " · ❌ не был"
+
+
+def _individual_subscription_button_label(
+    sub: Subscription,
+    session=None,
+    *,
+    now: datetime = None,
+) -> str:
+    """Подпись кнопки individual в picker: дата, относительное время, посещение."""
+    now = now or now_moscow()
+    if sub.start_date and sub.start_date.date() == now.date():
+        status_icon = "🟡"
     else:
-        slot = "без даты"
+        status_icon = "🟢"
+    if sub.start_date:
+        slot_short = sub.start_date.strftime("%d.%m %H:%M")
+    else:
+        slot_short = "без даты"
+    hint = _individual_slot_relative_hint(sub, now=now)
     sport = (sub.sport_type or "—").strip()
-    return f"{status_icon} Инд. {slot} ({sport})"
+    attendance = _individual_attendance_suffix(session, sub)
+    text = f"{status_icon} {slot_short} — {hint} ({sport}){attendance}"
+    return _truncate_inline_button_text(text)
+
+
+def _count_past_individual_subscriptions(
+    subscriptions,
+    *,
+    sport_type: str = None,
+    now: datetime = None,
+) -> int:
+    subs = subscriptions
+    if sport_type:
+        subs = [s for s in subs if (s.sport_type or "").strip() == sport_type]
+    individual = [s for s in subs if _is_individual_subscription(s)]
+    return sum(
+        1 for s in individual if _individual_subscription_is_past_or_completed(s, now=now)
+    )
+
+
+def _subscription_picker_should_show(
+    group_subs,
+    upcoming_individual_subs,
+    past_individual_count: int,
+) -> bool:
+    current_count = len(group_subs) + len(upcoming_individual_subs)
+    if current_count > 1:
+        return True
+    if past_individual_count > 0 and current_count >= 1:
+        return True
+    if current_count == 0 and past_individual_count > 0:
+        return True
+    return False
 
 
 def _truncate_inline_button_text(text: str, max_len: int = 64) -> str:
@@ -1675,25 +1766,45 @@ async def show_subscription_card(
                 if coach_sport_type:
                     active_subs = [s for s in active_subs if (s.sport_type or "").strip() == coach_sport_type]
 
-                individual_subs = sorted(
-                    [s for s in active_subs if _is_individual_subscription(s)],
+                all_athlete_subs = list(athlete.subscriptions or [])
+                active_individual_subs = [
+                    s for s in active_subs if _is_individual_subscription(s)
+                ]
+                upcoming_individual_subs = sorted(
+                    [
+                        s
+                        for s in active_individual_subs
+                        if not _individual_subscription_is_past_or_completed(s)
+                    ],
                     key=lambda s: (s.start_date or datetime.min, s.id or 0),
                 )
                 group_subs = sorted(
                     [s for s in active_subs if not _is_individual_subscription(s)],
                     key=lambda s: -(s.id or 0),
                 )
-                need_picker = len(group_subs) + len(individual_subs) > 1
+                past_individual_count = _count_past_individual_subscriptions(
+                    all_athlete_subs,
+                    sport_type=coach_sport_type,
+                )
+                need_picker = _subscription_picker_should_show(
+                    group_subs,
+                    upcoming_individual_subs,
+                    past_individual_count,
+                )
                 if need_picker:
                     message = f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
                     message += "🎫 <b>АБОНЕМЕНТЫ</b>\n\n"
-                    if len(individual_subs) > 1:
+                    message += "Выберите активный абонемент:\n\n"
+                    if upcoming_individual_subs:
                         message += (
-                            f"Индивидуальных броней: <b>{len(individual_subs)}</b>. "
-                            "Выберите запись:\n\n"
+                            f"Ближайшие индивидуальные: "
+                            f"<b>{len(upcoming_individual_subs)}</b>\n\n"
                         )
-                    else:
-                        message += "Выберите, какой абонемент открыть:\n\n"
+                    elif past_individual_count and not group_subs:
+                        message += (
+                            "Активных индивидуальных броней нет — "
+                            "смотрите прошлые записи ниже.\n\n"
+                        )
 
                     keyboard = []
                     for sub in group_subs:
@@ -1707,11 +1818,22 @@ async def show_subscription_card(
                                 callback_data=f"subscription_{sub.id}",
                             )
                         ])
-                    for sub in individual_subs:
+                    for sub in upcoming_individual_subs:
                         keyboard.append([
                             InlineKeyboardButton(
-                                _individual_subscription_button_label(sub),
+                                _individual_subscription_button_label(sub, session),
                                 callback_data=f"subscription_{sub.id}",
+                            )
+                        ])
+                    if past_individual_count:
+                        keyboard.append([
+                            InlineKeyboardButton(
+                                f"📜 Прошлые индивидуальные ({past_individual_count})",
+                                callback_data=_subscription_history_list_callback(
+                                    athlete.id,
+                                    filter_individual=True,
+                                    athlete_self=False,
+                                ),
                             )
                         ])
                     keyboard.append([
@@ -1910,7 +2032,9 @@ async def show_subscription_card(
                 n_ind = sum(
                     1
                     for s in athlete.subscriptions
-                    if s.is_active and _is_individual_subscription(s)
+                    if s.is_active
+                    and _is_individual_subscription(s)
+                    and not _individual_subscription_is_past_or_completed(s)
                 )
                 btn_label = "➕ Ещё индивидуальная тренировка"
                 if n_ind > 1:
