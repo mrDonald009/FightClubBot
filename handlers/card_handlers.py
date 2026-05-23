@@ -187,21 +187,6 @@ _VISIT_HISTORY_MAX_LINES = 28
 _VISIT_HISTORY_MODE_MONTH = "month"
 _VISIT_HISTORY_MODE_OLDER_MENU = "older_menu"
 _VISIT_HISTORY_MODE_OLDER_MONTH = "older_month"
-_RU_MONTH_NAMES = (
-    "",
-    "Январь",
-    "Февраль",
-    "Март",
-    "Апрель",
-    "Май",
-    "Июнь",
-    "Июль",
-    "Август",
-    "Сентябрь",
-    "Октябрь",
-    "Ноябрь",
-    "Декабрь",
-)
 
 
 def _parse_visits_callback(callback_data: str) -> tuple:
@@ -243,12 +228,9 @@ def _yyyymm_to_year_month(yyyymm: str) -> tuple:
     return int(yyyymm[:4]), int(yyyymm[4:6])
 
 
-def _visit_history_month_label(year: int, month: int, count: int = 0) -> str:
-    name = _RU_MONTH_NAMES[month] if 1 <= month <= 12 else str(month)
-    label = f"{name} {year}"
-    if count > 0:
-        label += f" ({count})"
-    return label
+def _visit_history_month_label(year: int, month: int) -> str:
+    """Цифровое обозначение месяца для кнопок и подписи, напр. 04.2026."""
+    return f"{month:02d}.{year}"
 
 
 def _visit_history_older_cutoffs(now: datetime) -> tuple:
@@ -325,11 +307,10 @@ def _build_visit_history_keyboard(
         )
     elif mode == _VISIT_HISTORY_MODE_OLDER_MENU and older_months:
         for year, month in sorted(older_months.keys(), reverse=True):
-            count = len(older_months[(year, month)])
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
-                        _visit_history_month_label(year, month, count),
+                        _visit_history_month_label(year, month),
                         callback_data=_visits_older_month_callback(
                             athlete_id, year, month
                         ),
@@ -3446,9 +3427,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 shown_rows = period_rows
                 if len(shown_rows) > _VISIT_HISTORY_MAX_LINES:
                     shown_rows = shown_rows[-_VISIT_HISTORY_MAX_LINES:]
-                period_caption = _visit_history_month_label(
-                    year, month, len(period_rows)
-                )
+                period_caption = _visit_history_month_label(year, month)
                 message = _render_visit_history_message(
                     athlete.full_name,
                     shown_rows,

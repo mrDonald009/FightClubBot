@@ -62,7 +62,7 @@ def test_filter_visit_rows_older_month():
         rows, year=2026, month=4, now=now
     )
     assert len(april) == 1
-    assert _visit_history_month_label(2026, 4, 3) == "Апрель 2026 (3)"
+    assert _visit_history_month_label(2026, 4) == "04.2026"
 
 
 def test_render_visit_history_month_picker():
