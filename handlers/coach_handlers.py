@@ -24,7 +24,9 @@ from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
 )
 from typing import List, Optional, Tuple, Union
+from utils.age_groups import format_age_group_label, normalize_age_group
 from utils.coach_sport import coach_sport_type_name
+from utils.discipline_keys import discipline_key_for
 from utils.training_manager import TrainingManager
 from utils.subscription_resolve import subscription_for_coach_sport
 from utils.attendance_display import attendance_icon_for_slot
@@ -2553,9 +2555,19 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
             keyboard = [
                 [
                     InlineKeyboardButton(
-                        "➕ Индивидуальная тренировка",
+                        "➕ Групповая",
+                        callback_data=f"cal_grp_book_{year}_{month}_{day}",
+                    ),
+                    InlineKeyboardButton(
+                        "➕ Разовая",
+                        callback_data=f"cal_sgl_book_{year}_{month}_{day}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "➕ Индивидуальная",
                         callback_data=f"cal_ind_book_{year}_{month}_{day}",
-                    )
+                    ),
                 ],
                 [
                     InlineKeyboardButton(
@@ -3076,3 +3088,625 @@ async def handle_calendar_individual_athlete_pick(
     except Exception as e:
         logger.error("cal_ind_a: %s", e, exc_info=True)
         await query.edit_message_text("❌ Ошибка при записи на индивидуальную тренировку")
+
+
+CAL_GROUP_AGE_CODE = {
+    "children": "c",
+    "middle": "m",
+    "adults": "a",
+}
+CAL_GROUP_AGE_FROM_CODE = {v: k for k, v in CAL_GROUP_AGE_CODE.items()}
+
+CAL_GROUP_BOOK_KINDS = {
+    "grp": {
+        "title": "Групповая тренировка",
+        "subscription_type": "monthly",
+    },
+    "sgl": {
+        "title": "Разовая тренировка",
+        "subscription_type": "single",
+    },
+}
+
+
+def _cal_group_slot_token(start_date: datetime, age_group: str) -> str:
+    ag = normalize_age_group(age_group) or age_group
+    code = CAL_GROUP_AGE_CODE.get(ag, "a")
+    return f"{db_utils_pkg.training_datetime_compact(start_date)}_{code}"
+
+
+def _parse_cal_group_slot_token(token: str) -> Tuple[Optional[datetime], Optional[str]]:
+    m = re.match(r"^(\d{12})_([cma])$", (token or "").strip())
+    if not m:
+        return None, None
+    start_date = db_utils_pkg.parse_training_datetime_compact(m.group(1))
+    age_group = CAL_GROUP_AGE_FROM_CODE.get(m.group(2))
+    if not start_date or not age_group:
+        return None, None
+    return start_date, age_group
+
+
+def _calendar_load_coach(session, user_id: int) -> Tuple[Optional[Coach], Optional[str]]:
+    user = get_user_by_telegram_id(session, user_id)
+    if not user or get_user_role(user) != "coach":
+        return None, "❌ Доступно только тренерам"
+    if isinstance(user, Coach):
+        user = (
+            session.query(Coach)
+            .options(joinedload(Coach.sport_type_rel))
+            .filter_by(id=user.id)
+            .first()
+        )
+    if not user:
+        return None, "❌ Пользователь не найден"
+    return user, None
+
+
+def _iter_group_slots_for_calendar_day(
+    session,
+    coach: Coach,
+    sport_type: str,
+    day: date,
+) -> List:
+    from services.attendance_training_flow import build_attendance_slots_for_day
+
+    rows, _virtual = build_attendance_slots_for_day(session, coach, day)
+    now = now_moscow()
+    sport = (sport_type or "").strip()
+    out = []
+    for slot in rows:
+        if slot.is_individual_format:
+            continue
+        if (slot.sport_type or "").strip() != sport:
+            continue
+        if now > slot.training_datetime + ACTIVATION_GRACE_AFTER_START:
+            continue
+        out.append(slot)
+    out.sort(key=lambda s: s.training_datetime)
+    return out
+
+
+def _build_cal_group_time_keyboard(
+    session,
+    coach: Coach,
+    sport_type: str,
+    year: int,
+    month: int,
+    day: int,
+    *,
+    kind: str,
+) -> Optional[InlineKeyboardMarkup]:
+    slots = _iter_group_slots_for_calendar_day(
+        session, coach, sport_type, date(year, month, day)
+    )
+    if not slots:
+        return None
+    rows = []
+    row = []
+    for slot in slots:
+        ag_label = format_age_group_label(slot.age_group, short=True)
+        label = f"{slot.training_datetime.strftime('%H:%M')} {ag_label[:3]}"
+        token = _cal_group_slot_token(slot.training_datetime, slot.age_group)
+        row.append(
+            InlineKeyboardButton(
+                label,
+                callback_data=f"cal_{kind}_ts_{token}",
+            )
+        )
+        if len(row) >= 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "🔙 К дню",
+                callback_data=f"cal_date_{year}_{month}_{day}",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def _athletes_eligible_for_group_booking(
+    session,
+    coach: Coach,
+    *,
+    age_group: str,
+    sport_type: str,
+) -> List[Athlete]:
+    athletes, _header = load_athletes_for_list(session, coach)
+    ag_norm = normalize_age_group(age_group) or age_group
+    dk = discipline_key_for(sport_type, format="group")
+    eligible = []
+    for athlete in athletes:
+        if normalize_age_group(athlete.age_group) != ag_norm:
+            continue
+        active = (
+            session.query(Subscription.id)
+            .filter_by(athlete_id=athlete.id, discipline_key=dk, is_active=True)
+            .first()
+        )
+        if active:
+            continue
+        eligible.append(athlete)
+    eligible.sort(key=lambda a: (a.full_name or "").strip().lower())
+    return eligible
+
+
+def _build_cal_group_athlete_keyboard(
+    athletes: List[Athlete],
+    slot_token: str,
+    year: int,
+    month: int,
+    day: int,
+    *,
+    kind: str,
+    page: int = 0,
+) -> InlineKeyboardMarkup:
+    total = len(athletes)
+    page_size = CAL_IND_ATHLETE_PAGE_SIZE
+    max_page = max(0, (total - 1) // page_size) if total else 0
+    page = max(0, min(page, max_page))
+    start = page * page_size
+    chunk = athletes[start : start + page_size]
+
+    rows = []
+    for athlete in chunk:
+        label = _surname_initials(athlete.full_name or "—")
+        if len(label) > 36:
+            label = label[:34] + ".."
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    label,
+                    callback_data=f"cal_{kind}_a_{athlete.id}_{slot_token}",
+                )
+            ]
+        )
+
+    nav = []
+    if total > page_size:
+        if page > 0:
+            nav.append(
+                InlineKeyboardButton(
+                    "◀️",
+                    callback_data=f"cal_{kind}_pg_{page - 1}_{slot_token}",
+                )
+            )
+        nav.append(
+            InlineKeyboardButton(
+                f"{page + 1}/{max_page + 1}",
+                callback_data=f"cal_{kind}_pg_info",
+            )
+        )
+        if page < max_page:
+            nav.append(
+                InlineKeyboardButton(
+                    "▶️",
+                    callback_data=f"cal_{kind}_pg_{page + 1}_{slot_token}",
+                )
+            )
+        if nav:
+            rows.append(nav)
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "🔙 К времени",
+                callback_data=f"cal_{kind}_book_{year}_{month}_{day}",
+            )
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "🔙 К календарю",
+                callback_data=f"calendar_{year}_{month}",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+async def _render_cal_group_athlete_picker(
+    query,
+    session,
+    user: Coach,
+    start_date: datetime,
+    age_group: str,
+    *,
+    kind: str,
+    page: int = 0,
+) -> None:
+    cfg = CAL_GROUP_BOOK_KINDS[kind]
+    sport_type = coach_sport_type_name(user) or ""
+    athletes = _athletes_eligible_for_group_booking(
+        session,
+        user,
+        age_group=age_group,
+        sport_type=sport_type,
+    )
+    slot_token = _cal_group_slot_token(start_date, age_group)
+    y, m, d = start_date.year, start_date.month, start_date.day
+    ag_label = format_age_group_label(age_group, short=True)
+
+    if not athletes:
+        await query.edit_message_text(
+            f"📅 <b>{start_date.strftime('%d.%m.%Y %H:%M')}</b> · {ag_label}\n\n"
+            "Нет подходящих спортсменов для записи "
+            "(возрастная группа или уже есть активный групповой абонемент).",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🔙 К времени",
+                            callback_data=f"cal_{kind}_book_{y}_{m}_{d}",
+                        )
+                    ]
+                ]
+            ),
+            parse_mode="HTML",
+        )
+        return
+
+    markup = _build_cal_group_athlete_keyboard(
+        athletes,
+        slot_token,
+        y,
+        m,
+        d,
+        kind=kind,
+        page=page,
+    )
+    await query.edit_message_text(
+        f"➕ <b>{cfg['title']}</b>\n\n"
+        f"📅 {start_date.strftime('%d.%m.%Y %H:%M')} · {ag_label}\n\n"
+        "Выберите спортсмена:",
+        reply_markup=markup,
+        parse_mode="HTML",
+    )
+
+
+async def handle_calendar_group_book_start(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Календарь: выбор группового/разового слота (cal_grp_book_ / cal_sgl_book_)."""
+    query = update.callback_query
+    await query.answer()
+    m = re.match(
+        r"^cal_(grp|sgl)_book_(\d{4})_(\d{1,2})_(\d{1,2})$",
+        (query.data or "").strip(),
+    )
+    if not m:
+        await query.edit_message_text("❌ Некорректный запрос.")
+        return
+
+    kind = m.group(1)
+    year, month, day = int(m.group(2)), int(m.group(3)), int(m.group(4))
+    cfg = CAL_GROUP_BOOK_KINDS.get(kind)
+    if not cfg:
+        await query.edit_message_text("❌ Некорректный тип записи.")
+        return
+
+    try:
+        with get_db_session() as session:
+            user, err = _calendar_load_coach(session, query.from_user.id)
+            if err:
+                await query.edit_message_text(err)
+                return
+
+            sport_type = coach_sport_type_name(user)
+            if not sport_type:
+                await query.edit_message_text(
+                    "❌ У вас не указан вид спорта. Обратитесь к администратору."
+                )
+                return
+
+            noon = datetime(year, month, day, 12, 0, 0)
+            if db_utils_pkg.is_training_in_global_freeze(session, noon):
+                await query.edit_message_text(
+                    "❌ Этот день в периоде массовой заморозки. Выберите другую дату."
+                )
+                return
+
+            time_kb = _build_cal_group_time_keyboard(
+                session, user, sport_type, year, month, day, kind=kind
+            )
+            if not time_kb:
+                await query.edit_message_text(
+                    f"📅 <b>{day:02d}.{month:02d}.{year}</b>\n\n"
+                    "Нет доступных групповых слотов на этот день "
+                    "(нет занятий по расписанию или время уже прошло).",
+                    reply_markup=InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    "🔙 К дню",
+                                    callback_data=f"cal_date_{year}_{month}_{day}",
+                                )
+                            ]
+                        ]
+                    ),
+                    parse_mode="HTML",
+                )
+                return
+
+            await query.edit_message_text(
+                f"➕ <b>{cfg['title']}</b>\n\n"
+                f"📅 {day:02d}.{month:02d}.{year}\n\n"
+                "Выберите групповой слот:",
+                reply_markup=time_kb,
+                parse_mode="HTML",
+            )
+    except Exception as e:
+        logger.error("cal_%s_book_start: %s", kind, e, exc_info=True)
+        await query.edit_message_text("❌ Ошибка при загрузке слотов")
+
+
+async def handle_calendar_group_time_pick(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Календарь: групповой слот выбран → список спортсменов."""
+    query = update.callback_query
+    await query.answer()
+    m = re.match(r"^cal_(grp|sgl)_ts_(\d{12}_[cma])$", (query.data or "").strip())
+    if not m:
+        await query.edit_message_text("❌ Некорректная кнопка слота.")
+        return
+
+    kind = m.group(1)
+    start_date, age_group = _parse_cal_group_slot_token(m.group(2))
+    if not start_date or not age_group:
+        await query.edit_message_text("❌ Некорректный слот.")
+        return
+
+    now = now_moscow()
+    if now > start_date + ACTIVATION_GRACE_AFTER_START:
+        grace_min = int(ACTIVATION_GRACE_AFTER_START.total_seconds() // 60)
+        await query.edit_message_text(
+            f"❌ Время для записи на этот слот истекло (запас {grace_min} мин)."
+        )
+        return
+
+    try:
+        with get_db_session() as session:
+            user, err = _calendar_load_coach(session, query.from_user.id)
+            if err:
+                await query.edit_message_text(err)
+                return
+
+            sport_type = coach_sport_type_name(user)
+            if not sport_type:
+                await query.edit_message_text("❌ У вас не указан вид спорта.")
+                return
+
+            if db_utils_pkg.is_training_in_global_freeze(session, start_date):
+                await query.edit_message_text(
+                    "❌ Выбранное время в периоде массовой заморозки."
+                )
+                return
+
+            slots = _iter_group_slots_for_calendar_day(
+                session, user, sport_type, start_date.date()
+            )
+            slot_ok = any(
+                s.training_datetime == start_date
+                and normalize_age_group(s.age_group) == normalize_age_group(age_group)
+                for s in slots
+            )
+            if not slot_ok:
+                await query.edit_message_text(
+                    "❌ Слот недоступен. Выберите другое время.",
+                    reply_markup=_build_cal_group_time_keyboard(
+                        session,
+                        user,
+                        sport_type,
+                        start_date.year,
+                        start_date.month,
+                        start_date.day,
+                        kind=kind,
+                    ),
+                )
+                return
+
+            await _render_cal_group_athlete_picker(
+                query,
+                session,
+                user,
+                start_date,
+                age_group,
+                kind=kind,
+                page=0,
+            )
+    except Exception as e:
+        logger.error("cal_%s_ts: %s", kind, e, exc_info=True)
+        await query.edit_message_text("❌ Ошибка при выборе слота")
+
+
+async def handle_calendar_group_athlete_page(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Пагинация списка спортсменов при записи на групповую/разовую."""
+    query = update.callback_query
+    if (query.data or "").strip() in ("cal_grp_pg_info", "cal_sgl_pg_info"):
+        await query.answer("Листайте спортсменов кнопками ◀️ и ▶️.")
+        return
+
+    await query.answer()
+    m = re.match(r"^cal_(grp|sgl)_pg_(\d+)_(\d{12}_[cma])$", (query.data or "").strip())
+    if not m:
+        return
+
+    kind = m.group(1)
+    page = int(m.group(2))
+    start_date, age_group = _parse_cal_group_slot_token(m.group(3))
+    if not start_date or not age_group:
+        return
+
+    try:
+        with get_db_session() as session:
+            user, err = _calendar_load_coach(session, query.from_user.id)
+            if err:
+                await query.edit_message_text(err)
+                return
+            await _render_cal_group_athlete_picker(
+                query,
+                session,
+                user,
+                start_date,
+                age_group,
+                kind=kind,
+                page=page,
+            )
+    except Exception as e:
+        logger.error("cal_%s_pg: %s", kind, e, exc_info=True)
+
+
+async def handle_calendar_group_athlete_pick(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    """Календарь: спортсмен выбран → создать и активировать monthly/single."""
+    query = update.callback_query
+    await query.answer()
+    m = re.match(
+        r"^cal_(grp|sgl)_a_(\d+)_(\d{12}_[cma])$",
+        (query.data or "").strip(),
+    )
+    if not m:
+        await query.edit_message_text("❌ Некорректный выбор спортсмена.")
+        return
+
+    kind = m.group(1)
+    athlete_id = int(m.group(2))
+    cfg = CAL_GROUP_BOOK_KINDS.get(kind)
+    if not cfg:
+        await query.edit_message_text("❌ Некорректный тип записи.")
+        return
+
+    subscription_type = cfg["subscription_type"]
+    start_date, age_group = _parse_cal_group_slot_token(m.group(3))
+    if not start_date or not age_group:
+        await query.edit_message_text("❌ Некорректный слот.")
+        return
+
+    try:
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, query.from_user.id)
+            if not user or get_user_role(user) not in ("coach", "admin"):
+                await query.edit_message_text("❌ У вас нет доступа")
+                return
+
+            athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+            if not athlete:
+                await query.edit_message_text("❌ Спортсмен не найден")
+                return
+            if isinstance(user, Coach) and athlete.created_by != user.id:
+                await query.edit_message_text("❌ Это не ваш спортсмен")
+                return
+
+            coach_id = user.id if isinstance(user, Coach) else athlete.created_by
+            sport_type = coach_sport_type_name(user) if isinstance(user, Coach) else athlete.sport_type
+            if not sport_type:
+                sport_type = (athlete.sport_type or "").strip()
+            if not sport_type or not coach_id:
+                await query.edit_message_text("❌ Не удалось определить вид спорта или тренера.")
+                return
+
+            if normalize_age_group(athlete.age_group) != normalize_age_group(age_group):
+                await query.edit_message_text(
+                    "❌ Возрастная группа спортсмена не совпадает с выбранным слотом."
+                )
+                return
+
+            now = now_moscow()
+            if now > start_date + ACTIVATION_GRACE_AFTER_START:
+                await query.edit_message_text("❌ Время для записи на этот слот истекло.")
+                return
+            if db_utils_pkg.is_training_in_global_freeze(session, start_date):
+                await query.edit_message_text("❌ Время в периоде массовой заморозки.")
+                return
+
+            if isinstance(user, Coach):
+                slots = _iter_group_slots_for_calendar_day(
+                    session, user, sport_type, start_date.date()
+                )
+                slot_ok = any(
+                    s.training_datetime == start_date
+                    and normalize_age_group(s.age_group) == normalize_age_group(age_group)
+                    for s in slots
+                )
+                if not slot_ok:
+                    await query.edit_message_text(
+                        "❌ Слот недоступен. Выберите другое время.",
+                        reply_markup=_build_cal_group_time_keyboard(
+                            session,
+                            user,
+                            sport_type,
+                            start_date.year,
+                            start_date.month,
+                            start_date.day,
+                            kind=kind,
+                        ),
+                    )
+                    return
+
+            dk = discipline_key_for(sport_type, format="group")
+            active_same = (
+                session.query(Subscription.id)
+                .filter_by(
+                    athlete_id=athlete.id,
+                    discipline_key=dk,
+                    is_active=True,
+                )
+                .first()
+            )
+            if active_same:
+                await query.edit_message_text(
+                    "❌ У спортсмена уже есть активный групповой абонемент в этом направлении."
+                )
+                return
+
+            if subscription_type == "single":
+                dup = (
+                    session.query(Subscription.id)
+                    .filter(
+                        Subscription.athlete_id == athlete.id,
+                        Subscription.subscription_type == "single",
+                        Subscription.is_active.is_(True),
+                        Subscription.start_date == start_date,
+                    )
+                    .first()
+                )
+                if dup:
+                    await query.edit_message_text(
+                        "❌ У спортсмена уже есть разовая запись на это время."
+                    )
+                    return
+
+            from handlers.card_handlers import _finalize_subscription_activation
+            from database.db_utils.subscriptions import create_subscription as db_create_subscription
+
+            try:
+                subscription = db_create_subscription(
+                    session=session,
+                    athlete_id=athlete.id,
+                    subscription_type=subscription_type,
+                    sport_type=sport_type,
+                    discipline_key=dk,
+                    subscription_format="group",
+                    responsible_coach_id=coach_id,
+                    commit=False,
+                )
+            except ValueError as ve:
+                await query.edit_message_text(f"❌ {ve}")
+                return
+
+            session.flush()
+            await _finalize_subscription_activation(
+                update, context, query, session, subscription, athlete, start_date
+            )
+    except Exception as e:
+        logger.error("cal_%s_a: %s", kind, e, exc_info=True)
+        await query.edit_message_text("❌ Ошибка при записи на тренировку")

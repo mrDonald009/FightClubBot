@@ -63,6 +63,10 @@ from handlers.coach_handlers import (
     handle_calendar_individual_time_pick,
     handle_calendar_individual_athlete_pick,
     handle_calendar_individual_athlete_page,
+    handle_calendar_group_book_start,
+    handle_calendar_group_time_pick,
+    handle_calendar_group_athlete_pick,
+    handle_calendar_group_athlete_page,
     ATHLETE_FULL_NAME,
     ATHLETE_PHONE,
     ATHLETE_BIRTH_DATE,
@@ -1203,6 +1207,27 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(
         CallbackQueryHandler(
             handle_calendar_individual_athlete_page, pattern=r"^cal_ind_pg_"
+        )
+    )
+    # Быстрая запись на групповую/разовую из календаря (cal_grp_* / cal_sgl_*)
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_group_book_start, pattern=r"^cal_(grp|sgl)_book_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_group_time_pick, pattern=r"^cal_(grp|sgl)_ts_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_group_athlete_pick, pattern=r"^cal_(grp|sgl)_a_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_group_athlete_page, pattern=r"^cal_(grp|sgl)_pg_"
         )
     )
     # Обработчик навигации по календарю
