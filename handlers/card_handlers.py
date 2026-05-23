@@ -271,15 +271,15 @@ def _format_visit_history_slot_line(
 
 
 def _format_visit_history_compact_list(display_entries: List[tuple]) -> str:
-    """Список: дни с новых к старым, внутри дня — по времени; дата на каждой строке."""
+    """Список: от старых к новым (день и время по возрастанию)."""
     if not display_entries:
         return ""
     by_day = {}
     for dt, row_line, _present in display_entries:
         by_day.setdefault(dt.date(), []).append((dt, row_line))
 
-    lines = ["<b>Последние тренировки:</b>\n"]
-    for day in sorted(by_day.keys(), reverse=True):
+    lines = ["<b>Тренировки:</b>\n"]
+    for day in sorted(by_day.keys()):
         for dt, row_line in sorted(by_day[day], key=lambda x: x[0]):
             lines.append(f"{dt.strftime('%d.%m')}  {row_line.strip()}\n")
     return "".join(lines)

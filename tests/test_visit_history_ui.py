@@ -50,6 +50,7 @@ def test_format_visit_history_compact_list_no_indent():
     text = _format_visit_history_compact_list(entries)
     assert "20.05  ✅ 09:30" in text
     assert "20.05  ❌ 17:00" in text
+    assert text.index("18.05") < text.index("20.05  ✅")
     assert "      " not in text
 
 
@@ -59,7 +60,7 @@ def test_render_visit_history_message_minimal():
     ]
     text = _render_visit_history_message("Иван Петров", entries, total_matching=1)
     assert "История посещений" in text
-    assert "Последние тренировки:" in text
+    assert "Тренировки:" in text
     assert "7 дн" not in text
     assert "Групп" not in text
 
