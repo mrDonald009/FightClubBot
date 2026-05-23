@@ -11,6 +11,7 @@ from handlers.coach_handlers import (
     _athletes_eligible_for_group_booking,
     _build_cal_group_time_keyboard,
     _cal_group_slot_token,
+    _coach_scheduled_weekdays,
     _parse_cal_group_slot_token,
 )
 from database.db_utils.subscriptions import create_subscription
@@ -29,6 +30,14 @@ def _coach_session():
     s.add(coach)
     s.commit()
     return s, coach, engine
+
+
+def test_coach_scheduled_weekdays_mma_mon_wed_fri():
+    days = _coach_scheduled_weekdays("MMA")
+    assert 0 in days
+    assert 2 in days
+    assert 4 in days
+    assert 1 not in days
 
 
 def test_cal_group_slot_token_roundtrip():

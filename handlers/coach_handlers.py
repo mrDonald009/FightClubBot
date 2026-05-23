@@ -24,7 +24,7 @@ from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
 )
 from typing import List, Optional, Tuple, Union
-from utils.age_groups import format_age_group_label, normalize_age_group
+from utils.age_groups import AGE_GROUP_CODES, format_age_group_label, normalize_age_group
 from utils.coach_sport import coach_sport_type_name
 from utils.discipline_keys import discipline_key_for
 from utils.training_manager import TrainingManager
@@ -52,6 +52,8 @@ import html
 
 logger = logging.getLogger(__name__)
 
+CAL_BOOK_ADD_ICON = "➕"
+
 # Лимит длины текста сообщения Telegram (с запасом под суффикс обрезки)
 TELEGRAM_MESSAGE_SAFE_LEN = 3900
 
@@ -70,6 +72,20 @@ _MONTH_NAMES_RU = (
     "Ноябрь",
     "Декабрь",
 )
+
+
+def _coach_scheduled_weekdays(sport_type_name: Optional[str]) -> set:
+    """Дни недели (0=Пн … 6=Вс) с групповыми занятиями по расписанию вида спорта."""
+    scheduled = set()
+    sport = (sport_type_name or "").strip()
+    if not sport:
+        return scheduled
+    schedule_dict = TrainingManager.TRAINING_SCHEDULE.get(sport, {})
+    for age_group in AGE_GROUP_CODES:
+        schedule = schedule_dict.get(age_group)
+        if schedule and schedule.get("days"):
+            scheduled.update(schedule["days"])
+    return scheduled
 
 
 def truncate_for_telegram_message(text: str, limit: int = TELEGRAM_MESSAGE_SAFE_LEN) -> str:
@@ -2169,13 +2185,7 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                 trainings_by_date[date_key].append(training)
 
             # Дни недели с тренировками по расписанию (для тренера с видом спорта)
-            scheduled_days = set()
-            if sport_type_name:
-                schedule_dict = TrainingManager.TRAINING_SCHEDULE.get(sport_type_name, {})
-                for age_group in ['children', 'adults']:
-                    schedule = schedule_dict.get(age_group)
-                    if schedule and 'days' in schedule:
-                        scheduled_days.update(schedule['days'])
+            scheduled_days = _coach_scheduled_weekdays(sport_type_name)
 
             message = _coach_calendar_message_header(
                 current_year=current_year,
@@ -2552,29 +2562,40 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
             else:
                 message += "На эту дату тренировок не запланировано.\n\n"
 
-            keyboard = [
+            sport_type_name = coach_sport_type_name(user)
+            is_group_training_day = (
+                selected_date.weekday() in _coach_scheduled_weekdays(sport_type_name)
+            )
+
+            keyboard = []
+            if is_group_training_day:
+                keyboard.append(
+                    [
+                        InlineKeyboardButton(
+                            f"{CAL_BOOK_ADD_ICON} Групповая",
+                            callback_data=f"cal_grp_book_{year}_{month}_{day}",
+                        ),
+                        InlineKeyboardButton(
+                            f"{CAL_BOOK_ADD_ICON} Разовая",
+                            callback_data=f"cal_sgl_book_{year}_{month}_{day}",
+                        ),
+                    ]
+                )
+            keyboard.append(
                 [
                     InlineKeyboardButton(
-                        "➕ Групповая",
-                        callback_data=f"cal_grp_book_{year}_{month}_{day}",
-                    ),
-                    InlineKeyboardButton(
-                        "➕ Разовая",
-                        callback_data=f"cal_sgl_book_{year}_{month}_{day}",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "➕ Индивидуальная",
+                        f"{CAL_BOOK_ADD_ICON} Индивидуальная",
                         callback_data=f"cal_ind_book_{year}_{month}_{day}",
                     ),
-                ],
+                ]
+            )
+            keyboard.append(
                 [
                     InlineKeyboardButton(
                         "🔙 К календарю", callback_data=f"calendar_{year}_{month}"
                     )
                 ],
-            ]
+            )
             reply_markup = InlineKeyboardMarkup(keyboard)
 
             await query.answer()
@@ -2777,7 +2798,7 @@ async def _render_cal_individual_athlete_picker(
         page=page,
     )
     await query.edit_message_text(
-        f"➕ <b>Индивидуальная тренировка</b>\n\n"
+        f"{CAL_BOOK_ADD_ICON} <b>Индивидуальная тренировка</b>\n\n"
         f"📅 {start_date.strftime('%d.%m.%Y %H:%M')}\n\n"
         "Выберите спортсмена:",
         reply_markup=markup,
@@ -2858,7 +2879,7 @@ async def handle_calendar_individual_book_start(
                 return
 
             await query.edit_message_text(
-                f"➕ <b>Индивидуальная тренировка</b>\n\n"
+                f"{CAL_BOOK_ADD_ICON} <b>Индивидуальная тренировка</b>\n\n"
                 f"📅 {day:02d}.{month:02d}.{year}\n\n"
                 "Выберите время начала:",
                 reply_markup=time_kb,
@@ -3361,7 +3382,7 @@ async def _render_cal_group_athlete_picker(
         page=page,
     )
     await query.edit_message_text(
-        f"➕ <b>{cfg['title']}</b>\n\n"
+        f"{CAL_BOOK_ADD_ICON} <b>{cfg['title']}</b>\n\n"
         f"📅 {start_date.strftime('%d.%m.%Y %H:%M')} · {ag_label}\n\n"
         "Выберите спортсмена:",
         reply_markup=markup,
@@ -3404,6 +3425,25 @@ async def handle_calendar_group_book_start(
                 )
                 return
 
+            if date(year, month, day).weekday() not in _coach_scheduled_weekdays(sport_type):
+                await query.edit_message_text(
+                    f"📅 <b>{day:02d}.{month:02d}.{year}</b>\n\n"
+                    "Групповые и разовые тренировки доступны только в дни "
+                    "занятий по расписанию вашего вида спорта.",
+                    reply_markup=InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    "🔙 К дню",
+                                    callback_data=f"cal_date_{year}_{month}_{day}",
+                                )
+                            ]
+                        ]
+                    ),
+                    parse_mode="HTML",
+                )
+                return
+
             noon = datetime(year, month, day, 12, 0, 0)
             if db_utils_pkg.is_training_in_global_freeze(session, noon):
                 await query.edit_message_text(
@@ -3434,7 +3474,7 @@ async def handle_calendar_group_book_start(
                 return
 
             await query.edit_message_text(
-                f"➕ <b>{cfg['title']}</b>\n\n"
+                f"{CAL_BOOK_ADD_ICON} <b>{cfg['title']}</b>\n\n"
                 f"📅 {day:02d}.{month:02d}.{year}\n\n"
                 "Выберите групповой слот:",
                 reply_markup=time_kb,
