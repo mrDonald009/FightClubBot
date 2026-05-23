@@ -3,78 +3,81 @@ from datetime import datetime, timedelta
 
 from database.models import Subscription, Training
 from handlers.card_handlers import (
-    _format_visit_history_compact_list,
+    _filter_visit_rows_last_month,
+    _filter_visit_rows_older_month,
     _format_visit_history_slot_line,
-    _parse_visits_athlete_id,
-    _render_visit_history_message,
-    _visit_training_kind_ru,
+    _group_older_visit_rows_by_month,
+    _parse_visits_callback,
+    _render_visit_history_month_picker,
+    _VISIT_HISTORY_MODE_MONTH,
+    _VISIT_HISTORY_MODE_OLDER_MENU,
+    _VISIT_HISTORY_MODE_OLDER_MONTH,
+    _visit_history_month_label,
+    _visits_older_month_callback,
+    _yyyymm_to_year_month,
 )
 from utils.time_utils import now_moscow
 
 
-def test_visit_training_kind_ru_group_monthly():
-    training = Training(
-        sport_type="MMA",
-        age_group="children",
-        training_format=None,
-        training_date=datetime(2026, 5, 18, 17, 0),
+def test_parse_visits_callback_modes():
+    assert _parse_visits_callback("visits_42") == (42, _VISIT_HISTORY_MODE_MONTH, None)
+    assert _parse_visits_callback("visits_42_older") == (
+        42,
+        _VISIT_HISTORY_MODE_OLDER_MENU,
+        None,
     )
-    sub = Subscription(subscription_type="monthly")
-    assert _visit_training_kind_ru(training, subscription=sub) == "Групповая"
+    assert _parse_visits_callback("visits_42_older_202605") == (
+        42,
+        _VISIT_HISTORY_MODE_OLDER_MONTH,
+        "202605",
+    )
+
+
+def test_visits_older_month_callback():
+    assert _visits_older_month_callback(5, 2026, 5) == "visits_5_older_202605"
+    assert _yyyymm_to_year_month("202605") == (2026, 5)
+
+
+def test_group_older_visit_rows_by_month():
+    now = datetime(2026, 5, 22, 12, 0)
+    rows = [
+        (now - timedelta(days=40), "a\n", False),
+        (now - timedelta(days=45), "b\n", False),
+        (now - timedelta(days=70), "c\n", False),
+    ]
+    grouped = _group_older_visit_rows_by_month(rows, now=now)
+    assert len(grouped) >= 1
+    assert _filter_visit_rows_last_month(
+        [(now - timedelta(days=5), "x\n", False)], now=now
+    )
+
+
+def test_filter_visit_rows_older_month():
+    now = datetime(2026, 5, 22, 12, 0)
+    rows = [
+        (datetime(2026, 4, 10, 17, 0), "a\n", False),
+        (datetime(2026, 3, 10, 17, 0), "b\n", False),
+    ]
+    april = _filter_visit_rows_older_month(
+        rows, year=2026, month=4, now=now
+    )
+    assert len(april) == 1
+    assert _visit_history_month_label(2026, 4, 3) == "Апрель 2026 (3)"
+
+
+def test_render_visit_history_month_picker():
+    text = _render_visit_history_month_picker("Иван", {(2026, 4): []})
+    assert "Выберите месяц" in text
+    assert "Предшествующие" in text
 
 
 def test_format_visit_history_slot_line_group():
     training = Training(
         sport_type="MMA",
-        age_group="children",
         training_format=None,
         training_date=datetime(2026, 5, 18, 17, 0),
     )
     line = _format_visit_history_slot_line(
         training, None, subscription=Subscription(subscription_type="monthly")
     )
-    assert line == "❌ 17:00 · MMA | Групповая\n"
-
-
-def test_parse_visits_athlete_id():
-    assert _parse_visits_athlete_id("visits_42") == 42
-    assert _parse_visits_athlete_id("visits_42_30_grp") == 42
-
-
-def test_format_visit_history_compact_list_no_indent():
-    entries = [
-        (datetime(2026, 5, 20, 17, 0), "❌ 17:00 · MMA | Групповая\n", False),
-        (datetime(2026, 5, 20, 9, 30), "✅ 09:30 · MMA | Индивидуальная\n", True),
-        (datetime(2026, 5, 18, 17, 0), "❌ 17:00 · MMA | Групповая\n", False),
-    ]
-    text = _format_visit_history_compact_list(entries)
-    assert "20.05  ✅ 09:30" in text
-    assert "20.05  ❌ 17:00" in text
-    assert text.index("18.05") < text.index("20.05  ✅")
-    assert "      " not in text
-
-
-def test_render_visit_history_message_minimal():
-    entries = [
-        (datetime(2026, 5, 20, 9, 30), "✅ 09:30 · MMA | Индивидуальная\n", True),
-    ]
-    text = _render_visit_history_message("Иван Петров", entries, total_matching=1)
-    assert "История посещений" in text
-    assert "Тренировки:" in text
-    assert "7 дн" not in text
-    assert "Групп" not in text
-
-
-def test_render_visit_history_truncation_note():
-    now = now_moscow()
-    all_entries = [
-        (now - timedelta(days=i), f"line{i}\n", False) for i in range(30)
-    ]
-    display = all_entries[-5:]
-    text = _render_visit_history_message("Иван", display, total_matching=30)
-    assert "Показаны последние 5 из 30" in text
-
-
-def test_render_visit_history_empty():
-    text = _render_visit_history_message("Иван", [], total_matching=0)
-    assert "Нет записей посещений" in text
+    assert "Групповая" in line

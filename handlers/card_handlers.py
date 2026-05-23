@@ -182,14 +182,194 @@ def _subscription_history_list_callback(
 
 
 _VISIT_HISTORY_LOOKBACK_DAYS = 120
+_VISIT_HISTORY_MONTH_DAYS = 30
 _VISIT_HISTORY_MAX_LINES = 28
+_VISIT_HISTORY_MODE_MONTH = "month"
+_VISIT_HISTORY_MODE_OLDER_MENU = "older_menu"
+_VISIT_HISTORY_MODE_OLDER_MONTH = "older_month"
+_RU_MONTH_NAMES = (
+    "",
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
+)
 
 
-def _parse_visits_athlete_id(callback_data: str) -> int:
-    """visits_{athlete_id} (устаревшие visits_{id}_{days}_{kind} — только id)."""
+def _parse_visits_callback(callback_data: str) -> tuple:
+    """
+    visits_{id} — последний месяц;
+    visits_{id}_older — выбор месяца (предшествующие);
+    visits_{id}_older_{yyyymm} — тренировки за месяц.
+    """
     if not callback_data.startswith("visits_"):
         raise ValueError("invalid visits callback")
-    return int(callback_data[7:].split("_")[0])
+    parts = callback_data[7:].split("_")
+    athlete_id = int(parts[0])
+    mode = _VISIT_HISTORY_MODE_MONTH
+    older_yyyymm = None
+    if len(parts) >= 2 and parts[1] == "older":
+        if len(parts) == 2:
+            mode = _VISIT_HISTORY_MODE_OLDER_MENU
+        elif len(parts) == 3 and len(parts[2]) == 6 and parts[2].isdigit():
+            mode = _VISIT_HISTORY_MODE_OLDER_MONTH
+            older_yyyymm = parts[2]
+        else:
+            raise ValueError("invalid visits older month")
+    return athlete_id, mode, older_yyyymm
+
+
+def _visits_month_callback(athlete_id: int) -> str:
+    return f"visits_{athlete_id}"
+
+
+def _visits_older_menu_callback(athlete_id: int) -> str:
+    return f"visits_{athlete_id}_older"
+
+
+def _visits_older_month_callback(athlete_id: int, year: int, month: int) -> str:
+    return f"visits_{athlete_id}_older_{year:04d}{month:02d}"
+
+
+def _yyyymm_to_year_month(yyyymm: str) -> tuple:
+    return int(yyyymm[:4]), int(yyyymm[4:6])
+
+
+def _visit_history_month_label(year: int, month: int, count: int = 0) -> str:
+    name = _RU_MONTH_NAMES[month] if 1 <= month <= 12 else str(month)
+    label = f"{name} {year}"
+    if count > 0:
+        label += f" ({count})"
+    return label
+
+
+def _visit_history_older_cutoffs(now: datetime) -> tuple:
+    month_cutoff = now - timedelta(days=_VISIT_HISTORY_MONTH_DAYS)
+    lookback_cutoff = now - timedelta(days=_VISIT_HISTORY_LOOKBACK_DAYS)
+    return month_cutoff, lookback_cutoff
+
+
+def _filter_visit_rows_last_month(rows: List[tuple], *, now: datetime) -> List[tuple]:
+    month_cutoff, _lookback = _visit_history_older_cutoffs(now)
+    return [r for r in rows if r[0] >= month_cutoff]
+
+
+def _filter_visit_rows_older(rows: List[tuple], *, now: datetime) -> List[tuple]:
+    month_cutoff, lookback_cutoff = _visit_history_older_cutoffs(now)
+    return [r for r in rows if lookback_cutoff <= r[0] < month_cutoff]
+
+
+def _group_older_visit_rows_by_month(
+    rows: List[tuple], *, now: datetime
+) -> dict:
+    """{(year, month): [rows...]} для предшествующего периода."""
+    grouped = {}
+    for row in _filter_visit_rows_older(rows, now=now):
+        key = (row[0].year, row[0].month)
+        grouped.setdefault(key, []).append(row)
+    for key in grouped:
+        grouped[key].sort(key=lambda r: r[0])
+    return grouped
+
+
+def _has_older_visit_rows(rows: List[tuple], *, now: datetime) -> bool:
+    return bool(_filter_visit_rows_older(rows, now=now))
+
+
+def _filter_visit_rows_older_month(
+    rows: List[tuple], *, year: int, month: int, now: datetime
+) -> List[tuple]:
+    return [
+        r
+        for r in _filter_visit_rows_older(rows, now=now)
+        if r[0].year == year and r[0].month == month
+    ]
+
+
+def _render_visit_history_month_picker(
+    athlete_name: str, months: dict
+) -> str:
+    message = "📅 <b>История посещений</b>\n\n"
+    message += f"👤 <b>{html.escape(athlete_name)}</b>\n\n"
+    message += "<i>Предшествующие тренировки</i>\n"
+    message += "<b>Выберите месяц:</b>\n"
+    if not months:
+        message += "\n📭 Нет записей за этот период.\n"
+    return message
+
+
+def _build_visit_history_keyboard(
+    athlete_id: int,
+    mode: str,
+    *,
+    has_older: bool = False,
+    older_months: Optional[dict] = None,
+) -> InlineKeyboardMarkup:
+    keyboard_rows = []
+    if mode == _VISIT_HISTORY_MODE_MONTH and has_older:
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    "📜 Предшествующие тренировки",
+                    callback_data=_visits_older_menu_callback(athlete_id),
+                )
+            ]
+        )
+    elif mode == _VISIT_HISTORY_MODE_OLDER_MENU and older_months:
+        for year, month in sorted(older_months.keys(), reverse=True):
+            count = len(older_months[(year, month)])
+            keyboard_rows.append(
+                [
+                    InlineKeyboardButton(
+                        _visit_history_month_label(year, month, count),
+                        callback_data=_visits_older_month_callback(
+                            athlete_id, year, month
+                        ),
+                    )
+                ]
+            )
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    "📅 За последний месяц",
+                    callback_data=_visits_month_callback(athlete_id),
+                )
+            ]
+        )
+    elif mode == _VISIT_HISTORY_MODE_OLDER_MONTH:
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    "◀️ К выбору месяца",
+                    callback_data=_visits_older_menu_callback(athlete_id),
+                )
+            ]
+        )
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    "📅 За последний месяц",
+                    callback_data=_visits_month_callback(athlete_id),
+                )
+            ]
+        )
+    keyboard_rows.append(
+        [
+            InlineKeyboardButton(
+                "🔙 Назад к карточке",
+                callback_data=f"athlete_{athlete_id}",
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(keyboard_rows)
 
 
 def _is_individual_training_slot(training: Training) -> bool:
@@ -290,10 +470,14 @@ def _render_visit_history_message(
     display_entries: List[tuple],
     *,
     total_matching: Optional[int] = None,
+    period_caption: Optional[str] = None,
 ) -> str:
-    """display_entries — последние N записей за окно lookback."""
+    """display_entries — последние N записей за выбранный период."""
     message = "📅 <b>История посещений</b>\n\n"
-    message += f"👤 <b>{html.escape(athlete_name)}</b>\n\n"
+    message += f"👤 <b>{html.escape(athlete_name)}</b>\n"
+    if period_caption:
+        message += f"\n<i>{html.escape(period_caption)}</i>\n"
+    message += "\n"
 
     total_all = total_matching if total_matching is not None else len(display_entries)
     if total_all > len(display_entries) and display_entries:
@@ -3046,7 +3230,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
 
     try:
-        athlete_id = _parse_visits_athlete_id(query.data)
+        athlete_id, visit_mode, older_yyyymm = _parse_visits_callback(query.data)
     except (ValueError, IndexError):
         await query.edit_message_text("❌ Неверная ссылка на историю посещений")
         return
@@ -3240,27 +3424,58 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
                 (dt, line, present)
                 for dt, line, present, _kind in entries_in_window
             ]
-            display_entries = (
-                display_rows[-_VISIT_HISTORY_MAX_LINES:]
-                if display_rows
-                else []
-            )
-            message = _render_visit_history_message(
-                athlete.full_name,
-                display_entries,
-                total_matching=len(display_rows),
+            has_older = _has_older_visit_rows(display_rows, now=now)
+            older_by_month = _group_older_visit_rows_by_month(
+                display_rows, now=now
             )
 
-            reply_markup = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🔙 Назад к карточке",
-                            callback_data=f"athlete_{athlete_id}",
-                        )
-                    ]
-                ]
-            )
+            if visit_mode == _VISIT_HISTORY_MODE_OLDER_MENU:
+                message = _render_visit_history_month_picker(
+                    athlete.full_name, older_by_month
+                )
+                reply_markup = _build_visit_history_keyboard(
+                    athlete_id,
+                    visit_mode,
+                    older_months=older_by_month,
+                )
+            elif visit_mode == _VISIT_HISTORY_MODE_OLDER_MONTH:
+                year, month = _yyyymm_to_year_month(older_yyyymm)
+                period_rows = _filter_visit_rows_older_month(
+                    display_rows, year=year, month=month, now=now
+                )
+                shown_rows = period_rows
+                if len(shown_rows) > _VISIT_HISTORY_MAX_LINES:
+                    shown_rows = shown_rows[-_VISIT_HISTORY_MAX_LINES:]
+                period_caption = _visit_history_month_label(
+                    year, month, len(period_rows)
+                )
+                message = _render_visit_history_message(
+                    athlete.full_name,
+                    shown_rows,
+                    total_matching=len(period_rows),
+                    period_caption=period_caption,
+                )
+                reply_markup = _build_visit_history_keyboard(
+                    athlete_id, visit_mode
+                )
+            else:
+                period_rows = _filter_visit_rows_last_month(
+                    display_rows, now=now
+                )
+                shown_rows = period_rows
+                if len(shown_rows) > _VISIT_HISTORY_MAX_LINES:
+                    shown_rows = shown_rows[-_VISIT_HISTORY_MAX_LINES:]
+                message = _render_visit_history_message(
+                    athlete.full_name,
+                    shown_rows,
+                    total_matching=len(period_rows),
+                    period_caption="За последний месяц",
+                )
+                reply_markup = _build_visit_history_keyboard(
+                    athlete_id,
+                    _VISIT_HISTORY_MODE_MONTH,
+                    has_older=has_older,
+                )
         
             await query.edit_message_text(
                 message,
