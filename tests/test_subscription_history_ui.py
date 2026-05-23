@@ -150,11 +150,11 @@ def test_individual_picker_button_label_shows_relative_time():
     assert label.startswith("🟢")
 
 
-def test_individual_picker_button_label_today_uses_yellow_icon():
+def test_individual_picker_button_label_today_uses_green_icon():
     now = datetime(2026, 5, 24, 9, 0)
     sub = _make_individual_sub(start_date=datetime(2026, 5, 24, 10, 30))
     label = _individual_subscription_button_label(sub, now=now)
-    assert label.startswith("🟡")
+    assert label.startswith("🟢")
     assert "сегодня в 10:30" in label
 
 

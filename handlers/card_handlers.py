@@ -137,10 +137,7 @@ def _individual_subscription_button_label(
 ) -> str:
     """Подпись кнопки individual в picker: дата, относительное время, посещение."""
     now = now or now_moscow()
-    if sub.start_date and sub.start_date.date() == now.date():
-        status_icon = "🟡"
-    else:
-        status_icon = "🟢"
+    status_icon = "🟢"
     if sub.start_date:
         slot_short = sub.start_date.strftime("%d.%m %H:%M")
     else:
@@ -1828,7 +1825,7 @@ async def show_subscription_card(
                     if past_individual_count:
                         keyboard.append([
                             InlineKeyboardButton(
-                                f"📜 Прошлые индивидуальные ({past_individual_count})",
+                                "📜 Прошлые индивидуальные",
                                 callback_data=_subscription_history_list_callback(
                                     athlete.id,
                                     filter_individual=True,

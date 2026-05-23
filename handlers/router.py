@@ -1082,6 +1082,13 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(
         CallbackQueryHandler(show_athlete_card, pattern="^athlete_")
     )
+    # До subscription_: иначе subscription_history_* попадает в show_subscription_card
+    registrar.register(
+        CallbackQueryHandler(show_subscription_history, pattern="^subscription_history_")
+    )
+    registrar.register(
+        CallbackQueryHandler(view_subscription_from_history, pattern="^view_sub_")
+    )
     registrar.register(
         CallbackQueryHandler(show_subscription_card, pattern="^subscription_")
     )
@@ -1257,14 +1264,6 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(handle_athlete_back_to_menu, pattern="^athlete_back_to_menu$")
     )
 
-    # Обработчики истории абонементов
-    registrar.register(
-        CallbackQueryHandler(show_subscription_history, pattern="^subscription_history_")
-    )
-    registrar.register(
-        CallbackQueryHandler(view_subscription_from_history, pattern="^view_sub_")
-    )
-    
     # Обработчик активации абонементов (обрабатывает activate_sub_*, activate_sub_new_*, activate_sub_type_*)
     registrar.register(
         CallbackQueryHandler(handle_activate_subscription, pattern="^activate_sub_")
