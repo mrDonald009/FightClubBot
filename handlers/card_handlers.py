@@ -177,6 +177,14 @@ _HISTORY_FILTER_INDIVIDUAL = "individual"
 _HISTORY_FILTER_GROUP = "group"
 _HISTORY_FILTER_SINGLE = "single"
 
+_VISIT_HISTORY_LOOKBACK_DAYS = 120
+_VISIT_HISTORY_MONTH_DAYS = 30
+_VISIT_HISTORY_MAX_LINES = 28
+_VISIT_HISTORY_MODE_MONTH = "month"
+_VISIT_HISTORY_MODE_OLDER_MENU = "older_menu"
+_VISIT_HISTORY_MODE_OLDER_MONTH = "older_month"
+_HISTORY_SECTION_LIST_LIMIT = 25
+
 
 def _history_subscription_buckets(all_subscriptions):
     """Разбивка истории: individual / месячные групповые / разовые."""
@@ -260,9 +268,8 @@ def _history_subscription_list_lines(sub: Subscription, idx: int) -> str:
 
 def _parse_subscription_history_callback(callback_data: str):
     """
-    Разбор subscription_history_* / subscription_history_individual_* / subscription_history_group_*.
-    Возвращает (athlete_id, history_filter, athlete_self_callback).
-    history_filter: all | individual | group
+    Разбор subscription_history_* с опциональным периодом (_older / _older_YYYYMM).
+    Возвращает (athlete_id, history_filter, athlete_self, month_mode, older_yyyymm).
     """
     raw = callback_data.replace("subscription_history_", "")
     history_filter = _HISTORY_FILTER_ALL
@@ -277,10 +284,21 @@ def _parse_subscription_history_callback(callback_data: str):
         raw = raw[len("single_") :]
     athlete_self = raw.startswith("athlete_")
     if athlete_self:
-        athlete_id = int(raw.replace("athlete_", "", 1))
-    else:
-        athlete_id = int(raw)
-    return athlete_id, history_filter, athlete_self
+        raw = raw[len("athlete_") :]
+
+    parts = raw.split("_")
+    athlete_id = int(parts[0])
+    month_mode = _VISIT_HISTORY_MODE_MONTH
+    older_yyyymm = None
+    if len(parts) >= 2 and parts[1] == "older":
+        if len(parts) == 2:
+            month_mode = _VISIT_HISTORY_MODE_OLDER_MENU
+        elif len(parts) == 3 and len(parts[2]) == 6 and parts[2].isdigit():
+            month_mode = _VISIT_HISTORY_MODE_OLDER_MONTH
+            older_yyyymm = parts[2]
+        else:
+            raise ValueError("invalid subscription history older month")
+    return athlete_id, history_filter, athlete_self, month_mode, older_yyyymm
 
 
 def _subscription_history_back_callback(
@@ -307,6 +325,26 @@ def _subscription_history_list_callback(
     if athlete_self:
         return f"{base}_athlete_{athlete_id}"
     return f"{base}_{athlete_id}"
+
+
+def _subscription_history_section_callback(
+    athlete_id: int,
+    *,
+    history_filter: str,
+    athlete_self: bool,
+    month_mode: str = _VISIT_HISTORY_MODE_MONTH,
+    older_yyyymm: str = None,
+) -> str:
+    base = _subscription_history_list_callback(
+        athlete_id,
+        history_filter=history_filter,
+        athlete_self=athlete_self,
+    )
+    if month_mode == _VISIT_HISTORY_MODE_OLDER_MENU:
+        return f"{base}_older"
+    if month_mode == _VISIT_HISTORY_MODE_OLDER_MONTH and older_yyyymm:
+        return f"{base}_older_{older_yyyymm}"
+    return base
 
 
 def _subscription_history_category_keyboard(
@@ -389,12 +427,170 @@ def _history_individual_subscriptions_sorted(individual_subs):
 
 def _history_subscriptions_for_filter(history_filter, individual_subs, monthly_subs, single_subs):
     if history_filter == _HISTORY_FILTER_INDIVIDUAL:
-        return _history_individual_subscriptions_sorted(individual_subs), 25
+        return _history_individual_subscriptions_sorted(individual_subs)
     if history_filter == _HISTORY_FILTER_GROUP:
-        return _history_monthly_subscriptions_sorted(monthly_subs), 12
+        return _history_monthly_subscriptions_sorted(monthly_subs)
     if history_filter == _HISTORY_FILTER_SINGLE:
-        return _history_single_subscriptions_sorted(single_subs), 25
-    return [], 0
+        return _history_single_subscriptions_sorted(single_subs)
+    return []
+
+
+def _history_subscription_sort_date(sub: Subscription) -> datetime:
+    if sub.start_date:
+        return sub.start_date
+    if sub.created_at:
+        return sub.created_at
+    return datetime.min
+
+
+def _filter_subscriptions_last_month(subscriptions, *, now: datetime):
+    month_cutoff, _lookback = _visit_history_older_cutoffs(now)
+    return [
+        s for s in subscriptions if _history_subscription_sort_date(s) >= month_cutoff
+    ]
+
+
+def _filter_subscriptions_older_month(
+    subscriptions, *, year: int, month: int, now: datetime
+):
+    month_cutoff, lookback_cutoff = _visit_history_older_cutoffs(now)
+    return [
+        s
+        for s in subscriptions
+        if lookback_cutoff <= _history_subscription_sort_date(s) < month_cutoff
+        and _history_subscription_sort_date(s).year == year
+        and _history_subscription_sort_date(s).month == month
+    ]
+
+
+def _has_older_subscriptions(subscriptions, *, now: datetime) -> bool:
+    month_cutoff, lookback_cutoff = _visit_history_older_cutoffs(now)
+    return any(
+        lookback_cutoff <= _history_subscription_sort_date(s) < month_cutoff
+        for s in subscriptions
+    )
+
+
+def _group_subscriptions_by_month(subscriptions, *, now: datetime) -> dict:
+    month_cutoff, lookback_cutoff = _visit_history_older_cutoffs(now)
+    grouped = {}
+    for sub in subscriptions:
+        dt = _history_subscription_sort_date(sub)
+        if lookback_cutoff <= dt < month_cutoff:
+            key = (dt.year, dt.month)
+            grouped.setdefault(key, []).append(sub)
+    for key in grouped:
+        grouped[key].sort(
+            key=lambda s: (_history_subscription_sort_date(s), s.id or 0),
+            reverse=True,
+        )
+    return grouped
+
+
+def _render_subscription_history_section_message(
+    athlete_name: str,
+    title: str,
+    *,
+    period_caption: str = None,
+    is_month_picker: bool = False,
+) -> str:
+    message = f"👤 <b>{html.escape(athlete_name)}</b>\n\n{title}"
+    if period_caption:
+        message += f"\n\n<i>{html.escape(period_caption)}</i>"
+    if is_month_picker:
+        message += "\n\n<b>Выберите месяц:</b>"
+    return message
+
+
+def _build_subscription_history_section_keyboard(
+    athlete_id: int,
+    *,
+    history_filter: str,
+    athlete_self: bool,
+    sections_cb: str,
+    month_mode: str,
+    shown_subs,
+    has_older: bool = False,
+    older_months: dict = None,
+):
+    keyboard = []
+    entry_rows = [
+        [
+            InlineKeyboardButton(
+                _history_subscription_button_label(sub),
+                callback_data=f"view_sub_{sub.id}",
+            )
+        ]
+        for sub in shown_subs
+    ]
+
+    if month_mode == _VISIT_HISTORY_MODE_OLDER_MENU:
+        if older_months:
+            for year, month in sorted(older_months.keys()):
+                keyboard.append([
+                    InlineKeyboardButton(
+                        _visit_history_month_label(year, month),
+                        callback_data=_subscription_history_section_callback(
+                            athlete_id,
+                            history_filter=history_filter,
+                            athlete_self=athlete_self,
+                            month_mode=_VISIT_HISTORY_MODE_OLDER_MONTH,
+                            older_yyyymm=f"{year:04d}{month:02d}",
+                        ),
+                    )
+                ])
+        keyboard.append([
+            InlineKeyboardButton(
+                "📅 За последний месяц",
+                callback_data=_subscription_history_section_callback(
+                    athlete_id,
+                    history_filter=history_filter,
+                    athlete_self=athlete_self,
+                ),
+            )
+        ])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=sections_cb)])
+        return keyboard
+
+    keyboard.extend(entry_rows)
+
+    if month_mode == _VISIT_HISTORY_MODE_MONTH and has_older:
+        keyboard.append([
+            InlineKeyboardButton(
+                "📜 Архив",
+                callback_data=_subscription_history_section_callback(
+                    athlete_id,
+                    history_filter=history_filter,
+                    athlete_self=athlete_self,
+                    month_mode=_VISIT_HISTORY_MODE_OLDER_MENU,
+                ),
+            )
+        ])
+    elif month_mode == _VISIT_HISTORY_MODE_OLDER_MONTH:
+        keyboard.append([
+            InlineKeyboardButton(
+                "◀️ К выбору месяца",
+                callback_data=_subscription_history_section_callback(
+                    athlete_id,
+                    history_filter=history_filter,
+                    athlete_self=athlete_self,
+                    month_mode=_VISIT_HISTORY_MODE_OLDER_MENU,
+                ),
+            )
+        ])
+        keyboard.append([
+            InlineKeyboardButton(
+                "📅 За последний месяц",
+                callback_data=_subscription_history_section_callback(
+                    athlete_id,
+                    history_filter=history_filter,
+                    athlete_self=athlete_self,
+                ),
+            )
+        ])
+
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=sections_cb)])
+    return keyboard
 
 
 def _history_section_title(history_filter: str) -> str:
@@ -405,14 +601,6 @@ def _history_section_title(history_filter: str) -> str:
     if history_filter == _HISTORY_FILTER_SINGLE:
         return "📜 <b>ИСТОРИЯ — РАЗОВЫЕ</b>"
     return "📜 <b>ИСТОРИЯ</b>"
-
-
-_VISIT_HISTORY_LOOKBACK_DAYS = 120
-_VISIT_HISTORY_MONTH_DAYS = 30
-_VISIT_HISTORY_MAX_LINES = 28
-_VISIT_HISTORY_MODE_MONTH = "month"
-_VISIT_HISTORY_MODE_OLDER_MENU = "older_menu"
-_VISIT_HISTORY_MODE_OLDER_MONTH = "older_month"
 
 
 def _parse_visits_callback(callback_data: str) -> tuple:
@@ -507,7 +695,7 @@ def _render_visit_history_month_picker(
 ) -> str:
     message = "📅 <b>История посещений</b>\n\n"
     message += f"👤 <b>{html.escape(athlete_name)}</b>\n\n"
-    message += "<i>Предшествующие тренировки</i>\n"
+    message += "<i>Архив</i>\n"
     message += "<b>Выберите месяц:</b>\n"
     if not months:
         message += "\n📭 Нет записей за этот период.\n"
@@ -526,7 +714,7 @@ def _build_visit_history_keyboard(
         keyboard_rows.append(
             [
                 InlineKeyboardButton(
-                    "📜 Предшествующие тренировки",
+                    "📜 Архив",
                     callback_data=_visits_older_menu_callback(athlete_id),
                 )
             ]
@@ -2589,9 +2777,13 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
 
-    athlete_id, history_filter, athlete_self_cb = _parse_subscription_history_callback(
-        query.data
-    )
+    try:
+        athlete_id, history_filter, athlete_self_cb, month_mode, older_yyyymm = (
+            _parse_subscription_history_callback(query.data)
+        )
+    except (ValueError, IndexError):
+        await query.edit_message_text("❌ Неверная ссылка на историю абонементов")
+        return
 
     try:
         with get_db_session() as session:
@@ -2667,7 +2859,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                 )
                 return
 
-            subscriptions, list_limit = _history_subscriptions_for_filter(
+            subscriptions = _history_subscriptions_for_filter(
                 history_filter,
                 individual_subs,
                 monthly_subs,
@@ -2676,6 +2868,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             sections_cb = _history_sections_back_callback(
                 athlete_id, athlete_self=athlete_self_cb
             )
+            now = now_moscow()
 
             if not subscriptions:
                 empty_text = "❌ В этом разделе записей нет."
@@ -2695,31 +2888,76 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                 )
                 return
 
-            shown = subscriptions[:list_limit]
-            hidden = len(subscriptions) - len(shown)
-
-            keyboard = []
-            for sub in shown:
-                keyboard.append(
-                    [
-                        InlineKeyboardButton(
-                            _history_subscription_button_label(sub),
-                            callback_data=f"view_sub_{sub.id}",
-                        )
-                    ]
+            if month_mode == _VISIT_HISTORY_MODE_OLDER_MENU:
+                older_months = _group_subscriptions_by_month(subscriptions, now=now)
+                message = _render_subscription_history_section_message(
+                    athlete.full_name,
+                    title,
+                    period_caption="Архив",
+                    is_month_picker=True,
                 )
-            if hidden > 0:
-                message += f"\n\n... и ещё {hidden} записей"
+                if not older_months:
+                    message += "\n\n📭 Нет записей за этот период."
+                keyboard = _build_subscription_history_section_keyboard(
+                    athlete_id,
+                    history_filter=history_filter,
+                    athlete_self=athlete_self_cb,
+                    sections_cb=sections_cb,
+                    month_mode=month_mode,
+                    shown_subs=[],
+                    older_months=older_months,
+                )
+                await query.edit_message_text(
+                    message,
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML",
+                )
+                return
 
-            keyboard.append(
-                [InlineKeyboardButton("🔙 Назад", callback_data=sections_cb)]
+            if month_mode == _VISIT_HISTORY_MODE_OLDER_MONTH:
+                year, month = _yyyymm_to_year_month(older_yyyymm)
+                period_subs = _filter_subscriptions_older_month(
+                    subscriptions, year=year, month=month, now=now
+                )
+                period_caption = _visit_history_month_label(year, month)
+            else:
+                period_subs = _filter_subscriptions_last_month(subscriptions, now=now)
+                period_caption = "За последний месяц"
+
+            period_subs = sorted(
+                period_subs,
+                key=lambda s: (_history_subscription_sort_date(s), s.id or 0),
+                reverse=True,
             )
+            shown = period_subs[:_HISTORY_SECTION_LIST_LIMIT]
+            hidden = len(period_subs) - len(shown)
+            has_older = _has_older_subscriptions(subscriptions, now=now)
 
+            message = _render_subscription_history_section_message(
+                athlete.full_name,
+                title,
+                period_caption=period_caption,
+            )
+            if not shown:
+                message += "\n\n📭 Нет записей за этот период."
+            elif hidden > 0:
+                message += f"\n\n<i>Показаны последние {len(shown)} из {len(period_subs)}</i>"
+
+            keyboard = _build_subscription_history_section_keyboard(
+                athlete_id,
+                history_filter=history_filter,
+                athlete_self=athlete_self_cb,
+                sections_cb=sections_cb,
+                month_mode=month_mode,
+                shown_subs=shown,
+                has_older=has_older,
+            )
             await query.edit_message_text(
                 message,
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="HTML",
             )
+            return
 
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ ИСТОРИИ АБОНЕМЕНТОВ: {e}", exc_info=True)

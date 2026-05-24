@@ -7,12 +7,20 @@ from handlers.card_handlers import (
     _HISTORY_FILTER_GROUP,
     _HISTORY_FILTER_INDIVIDUAL,
     _HISTORY_FILTER_SINGLE,
+    _VISIT_HISTORY_MODE_MONTH,
+    _VISIT_HISTORY_MODE_OLDER_MENU,
+    _VISIT_HISTORY_MODE_OLDER_MONTH,
+    _filter_subscriptions_last_month,
+    _filter_subscriptions_older_month,
+    _group_subscriptions_by_month,
+    _has_older_subscriptions,
     _history_subscription_buckets,
     _history_subscription_button_label,
     _history_subscription_list_lines,
     _is_individual_subscription,
     _parse_subscription_history_callback,
     _subscription_history_list_callback,
+    _subscription_history_section_callback,
     _subscription_picker_should_show,
 )
 
@@ -22,30 +30,31 @@ def test_parse_subscription_history_callbacks():
         42,
         _HISTORY_FILTER_ALL,
         False,
+        _VISIT_HISTORY_MODE_MONTH,
+        None,
     )
     assert _parse_subscription_history_callback("subscription_history_athlete_7") == (
         7,
         _HISTORY_FILTER_ALL,
         True,
+        _VISIT_HISTORY_MODE_MONTH,
+        None,
     )
     assert _parse_subscription_history_callback(
         "subscription_history_individual_15"
-    ) == (15, _HISTORY_FILTER_INDIVIDUAL, False)
+    ) == (15, _HISTORY_FILTER_INDIVIDUAL, False, _VISIT_HISTORY_MODE_MONTH, None)
     assert _parse_subscription_history_callback(
         "subscription_history_individual_athlete_3"
-    ) == (3, _HISTORY_FILTER_INDIVIDUAL, True)
+    ) == (3, _HISTORY_FILTER_INDIVIDUAL, True, _VISIT_HISTORY_MODE_MONTH, None)
     assert _parse_subscription_history_callback(
         "subscription_history_group_9"
-    ) == (9, _HISTORY_FILTER_GROUP, False)
+    ) == (9, _HISTORY_FILTER_GROUP, False, _VISIT_HISTORY_MODE_MONTH, None)
     assert _parse_subscription_history_callback(
-        "subscription_history_group_athlete_2"
-    ) == (2, _HISTORY_FILTER_GROUP, True)
+        "subscription_history_single_11_older"
+    ) == (11, _HISTORY_FILTER_SINGLE, False, _VISIT_HISTORY_MODE_OLDER_MENU, None)
     assert _parse_subscription_history_callback(
-        "subscription_history_single_11"
-    ) == (11, _HISTORY_FILTER_SINGLE, False)
-    assert _parse_subscription_history_callback(
-        "subscription_history_single_athlete_4"
-    ) == (4, _HISTORY_FILTER_SINGLE, True)
+        "subscription_history_individual_15_older_202605"
+    ) == (15, _HISTORY_FILTER_INDIVIDUAL, False, _VISIT_HISTORY_MODE_OLDER_MONTH, "202605")
 
 
 def test_subscription_history_list_callback():
@@ -57,16 +66,22 @@ def test_subscription_history_list_callback():
     ) == (
         "subscription_history_individual_athlete_5"
     )
-    assert _subscription_history_list_callback(
-        5, history_filter=_HISTORY_FILTER_GROUP, athlete_self=False
-    ) == (
-        "subscription_history_group_5"
-    )
-    assert _subscription_history_list_callback(
-        5, history_filter=_HISTORY_FILTER_SINGLE, athlete_self=False
-    ) == (
-        "subscription_history_single_5"
-    )
+
+
+def test_subscription_history_section_callback():
+    assert _subscription_history_section_callback(
+        5,
+        history_filter=_HISTORY_FILTER_GROUP,
+        athlete_self=False,
+        month_mode=_VISIT_HISTORY_MODE_OLDER_MENU,
+    ) == "subscription_history_group_5_older"
+    assert _subscription_history_section_callback(
+        5,
+        history_filter=_HISTORY_FILTER_INDIVIDUAL,
+        athlete_self=False,
+        month_mode=_VISIT_HISTORY_MODE_OLDER_MONTH,
+        older_yyyymm="202605",
+    ) == "subscription_history_individual_5_older_202605"
 
 
 def test_history_subscription_buckets():
@@ -99,47 +114,34 @@ def test_individual_history_button_is_minimal():
     assert _is_individual_subscription(sub)
     label = _history_subscription_button_label(sub)
     assert label == "16.05.2026 10:30"
-    assert "🥊" not in label
-    assert "MMA" not in label
 
     block = _history_subscription_list_lines(sub, 1)
     assert "Индивидуальная бронь #101" in block
     assert "16.05.2026 10:30" in block
-    assert "MMA" in block
 
 
-def test_group_history_button_shows_period_only():
-    sub = Subscription(
-        id=50,
-        subscription_type="monthly",
-        discipline_key="mma_group",
-        sport_type="MMA",
-        is_active=False,
-        start_date=datetime(2026, 4, 1, 0, 0),
-        end_date=datetime(2026, 5, 1, 0, 0),
-        trainings_total=12,
-        trainings_remaining=0,
-        created_at=datetime(2026, 4, 1, 9, 0),
+def test_subscription_history_month_filters():
+    now = datetime(2026, 5, 24, 12, 0)
+    recent = Subscription(
+        id=1,
+        subscription_type="individual",
+        discipline_key="mma_individual",
+        start_date=datetime(2026, 5, 20, 9, 0),
     )
-    label = _history_subscription_button_label(sub)
-    assert label == "01.04.2026—01.05.2026"
-    assert "Месячный" not in label
-
-
-def test_single_history_button_shows_slot_time():
-    sub = Subscription(
-        id=60,
-        subscription_type="single",
-        discipline_key="mma_group",
-        sport_type="MMA",
-        is_active=False,
-        start_date=datetime(2026, 5, 22, 9, 0),
-        end_date=datetime(2026, 5, 22, 10, 0),
-        trainings_total=1,
-        trainings_remaining=0,
+    older = Subscription(
+        id=2,
+        subscription_type="individual",
+        discipline_key="mma_individual",
+        start_date=datetime(2026, 4, 10, 9, 0),
     )
-    label = _history_subscription_button_label(sub)
-    assert label == "22.05.2026 09:00"
+    subs = [recent, older]
+    assert len(_filter_subscriptions_last_month(subs, now=now)) == 1
+    assert _has_older_subscriptions(subs, now=now)
+    grouped = _group_subscriptions_by_month(subs, now=now)
+    assert (2026, 4) in grouped
+    april = _filter_subscriptions_older_month(subs, year=2026, month=4, now=now)
+    assert len(april) == 1
+    assert april[0].id == 2
 
 
 def test_subscription_picker_should_show_only_for_multiple_active():

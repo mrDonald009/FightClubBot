@@ -68,7 +68,7 @@ def test_filter_visit_rows_older_month():
 def test_render_visit_history_month_picker():
     text = _render_visit_history_month_picker("Иван", {(2026, 4): []})
     assert "Выберите месяц" in text
-    assert "Предшествующие" in text
+    assert "Архив" in text
 
 
 def test_format_visit_history_slot_line_group():
