@@ -105,8 +105,7 @@ def _coach_calendar_message_header(*, current_year: int, current_month: int) -> 
     title = _MONTH_NAMES_RU[current_month]
     return (
         "📅 <b>Мой календарь</b>\n\n"
-        f"{html.escape(title)} {current_year}\n"
-        "<i>[ ] сегодня · + есть спортсмены · 17• только расписание</i>"
+        f"{html.escape(title)} {current_year}"
     )
 
 
