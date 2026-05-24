@@ -11,6 +11,8 @@ from handlers.card_handlers import (
     _VISIT_HISTORY_MODE_OLDER_MENU,
     _VISIT_HISTORY_MODE_OLDER_MONTH,
     _filter_subscriptions_last_month,
+    _filter_subscriptions_last_year,
+    _filter_subscriptions_for_history_period,
     _filter_subscriptions_older_month,
     _group_subscriptions_by_month,
     _has_older_subscriptions,
@@ -20,8 +22,10 @@ from handlers.card_handlers import (
     _history_subscription_list_lines,
     _is_individual_subscription,
     _parse_subscription_history_callback,
+    _render_subscription_archive_type_picker_message,
     _render_subscription_history_section_message,
     _subscription_history_list_callback,
+    _subscription_history_period_caption,
     _subscription_history_section_callback,
     _subscription_picker_should_show,
 )
@@ -136,6 +140,18 @@ def test_subscription_history_month_filters():
         discipline_key="mma_individual",
         start_date=datetime(2026, 4, 10, 9, 0),
     )
+    monthly_recent = Subscription(
+        id=3,
+        subscription_type="monthly",
+        discipline_key="mma_group",
+        start_date=datetime(2025, 8, 1, 9, 0),
+    )
+    monthly_old = Subscription(
+        id=4,
+        subscription_type="monthly",
+        discipline_key="mma_group",
+        start_date=datetime(2024, 8, 1, 9, 0),
+    )
     subs = [recent, older]
     assert len(_filter_subscriptions_last_month(subs, now=now)) == 1
     assert _has_older_subscriptions(subs, now=now)
@@ -145,19 +161,34 @@ def test_subscription_history_month_filters():
     assert len(april) == 1
     assert april[0].id == 2
 
+    monthly_subs = [monthly_recent, monthly_old]
+    assert len(_filter_subscriptions_last_year(monthly_subs, now=now)) == 1
+    assert _subscription_history_period_caption(_HISTORY_FILTER_GROUP) == "За последний год"
+    assert _subscription_history_period_caption(_HISTORY_FILTER_INDIVIDUAL) == "За последний месяц"
+    assert len(
+        _filter_subscriptions_for_history_period(
+            monthly_subs, _HISTORY_FILTER_GROUP, now=now
+        )
+    ) == 1
+
 
 def test_subscription_history_screen_titles():
     assert _history_section_title(_HISTORY_FILTER_ALL) == ""
-    assert _history_section_title(_HISTORY_FILTER_INDIVIDUAL) == "<b>Индивидуальные</b>"
+    assert _history_section_title(_HISTORY_FILTER_INDIVIDUAL) == "<b>Индивидуальный</b>"
+    assert _history_section_title(_HISTORY_FILTER_GROUP) == "<b>Месячный</b>"
+    picker = _render_subscription_archive_type_picker_message("Иван")
+    assert "📅 <b>Абонемент</b>" in picker
+    assert "Архив" in picker
+    assert "Выберите тип абонемента" in picker
     text = _render_subscription_history_section_message(
         "Иван",
         _history_section_title(_HISTORY_FILTER_GROUP),
-        period_caption="За последний месяц",
+        period_caption="За последний год",
     )
     assert "🎫 <b>Абонемент</b>" in text
     assert "Иван" in text
-    assert "Групповые" in text
-    assert "За последний месяц" in text
+    assert "Месячный" in text
+    assert "За последний год" in text
     assert "История" not in text
 
 

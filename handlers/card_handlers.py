@@ -179,6 +179,7 @@ _HISTORY_FILTER_SINGLE = "single"
 
 _VISIT_HISTORY_LOOKBACK_DAYS = 120
 _VISIT_HISTORY_MONTH_DAYS = 30
+_SUBSCRIPTION_HISTORY_YEAR_DAYS = 365
 _VISIT_HISTORY_MAX_LINES = 28
 _VISIT_HISTORY_MODE_MONTH = "month"
 _VISIT_HISTORY_MODE_OLDER_MENU = "older_menu"
@@ -351,45 +352,40 @@ def _subscription_history_category_keyboard(
     athlete_id: int,
     *,
     athlete_self: bool,
-    individual_count: int,
-    monthly_count: int,
-    single_count: int,
 ):
-    """Главное меню истории: разделы по типу занятий."""
-    rows = []
-    if individual_count:
-        rows.append([
+    """Архив: выбор типа абонемента."""
+    rows = [
+        [
             InlineKeyboardButton(
-                f"🥊 Индивидуальные ({individual_count})",
+                "Индивидуальный",
                 callback_data=_subscription_history_list_callback(
                     athlete_id,
                     history_filter=_HISTORY_FILTER_INDIVIDUAL,
                     athlete_self=athlete_self,
                 ),
             )
-        ])
-    if monthly_count:
-        rows.append([
+        ],
+        [
             InlineKeyboardButton(
-                f"👥 Групповые ({monthly_count})",
+                "Месячный",
                 callback_data=_subscription_history_list_callback(
                     athlete_id,
                     history_filter=_HISTORY_FILTER_GROUP,
                     athlete_self=athlete_self,
                 ),
             )
-        ])
-    if single_count:
-        rows.append([
+        ],
+        [
             InlineKeyboardButton(
-                f"🎫 Разовые ({single_count})",
+                "Разовый",
                 callback_data=_subscription_history_list_callback(
                     athlete_id,
                     history_filter=_HISTORY_FILTER_SINGLE,
                     athlete_self=athlete_self,
                 ),
             )
-        ])
+        ],
+    ]
     return rows
 
 
@@ -450,6 +446,27 @@ def _filter_subscriptions_last_month(subscriptions, *, now: datetime):
     ]
 
 
+def _filter_subscriptions_last_year(subscriptions, *, now: datetime):
+    year_cutoff = now - timedelta(days=_SUBSCRIPTION_HISTORY_YEAR_DAYS)
+    return [
+        s for s in subscriptions if _history_subscription_sort_date(s) >= year_cutoff
+    ]
+
+
+def _filter_subscriptions_for_history_period(
+    subscriptions, history_filter: str, *, now: datetime
+):
+    if history_filter == _HISTORY_FILTER_GROUP:
+        return _filter_subscriptions_last_year(subscriptions, now=now)
+    return _filter_subscriptions_last_month(subscriptions, now=now)
+
+
+def _subscription_history_period_caption(history_filter: str) -> str:
+    if history_filter == _HISTORY_FILTER_GROUP:
+        return "За последний год"
+    return "За последний месяц"
+
+
 def _filter_subscriptions_older_month(
     subscriptions, *, year: int, month: int, now: datetime
 ):
@@ -487,6 +504,14 @@ def _group_subscriptions_by_month(subscriptions, *, now: datetime) -> dict:
     return grouped
 
 
+def _render_subscription_archive_type_picker_message(athlete_name: str) -> str:
+    message = "📅 <b>Абонемент</b>\n\n"
+    message += f"👤 <b>{html.escape(athlete_name)}</b>\n\n"
+    message += "<i>Архив</i>\n"
+    message += "<b>Выберите тип абонемента:</b>"
+    return message
+
+
 def _render_subscription_history_section_message(
     athlete_name: str,
     title: str,
@@ -505,19 +530,8 @@ def _render_subscription_history_section_message(
     return message
 
 
-def _build_subscription_history_section_keyboard(
-    athlete_id: int,
-    *,
-    history_filter: str,
-    athlete_self: bool,
-    sections_cb: str,
-    month_mode: str,
-    shown_subs,
-    has_older: bool = False,
-    older_months: dict = None,
-):
-    keyboard = []
-    entry_rows = [
+def _build_subscription_archive_list_keyboard(shown_subs, sections_cb: str):
+    keyboard = [
         [
             InlineKeyboardButton(
                 _history_subscription_button_label(sub),
@@ -526,83 +540,17 @@ def _build_subscription_history_section_keyboard(
         ]
         for sub in shown_subs
     ]
-
-    if month_mode == _VISIT_HISTORY_MODE_OLDER_MENU:
-        if older_months:
-            for year, month in sorted(older_months.keys()):
-                keyboard.append([
-                    InlineKeyboardButton(
-                        _visit_history_month_label(year, month),
-                        callback_data=_subscription_history_section_callback(
-                            athlete_id,
-                            history_filter=history_filter,
-                            athlete_self=athlete_self,
-                            month_mode=_VISIT_HISTORY_MODE_OLDER_MONTH,
-                            older_yyyymm=f"{year:04d}{month:02d}",
-                        ),
-                    )
-                ])
-        keyboard.append([
-            InlineKeyboardButton(
-                "📅 За последний месяц",
-                callback_data=_subscription_history_section_callback(
-                    athlete_id,
-                    history_filter=history_filter,
-                    athlete_self=athlete_self,
-                ),
-            )
-        ])
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=sections_cb)])
-        return keyboard
-
-    keyboard.extend(entry_rows)
-
-    if month_mode == _VISIT_HISTORY_MODE_MONTH and has_older:
-        keyboard.append([
-            InlineKeyboardButton(
-                "📜 Архив",
-                callback_data=_subscription_history_section_callback(
-                    athlete_id,
-                    history_filter=history_filter,
-                    athlete_self=athlete_self,
-                    month_mode=_VISIT_HISTORY_MODE_OLDER_MENU,
-                ),
-            )
-        ])
-    elif month_mode == _VISIT_HISTORY_MODE_OLDER_MONTH:
-        keyboard.append([
-            InlineKeyboardButton(
-                "◀️ К выбору месяца",
-                callback_data=_subscription_history_section_callback(
-                    athlete_id,
-                    history_filter=history_filter,
-                    athlete_self=athlete_self,
-                    month_mode=_VISIT_HISTORY_MODE_OLDER_MENU,
-                ),
-            )
-        ])
-        keyboard.append([
-            InlineKeyboardButton(
-                "📅 За последний месяц",
-                callback_data=_subscription_history_section_callback(
-                    athlete_id,
-                    history_filter=history_filter,
-                    athlete_self=athlete_self,
-                ),
-            )
-        ])
-
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=sections_cb)])
     return keyboard
 
 
 def _history_section_title(history_filter: str) -> str:
     if history_filter == _HISTORY_FILTER_INDIVIDUAL:
-        return "<b>Индивидуальные</b>"
+        return "<b>Индивидуальный</b>"
     if history_filter == _HISTORY_FILTER_GROUP:
-        return "<b>Групповые</b>"
+        return "<b>Месячный</b>"
     if history_filter == _HISTORY_FILTER_SINGLE:
-        return "<b>Разовые</b>"
+        return "<b>Разовый</b>"
     return ""
 
 
@@ -2142,7 +2090,7 @@ async def show_subscription_card(
                         ])
                     keyboard.append([
                         InlineKeyboardButton(
-                            "📋 Записи",
+                            "📜 Архив",
                             callback_data=_subscription_history_list_callback(
                                 athlete.id,
                                 athlete_self=False,
@@ -2217,7 +2165,7 @@ async def show_subscription_card(
                         InlineKeyboardButton(f"✅ Создать абонемент ({coach_sport_type})", callback_data=f"activate_sub_new_{athlete_id}")
                     ])
                     keyboard.append([
-                        InlineKeyboardButton("📋 Записи", callback_data=f"subscription_history_{athlete_id}")
+                        InlineKeyboardButton("📜 Архив", callback_data=f"subscription_history_{athlete_id}")
                     ])
                     keyboard.append([
                         InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
@@ -2259,7 +2207,7 @@ async def show_subscription_card(
                     ])
             
                 keyboard.append([
-                    InlineKeyboardButton("📋 Записи", callback_data=f"subscription_history_{athlete_id}")
+                    InlineKeyboardButton("📜 Архив", callback_data=f"subscription_history_{athlete_id}")
                 ])
                 keyboard.append([
                     InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
@@ -2390,7 +2338,7 @@ async def show_subscription_card(
 
             keyboard.append([
                 InlineKeyboardButton(
-                    "📋 Записи",
+                    "📜 Архив",
                     callback_data=_subscription_history_list_callback(
                         athlete_id,
                         athlete_self=False,
@@ -2606,7 +2554,7 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
 
             # Создаем инлайн клавиатуру
             keyboard = [
-                [InlineKeyboardButton("📋 Записи", callback_data=f"subscription_history_athlete_{athlete.id}")],
+                [InlineKeyboardButton("📜 Архив", callback_data=f"subscription_history_athlete_{athlete.id}")],
                 [InlineKeyboardButton("🔄 Обновить", callback_data="athlete_subscription_refresh")],
                 [InlineKeyboardButton("🏠 В меню", callback_data="athlete_back_to_menu")]
             ]
@@ -2781,7 +2729,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
 
     try:
-        athlete_id, history_filter, athlete_self_cb, month_mode, older_yyyymm = (
+        athlete_id, history_filter, athlete_self_cb, _month_mode, _older_yyyymm = (
             _parse_subscription_history_callback(query.data)
         )
     except (ValueError, IndexError):
@@ -2830,32 +2778,12 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                 is_coach_viewing=is_coach_viewing_athlete,
                 athlete_self=athlete_self_cb,
             )
-            title = _history_section_title(history_filter)
-            message = _render_subscription_history_section_message(
-                athlete.full_name,
-                title,
-            )
-
             if history_filter == _HISTORY_FILTER_ALL:
-                category_rows = _subscription_history_category_keyboard(
+                message = _render_subscription_archive_type_picker_message(athlete.full_name)
+                keyboard = _subscription_history_category_keyboard(
                     athlete_id,
                     athlete_self=athlete_self_cb,
-                    individual_count=len(individual_subs),
-                    monthly_count=len(monthly_subs),
-                    single_count=len(single_subs),
-                )
-                if not category_rows:
-                    keyboard = [
-                        [InlineKeyboardButton("🔙 Назад", callback_data=back_cb)]
-                    ]
-                    await query.edit_message_text(
-                        f"{message}\n\n📭 Нет записей абонементов.",
-                        reply_markup=InlineKeyboardMarkup(keyboard),
-                        parse_mode="HTML",
-                    )
-                    return
-
-                keyboard = category_rows + [
+                ) + [
                     [InlineKeyboardButton("🔙 Назад к абонементу", callback_data=back_cb)]
                 ]
                 await query.edit_message_text(
@@ -2875,61 +2803,14 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                 athlete_id, athlete_self=athlete_self_cb
             )
             now = now_moscow()
+            title = _history_section_title(history_filter)
+            period_caption = _subscription_history_period_caption(history_filter)
 
-            if not subscriptions:
-                empty_text = "📭 Нет записей в этом разделе."
-                if history_filter == _HISTORY_FILTER_INDIVIDUAL:
-                    empty_text = "📭 Нет индивидуальных записей."
-                elif history_filter == _HISTORY_FILTER_GROUP:
-                    empty_text = "📭 Нет групповых записей."
-                elif history_filter == _HISTORY_FILTER_SINGLE:
-                    empty_text = "📭 Нет разовых записей."
-                keyboard = [
-                    [InlineKeyboardButton("🔙 Назад", callback_data=sections_cb)],
-                ]
-                await query.edit_message_text(
-                    f"{message}\n\n{empty_text}",
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="HTML",
-                )
-                return
-
-            if month_mode == _VISIT_HISTORY_MODE_OLDER_MENU:
-                older_months = _group_subscriptions_by_month(subscriptions, now=now)
-                message = _render_subscription_history_section_message(
-                    athlete.full_name,
-                    title,
-                    period_caption="Архив",
-                    is_month_picker=True,
-                )
-                if not older_months:
-                    message += "\n\n📭 Нет записей за этот период."
-                keyboard = _build_subscription_history_section_keyboard(
-                    athlete_id,
-                    history_filter=history_filter,
-                    athlete_self=athlete_self_cb,
-                    sections_cb=sections_cb,
-                    month_mode=month_mode,
-                    shown_subs=[],
-                    older_months=older_months,
-                )
-                await query.edit_message_text(
-                    message,
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode="HTML",
-                )
-                return
-
-            if month_mode == _VISIT_HISTORY_MODE_OLDER_MONTH:
-                year, month = _yyyymm_to_year_month(older_yyyymm)
-                period_subs = _filter_subscriptions_older_month(
-                    subscriptions, year=year, month=month, now=now
-                )
-                period_caption = _visit_history_month_label(year, month)
-            else:
-                period_subs = _filter_subscriptions_last_month(subscriptions, now=now)
-                period_caption = "За последний месяц"
-
+            period_subs = _filter_subscriptions_for_history_period(
+                subscriptions,
+                history_filter,
+                now=now,
+            )
             period_subs = sorted(
                 period_subs,
                 key=lambda s: (_history_subscription_sort_date(s), s.id or 0),
@@ -2937,7 +2818,6 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             )
             shown = period_subs[:_HISTORY_SECTION_LIST_LIMIT]
             hidden = len(period_subs) - len(shown)
-            has_older = _has_older_subscriptions(subscriptions, now=now)
 
             message = _render_subscription_history_section_message(
                 athlete.full_name,
@@ -2949,15 +2829,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             elif hidden > 0:
                 message += f"\n\n<i>Показаны последние {len(shown)} из {len(period_subs)}</i>"
 
-            keyboard = _build_subscription_history_section_keyboard(
-                athlete_id,
-                history_filter=history_filter,
-                athlete_self=athlete_self_cb,
-                sections_cb=sections_cb,
-                month_mode=month_mode,
-                shown_subs=shown,
-                has_older=has_older,
-            )
+            keyboard = _build_subscription_archive_list_keyboard(shown, sections_cb)
             await query.edit_message_text(
                 message,
                 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -2970,147 +2842,124 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
         await query.edit_message_text("❌ Ошибка при загрузке абонемента")
 
 
+def _subscription_used_trainings_count(session, subscription: Subscription) -> int:
+    remaining = calculate_actual_trainings_remaining(session, subscription)
+    total = subscription.trainings_total
+    if total is None or remaining is None:
+        return 0
+    return max(int(total) - int(remaining), 0)
+
+
+def _render_subscription_archive_detail_message(
+    session, subscription: Subscription, athlete: Athlete
+) -> str:
+    is_individual = _is_individual_subscription(subscription)
+    sub_type = (subscription.subscription_type or "").strip().lower()
+    is_monthly = sub_type == "monthly"
+
+    if is_individual:
+        title = f"🥊 <b>Индивидуальная бронь #{subscription.id}</b>"
+    else:
+        title = f"🎫 <b>Абонемент #{subscription.id}</b>"
+
+    message = f"{title}\n\n"
+    message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+
+    age_group_display = format_age_group_label(athlete.age_group)
+    dk = getattr(subscription, "discipline_key", None)
+
+    message += "<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
+    message += f"• Вид спорта: {subscription.sport_type or '—'}\n"
+    message += f"• Возрастная группа: {age_group_display}\n"
+    message += f"• Формат занятий: {format_training_format_ru(dk)}\n"
+    message += f"• Тип абонемента: {_format_subscription_type_ru(subscription.subscription_type)}\n"
+    message += f"• Статус: {_format_subscription_status_ui(subscription)}\n"
+
+    if is_individual or sub_type == "single":
+        if subscription.start_date:
+            message += (
+                f"• Слот тренировки: <b>{_format_dt(subscription.start_date)}</b>\n"
+            )
+        else:
+            message += "• Слот тренировки: не назначен\n"
+        if subscription.end_date:
+            message += (
+                f"• Дата окончания: {_format_dt(subscription.end_date)}"
+                f"{_freeze_note(subscription)}\n"
+            )
+    else:
+        start_date_str = _format_dt(subscription.start_date) if subscription.start_date else "—"
+        end_date_str = _format_dt(subscription.end_date) if subscription.end_date else "—"
+        message += f"• Период: {start_date_str} — {end_date_str}"
+        if subscription.end_date:
+            message += _freeze_note(subscription)
+        message += "\n"
+
+    if subscription.created_at:
+        created_str = subscription.created_at.strftime("%d.%m.%Y %H:%M")
+        message += f"• Создан: {created_str}\n"
+
+    if is_monthly and subscription.trainings_total is not None:
+        used = _subscription_used_trainings_count(session, subscription)
+        remaining = calculate_actual_trainings_remaining(session, subscription)
+        if remaining is None:
+            remaining = subscription.trainings_remaining or 0
+        total = subscription.trainings_total or 0
+        message += "\n<b>🏋️ ТРЕНИРОВКИ</b>\n"
+        message += f"• Всего: {total}\n"
+        message += f"• Использовано: {used}\n"
+        message += f"• Осталось: {remaining}\n"
+        if total > 0:
+            usage_percent = min(round(used / total * 100, 1), 100.0)
+            progress_length = 15
+            filled = min(int(usage_percent * progress_length / 100), progress_length)
+            progress_bar = "█" * filled + "░" * (progress_length - filled)
+            message += f"\n<b>📊 ИСПОЛЬЗОВАНИЕ</b>\n"
+            message += f"{progress_bar} {usage_percent}%\n"
+
+    return message
+
+
 async def view_subscription_from_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать детальную информацию об абонементе из истории"""
+    """Показать детальную информацию об абонементе из архива."""
     query = update.callback_query
     await query.answer()
-    
-    # Получаем subscription_id из callback_data: view_sub_123
+
     subscription_id = int(query.data.replace("view_sub_", ""))
-    
+
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-        
+
             if not user:
                 await query.edit_message_text("❌ Пользователь не найден")
                 return
-        
-            # Получаем абонемент
+
             from services.subscription_service import SubscriptionService
             subscription = SubscriptionService.get_subscription_or_raise(session, subscription_id)
             athlete = subscription.athlete
-        
-            # Проверяем права доступа
-            is_athlete_viewing_own = (isinstance(user, Athlete) and athlete.telegram_id == user.telegram_id)
-            is_coach_viewing_athlete = ((isinstance(user, Coach) or isinstance(user, Admin)) and 
-                                       (isinstance(user, Admin) or athlete.created_by == user.id))
-        
+
+            is_athlete_viewing_own = (
+                isinstance(user, Athlete) and athlete.telegram_id == user.telegram_id
+            )
+            is_coach_viewing_athlete = (
+                (isinstance(user, Coach) or isinstance(user, Admin))
+                and (isinstance(user, Admin) or athlete.created_by == user.id)
+            )
+
             if not (is_athlete_viewing_own or is_coach_viewing_athlete):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
-        
-            # Получаем статистику использованных/неиспользованных тренировок
-            from database.models import Attendance
-            used_trainings = session.query(Attendance).filter_by(
-                subscription_id=subscription.id,
-                attended=True
-            ).count()
-        
-            unused_trainings = session.query(Attendance).filter_by(
-                subscription_id=subscription.id,
-                attended=False
-            ).count()
-        
-            # Расчет прогресса использования
-            total_deducted = used_trainings + unused_trainings
-            trainings_total = subscription.trainings_total or 0
-            usage_percent = round((total_deducted / trainings_total) * 100, 1) if trainings_total > 0 else 0
-        
-            # Создаем визуальный прогресс-бар
-            progress_length = 15
-            filled = int(usage_percent * progress_length / 100)
-            progress_bar = "█" * filled + "░" * (progress_length - filled)
-        
-            is_individual = _is_individual_subscription(subscription)
-            title = (
-                f"🥊 <b>ИНДИВИДУАЛЬНАЯ БРОНЬ #{subscription.id}</b>"
-                if is_individual
-                else f"🎫 <b>АБОНЕМЕНТ #{subscription.id}</b>"
+
+            if subscription.trainings_total is not None:
+                sync_subscription_trainings_remaining(session, subscription)
+                session.commit()
+
+            message = _render_subscription_archive_detail_message(
+                session, subscription, athlete
             )
-            message = f"{title}\n\n"
-            message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
 
-            age_group_display = format_age_group_label(athlete.age_group)
-            dk = getattr(subscription, "discipline_key", None)
-
-            message += f"<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
-            message += f"• Вид спорта: {subscription.sport_type or '—'}\n"
-            message += f"• Возрастная группа: {age_group_display}\n"
-            message += f"• Формат занятий: {format_training_format_ru(dk)}\n"
-            sub_type_display = _format_subscription_type_ru(subscription.subscription_type)
-            message += f"• Тип абонемента: {sub_type_display}\n"
-
-            status_display = _format_subscription_status_ui(subscription)
-            message += f"• Статус: {status_display}\n"
-
-            if is_individual and subscription.start_date:
-                message += (
-                    f"• Слот тренировки: <b>{_format_dt(subscription.start_date)}</b>\n"
-                )
-            elif is_individual:
-                message += "• Слот тренировки: не назначен\n"
-
-            start_date_str = _format_dt(subscription.start_date)
-            if is_individual:
-                message += f"• Начало слота: {start_date_str}\n"
-            else:
-                message += f"• Дата начала: {start_date_str}\n"
-        
-            if subscription.end_date:
-                end_date_str = _format_dt(subscription.end_date)
-                message += f"• Дата окончания: {end_date_str}{_freeze_note(subscription)}\n"
-            
-                # Осталось тренировок (пересчитываем на лету для актуальности)
-                if subscription.trainings_total is None:
-                    message += f"• Осталось тренировок: —\n"
-                else:
-                    actual_remaining = calculate_actual_trainings_remaining(session, subscription)
-                    if actual_remaining is not None:
-                        message += f"• Осталось тренировок: {actual_remaining}/{subscription.trainings_total}\n"
-                        if sync_subscription_trainings_remaining(session, subscription):
-                            session.commit()
-                    else:
-                        message += f"• Осталось тренировок: {subscription.trainings_remaining}/{subscription.trainings_total}\n"
-            else:
-                message += f"• Дата окончания: —\n"
-                message += f"• Осталось тренировок: —\n"
-        
-            # Дата создания абонемента
-            if subscription.created_at:
-                created_str = subscription.created_at.strftime('%d.%m.%Y %H:%M')
-                message += f"• Создан: {created_str}\n"
-        
-            message += f"\n<b>🏋️ ТРЕНИРОВКИ</b>\n"
-            trainings_total = subscription.trainings_total or 0
-            trainings_remaining = subscription.trainings_remaining or 0
-            if trainings_total is not None:
-                message += f"• Всего: {trainings_total}\n"
-                message += f"• Использовано: {used_trainings}\n"
-                message += f"• Неиспользовано: {unused_trainings}\n"
-                message += f"• Осталось: {trainings_remaining}\n"
-            else:
-                message += f"• Всего: —\n"
-                message += f"• Использовано: {used_trainings}\n"
-                message += f"• Неиспользовано: {unused_trainings}\n"
-                message += f"• Осталось: —\n"
-        
-            if subscription.total_restored > 0:
-                message += f"• Восстановлено: {subscription.total_restored}\n"
-                if subscription.restored_this_month > 0:
-                    message += f"• Восстановлено в этом месяце: {subscription.restored_this_month}\n"
-        
-            if (subscription.frozen_training_days_total or 0) > 0:
-                message += f"• Заморожено тренировочных дней: {subscription.frozen_training_days_total}\n"
-        
-            # Прогресс-бар использования
-            message += f"\n<b>📊 ИСПОЛЬЗОВАНИЕ</b>\n"
-            message += f"{progress_bar} {usage_percent}%\n"
-        
-            # Создаем инлайн клавиатуру
-            keyboard = []
-        
-            if is_individual:
+            if _is_individual_subscription(subscription):
                 hist_filter = _HISTORY_FILTER_INDIVIDUAL
             elif (subscription.subscription_type or "").strip().lower() == "single":
                 hist_filter = _HISTORY_FILTER_SINGLE
@@ -3122,21 +2971,14 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
                 history_filter=hist_filter,
                 athlete_self=not is_coach_viewing_athlete,
             )
-            keyboard.append([
-                InlineKeyboardButton(
-                    "🔙 Назад",
-                    callback_data=hist_cb,
-                )
-            ])
-        
-            reply_markup = InlineKeyboardMarkup(keyboard)
-        
+            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=hist_cb)]]
+
             await query.edit_message_text(
                 message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML",
             )
-    
+
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ АБОНЕМЕНТА ИЗ ИСТОРИИ: {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка при загрузке абонемента")
