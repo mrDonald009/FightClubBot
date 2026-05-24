@@ -1641,7 +1641,7 @@ async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Второй ряд: навигация
             keyboard.append([
-                InlineKeyboardButton("📋 К списку", callback_data="back_to_list"),
+                InlineKeyboardButton("📋 К списку спортсменов", callback_data="back_to_list"),
             ])
 
             # Третий ряд: редактирование
