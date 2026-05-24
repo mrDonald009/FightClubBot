@@ -494,7 +494,10 @@ def _render_subscription_history_section_message(
     period_caption: str = None,
     is_month_picker: bool = False,
 ) -> str:
-    message = f"👤 <b>{html.escape(athlete_name)}</b>\n\n{title}"
+    message = "🎫 <b>Абонемент</b>\n\n"
+    message += f"👤 <b>{html.escape(athlete_name)}</b>"
+    if title:
+        message += f"\n\n{title}"
     if period_caption:
         message += f"\n\n<i>{html.escape(period_caption)}</i>"
     if is_month_picker:
@@ -595,12 +598,12 @@ def _build_subscription_history_section_keyboard(
 
 def _history_section_title(history_filter: str) -> str:
     if history_filter == _HISTORY_FILTER_INDIVIDUAL:
-        return "📜 <b>ИСТОРИЯ — ИНДИВИДУАЛЬНЫЕ</b>"
+        return "<b>Индивидуальные</b>"
     if history_filter == _HISTORY_FILTER_GROUP:
-        return "📜 <b>ИСТОРИЯ — ГРУППОВЫЕ</b>"
+        return "<b>Групповые</b>"
     if history_filter == _HISTORY_FILTER_SINGLE:
-        return "📜 <b>ИСТОРИЯ — РАЗОВЫЕ</b>"
-    return "📜 <b>ИСТОРИЯ</b>"
+        return "<b>Разовые</b>"
+    return ""
 
 
 def _parse_visits_callback(callback_data: str) -> tuple:
@@ -693,7 +696,7 @@ def _filter_visit_rows_older_month(
 def _render_visit_history_month_picker(
     athlete_name: str, months: dict
 ) -> str:
-    message = "📅 <b>История посещений</b>\n\n"
+    message = "📅 <b>Посещения</b>\n\n"
     message += f"👤 <b>{html.escape(athlete_name)}</b>\n\n"
     message += "<i>Архив</i>\n"
     message += "<b>Выберите месяц:</b>\n"
@@ -868,7 +871,7 @@ def _render_visit_history_message(
     period_caption: Optional[str] = None,
 ) -> str:
     """display_entries — последние N записей за выбранный период."""
-    message = "📅 <b>История посещений</b>\n\n"
+    message = "📅 <b>Посещения</b>\n\n"
     message += f"👤 <b>{html.escape(athlete_name)}</b>\n"
     if period_caption:
         message += f"\n<i>{html.escape(period_caption)}</i>\n"
@@ -2139,7 +2142,7 @@ async def show_subscription_card(
                         ])
                     keyboard.append([
                         InlineKeyboardButton(
-                            "📜 История",
+                            "📋 Записи",
                             callback_data=_subscription_history_list_callback(
                                 athlete.id,
                                 athlete_self=False,
@@ -2214,7 +2217,7 @@ async def show_subscription_card(
                         InlineKeyboardButton(f"✅ Создать абонемент ({coach_sport_type})", callback_data=f"activate_sub_new_{athlete_id}")
                     ])
                     keyboard.append([
-                        InlineKeyboardButton("📜 История", callback_data=f"subscription_history_{athlete_id}")
+                        InlineKeyboardButton("📋 Записи", callback_data=f"subscription_history_{athlete_id}")
                     ])
                     keyboard.append([
                         InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
@@ -2256,7 +2259,7 @@ async def show_subscription_card(
                     ])
             
                 keyboard.append([
-                    InlineKeyboardButton("📜 История", callback_data=f"subscription_history_{athlete_id}")
+                    InlineKeyboardButton("📋 Записи", callback_data=f"subscription_history_{athlete_id}")
                 ])
                 keyboard.append([
                     InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
@@ -2387,7 +2390,7 @@ async def show_subscription_card(
 
             keyboard.append([
                 InlineKeyboardButton(
-                    "📜 История",
+                    "📋 Записи",
                     callback_data=_subscription_history_list_callback(
                         athlete_id,
                         athlete_self=False,
@@ -2603,7 +2606,7 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
 
             # Создаем инлайн клавиатуру
             keyboard = [
-                [InlineKeyboardButton("📜 История", callback_data=f"subscription_history_athlete_{athlete.id}")],
+                [InlineKeyboardButton("📋 Записи", callback_data=f"subscription_history_athlete_{athlete.id}")],
                 [InlineKeyboardButton("🔄 Обновить", callback_data="athlete_subscription_refresh")],
                 [InlineKeyboardButton("🏠 В меню", callback_data="athlete_back_to_menu")]
             ]
@@ -2782,7 +2785,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             _parse_subscription_history_callback(query.data)
         )
     except (ValueError, IndexError):
-        await query.edit_message_text("❌ Неверная ссылка на историю абонементов")
+        await query.edit_message_text("❌ Неверная ссылка на абонемент")
         return
 
     try:
@@ -2828,7 +2831,10 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                 athlete_self=athlete_self_cb,
             )
             title = _history_section_title(history_filter)
-            message = f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n{title}"
+            message = _render_subscription_history_section_message(
+                athlete.full_name,
+                title,
+            )
 
             if history_filter == _HISTORY_FILTER_ALL:
                 category_rows = _subscription_history_category_keyboard(
@@ -2843,7 +2849,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                         [InlineKeyboardButton("🔙 Назад", callback_data=back_cb)]
                     ]
                     await query.edit_message_text(
-                        f"{message}\n\n❌ История абонемента пуста.",
+                        f"{message}\n\n📭 Нет записей абонементов.",
                         reply_markup=InlineKeyboardMarkup(keyboard),
                         parse_mode="HTML",
                     )
@@ -2871,13 +2877,13 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             now = now_moscow()
 
             if not subscriptions:
-                empty_text = "❌ В этом разделе записей нет."
+                empty_text = "📭 Нет записей в этом разделе."
                 if history_filter == _HISTORY_FILTER_INDIVIDUAL:
-                    empty_text = "❌ Индивидуальных броней в истории нет."
+                    empty_text = "📭 Нет индивидуальных записей."
                 elif history_filter == _HISTORY_FILTER_GROUP:
-                    empty_text = "❌ Групповых абонементов в истории нет."
+                    empty_text = "📭 Нет групповых записей."
                 elif history_filter == _HISTORY_FILTER_SINGLE:
-                    empty_text = "❌ Разовых записей в истории нет."
+                    empty_text = "📭 Нет разовых записей."
                 keyboard = [
                     [InlineKeyboardButton("🔙 Назад", callback_data=sections_cb)],
                 ]
@@ -2961,7 +2967,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
 
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ ИСТОРИИ АБОНЕМЕНТОВ: {e}", exc_info=True)
-        await query.edit_message_text("❌ Ошибка при загрузке истории абонементов")
+        await query.edit_message_text("❌ Ошибка при загрузке абонемента")
 
 
 async def view_subscription_from_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3117,12 +3123,8 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
                 athlete_self=not is_coach_viewing_athlete,
             )
             keyboard.append([
-                InlineKeyboardButton("📜 История", callback_data=hist_cb)
-            ])
-
-            keyboard.append([
                 InlineKeyboardButton(
-                    "🔙 Назад к истории",
+                    "🔙 Назад",
                     callback_data=hist_cb,
                 )
             ])

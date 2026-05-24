@@ -14,11 +14,13 @@ from handlers.card_handlers import (
     _filter_subscriptions_older_month,
     _group_subscriptions_by_month,
     _has_older_subscriptions,
+    _history_section_title,
     _history_subscription_buckets,
     _history_subscription_button_label,
     _history_subscription_list_lines,
     _is_individual_subscription,
     _parse_subscription_history_callback,
+    _render_subscription_history_section_message,
     _subscription_history_list_callback,
     _subscription_history_section_callback,
     _subscription_picker_should_show,
@@ -142,6 +144,21 @@ def test_subscription_history_month_filters():
     april = _filter_subscriptions_older_month(subs, year=2026, month=4, now=now)
     assert len(april) == 1
     assert april[0].id == 2
+
+
+def test_subscription_history_screen_titles():
+    assert _history_section_title(_HISTORY_FILTER_ALL) == ""
+    assert _history_section_title(_HISTORY_FILTER_INDIVIDUAL) == "<b>Индивидуальные</b>"
+    text = _render_subscription_history_section_message(
+        "Иван",
+        _history_section_title(_HISTORY_FILTER_GROUP),
+        period_caption="За последний месяц",
+    )
+    assert "🎫 <b>Абонемент</b>" in text
+    assert "Иван" in text
+    assert "Групповые" in text
+    assert "За последний месяц" in text
+    assert "История" not in text
 
 
 def test_subscription_picker_should_show_only_for_multiple_active():
