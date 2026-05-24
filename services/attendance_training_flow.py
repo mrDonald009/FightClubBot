@@ -326,7 +326,11 @@ def resolve_training_from_attendance_callback(
 
 
 def fetch_athletes_for_training_slot(
-    session: OrmSession, training: Training
+    session: OrmSession,
+    training: Training,
+    *,
+    for_history: bool = False,
+    coach_id: Optional[int] = None,
 ) -> Tuple[List[Athlete], Dict[int, Attendance]]:
     training_day = training.training_date.date()
     is_individual_slot = (
@@ -337,12 +341,15 @@ def fetch_athletes_for_training_slot(
         session.query(Athlete)
         .join(Subscription, Subscription.athlete_id == Athlete.id)
         .filter(
-            Subscription.is_active == True,
             Subscription.sport_type == training.sport_type,
             func.date(Subscription.start_date) <= training_day,
             func.date(Subscription.end_date) >= training_day,
         )
     )
+    if not for_history:
+        athletes_query = athletes_query.filter(Subscription.is_active.is_(True))
+    if coach_id is not None:
+        athletes_query = athletes_query.filter(Athlete.created_by == coach_id)
     # Как в «Мой календарь»: индивидуальный слот — только абонемент individual с тем же началом;
     # групповой — без individual (иначе monthly попадает на все слоты дня).
     if is_individual_slot:
@@ -364,15 +371,33 @@ def fetch_athletes_for_training_slot(
     athlete_ids = [a.id for a in athletes]
     attendance_map: Dict[int, Attendance] = {}
     if athlete_ids:
-        slot_tids = individual_slot_training_ids(session, training)
-        existing = (
-            session.query(Attendance)
-            .filter(
-                Attendance.training_id.in_(slot_tids),
-                Attendance.athlete_id.in_(athlete_ids),
+        training_id = getattr(training, "id", None)
+        if training_id:
+            slot_tids = individual_slot_training_ids(session, training)
+            existing = (
+                session.query(Attendance)
+                .filter(
+                    Attendance.training_id.in_(slot_tids),
+                    Attendance.athlete_id.in_(athlete_ids),
+                )
+                .all()
             )
-            .all()
-        )
+        elif not is_individual_slot and training.training_date:
+            att_q = (
+                session.query(Attendance)
+                .join(Training, Attendance.training_id == Training.id)
+                .filter(
+                    Training.sport_type == training.sport_type,
+                    Training.age_group == training.age_group,
+                    func.date(Training.training_date) == training_day,
+                    Attendance.athlete_id.in_(athlete_ids),
+                )
+            )
+            if coach_id is not None:
+                att_q = att_q.filter(Training.coach_id == coach_id)
+            existing = att_q.all()
+        else:
+            existing = []
         attendance_map = {a.athlete_id: a for a in existing}
     return athletes, attendance_map
 

@@ -2387,7 +2387,12 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     return
 
             now = now_moscow()
-            from services.attendance_training_flow import build_attendance_slots_for_day
+            from services.attendance_training_flow import (
+                build_attendance_slots_for_day,
+                fetch_athletes_for_training_slot,
+                resolve_attendance_slot_training,
+                _training_stub_from_slot,
+            )
             from utils.age_groups import format_age_group_label
 
             slot_rows, _virtual_slots = build_attendance_slots_for_day(session, user, selected_date)
@@ -2513,69 +2518,29 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                         f"    ... и еще {len(fallback_atts) - 10}\n"
                                     )
                     else:
-                        sub_ath_rows = (
-                            session.query(Subscription, Athlete)
-                            .join(Athlete, Subscription.athlete_id == Athlete.id)
-                            .filter(
-                                Subscription.is_active == True,
-                                Subscription.sport_type == slot.sport_type,
-                                func.date(Subscription.start_date) <= selected_date,
-                                func.date(Subscription.end_date) >= selected_date,
-                                Athlete.age_group == slot.age_group,
-                            )
-                            .filter(
-                                or_(
-                                    Subscription.subscription_type.is_(None),
-                                    Subscription.subscription_type != "individual",
-                                )
-                            )
+                        slot_training = training or resolve_attendance_slot_training(
+                            session, slot, user.id
                         )
-                        pair_list = sub_ath_rows.all()
-                        athlete_count = len(pair_list)
-                        if pair_list:
-                            aid_list = list({a.id for _s, a in pair_list})
-                            sub_ids = list({s.id for s, _a in pair_list})
-                            if training:
-                                slot_training_ids = individual_slot_training_ids(session, training)
-                                atts = (
-                                    session.query(Attendance)
-                                    .filter(
-                                        Attendance.training_id.in_(slot_training_ids),
-                                        Attendance.subscription_id.in_(sub_ids),
-                                        Attendance.athlete_id.in_(aid_list),
-                                    )
-                                    .all()
-                                )
-                            else:
-                                atts = (
-                                    session.query(Attendance)
-                                    .join(Training, Attendance.training_id == Training.id)
-                                    .filter(
-                                        Training.coach_id == user.id,
-                                        Training.sport_type == slot.sport_type,
-                                        Training.age_group == slot.age_group,
-                                        func.date(Training.training_date) == selected_date,
-                                        Attendance.subscription_id.in_(sub_ids),
-                                        Attendance.athlete_id.in_(aid_list),
-                                    )
-                                    .all()
-                                )
-                            att_by_pair = {}
-                            for att in atts:
-                                key = (att.athlete_id, att.subscription_id)
-                                if key not in att_by_pair:
-                                    att_by_pair[key] = att
-
-                            for subscription, athlete in pair_list[:10]:
-                                attendance = att_by_pair.get((athlete.id, subscription.id))
-                                status_icon = attendance_icon_for_slot(
-                                    attendance, slot.training_datetime, now=now
-                                )
-                                athlete_lines.append(
-                                    f"    {status_icon} {html.escape(_surname_initials(athlete.full_name))}\n"
-                                )
-                            if len(pair_list) > 10:
-                                athlete_lines.append(f"    ... и еще {len(pair_list) - 10}\n")
+                        if slot_training is None:
+                            slot_training = _training_stub_from_slot(slot)
+                        for_history = training_date_only < now.date()
+                        athletes, attendance_map = fetch_athletes_for_training_slot(
+                            session,
+                            slot_training,
+                            for_history=for_history,
+                            coach_id=user.id if isinstance(user, Coach) else None,
+                        )
+                        athlete_count = len(athletes)
+                        for athlete in athletes[:10]:
+                            attendance = attendance_map.get(athlete.id)
+                            status_icon = attendance_icon_for_slot(
+                                attendance, slot.training_datetime, now=now
+                            )
+                            athlete_lines.append(
+                                f"    {status_icon} {html.escape(_surname_initials(athlete.full_name))}\n"
+                            )
+                        if len(athletes) > 10:
+                            athlete_lines.append(f"    ... и еще {len(athletes) - 10}\n")
 
                     rendered_slots += 1
                     if rendered_slots == 1:

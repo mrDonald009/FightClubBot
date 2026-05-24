@@ -71,3 +71,56 @@ def test_visit_history_includes_scheduled_group_days_without_training_row(monkey
     # MMA adults: Пн/Ср/Пт в апреле 2026 — 13 слотов
     assert len(april) == 13
     assert all(r[0].training_date.hour == 20 for r in april)
+
+
+def test_fetch_athletes_for_past_slot_includes_expired_subscription():
+    """Прошлый слот: абонемент уже неактивен, но покрывал дату тренировки."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    s = sessionmaker(bind=engine)()
+    coach = _coach_mma(s)
+
+    athlete = Athlete(
+        full_name="Морозов Егор",
+        sport_type="MMA",
+        age_group="adults",
+        created_by=coach.id,
+    )
+    s.add(athlete)
+    s.flush()
+    s.add(
+        Subscription(
+            athlete_id=athlete.id,
+            discipline_key="mma_group",
+            sport_type="MMA",
+            subscription_type="monthly",
+            is_active=False,
+            start_date=datetime(2026, 4, 1, 0, 0, 0),
+            end_date=datetime(2026, 4, 30, 23, 59, 0),
+        )
+    )
+    s.commit()
+
+    from database.models import Training
+    from services.attendance_training_flow import fetch_athletes_for_training_slot
+
+    training = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=datetime(2026, 4, 17, 20, 0, 0),
+        coach_id=coach.id,
+        is_cancelled=False,
+    )
+    s.add(training)
+    s.commit()
+
+    live, _ = fetch_athletes_for_training_slot(
+        s, training, for_history=False, coach_id=coach.id
+    )
+    assert live == []
+
+    hist, _ = fetch_athletes_for_training_slot(
+        s, training, for_history=True, coach_id=coach.id
+    )
+    assert len(hist) == 1
+    assert hist[0].full_name == "Морозов Егор"
