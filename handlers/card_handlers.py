@@ -167,16 +167,14 @@ def _count_past_individual_subscriptions(
 def _subscription_picker_should_show(
     group_subs,
     upcoming_individual_subs,
-    past_individual_count: int,
 ) -> bool:
-    current_count = len(group_subs) + len(upcoming_individual_subs)
-    if current_count > 1:
-        return True
-    if past_individual_count > 0 and current_count >= 1:
-        return True
-    if current_count == 0 and past_individual_count > 0:
-        return True
-    return False
+    """Picker только при 2+ активных направлениях (групповой + individual и т.п.)."""
+    return len(group_subs) + len(upcoming_individual_subs) > 1
+
+
+_HISTORY_FILTER_ALL = "all"
+_HISTORY_FILTER_INDIVIDUAL = "individual"
+_HISTORY_FILTER_GROUP = "group"
 
 
 def _truncate_inline_button_text(text: str, max_len: int = 64) -> str:
@@ -236,20 +234,24 @@ def _history_subscription_list_lines(sub: Subscription, idx: int) -> str:
 
 def _parse_subscription_history_callback(callback_data: str):
     """
-    Разбор subscription_history_* / subscription_history_individual_*.
-    Возвращает (athlete_id, filter_individual_only, athlete_self_callback).
+    Разбор subscription_history_* / subscription_history_individual_* / subscription_history_group_*.
+    Возвращает (athlete_id, history_filter, athlete_self_callback).
+    history_filter: all | individual | group
     """
     raw = callback_data.replace("subscription_history_", "")
-    filter_individual = False
+    history_filter = _HISTORY_FILTER_ALL
     if raw.startswith("individual_"):
-        filter_individual = True
+        history_filter = _HISTORY_FILTER_INDIVIDUAL
         raw = raw[len("individual_") :]
+    elif raw.startswith("group_"):
+        history_filter = _HISTORY_FILTER_GROUP
+        raw = raw[len("group_") :]
     athlete_self = raw.startswith("athlete_")
     if athlete_self:
         athlete_id = int(raw.replace("athlete_", "", 1))
     else:
         athlete_id = int(raw)
-    return athlete_id, filter_individual, athlete_self
+    return athlete_id, history_filter, athlete_self
 
 
 def _subscription_history_back_callback(
@@ -261,12 +263,65 @@ def _subscription_history_back_callback(
 
 
 def _subscription_history_list_callback(
-    athlete_id: int, *, filter_individual: bool, athlete_self: bool
+    athlete_id: int,
+    *,
+    history_filter: str = _HISTORY_FILTER_ALL,
+    athlete_self: bool = False,
 ) -> str:
-    prefix = "subscription_history_individual_" if filter_individual else "subscription_history_"
+    base = "subscription_history"
+    if history_filter == _HISTORY_FILTER_INDIVIDUAL:
+        base += "_individual"
+    elif history_filter == _HISTORY_FILTER_GROUP:
+        base += "_group"
     if athlete_self:
-        return f"{prefix}athlete_{athlete_id}"
-    return f"{prefix}{athlete_id}"
+        return f"{base}_athlete_{athlete_id}"
+    return f"{base}_{athlete_id}"
+
+
+def _subscription_history_filter_nav_row(
+    athlete_id: int,
+    current_filter: str,
+    *,
+    athlete_self: bool,
+    has_individual: bool,
+    has_group: bool,
+):
+    """Кнопки переключения фильтра истории: все / individual / групповые."""
+    buttons = []
+    if current_filter != _HISTORY_FILTER_ALL:
+        buttons.append(
+            InlineKeyboardButton(
+                "📋 Все",
+                callback_data=_subscription_history_list_callback(
+                    athlete_id,
+                    history_filter=_HISTORY_FILTER_ALL,
+                    athlete_self=athlete_self,
+                ),
+            )
+        )
+    if has_individual and current_filter != _HISTORY_FILTER_INDIVIDUAL:
+        buttons.append(
+            InlineKeyboardButton(
+                "🥊 Индивидуальные",
+                callback_data=_subscription_history_list_callback(
+                    athlete_id,
+                    history_filter=_HISTORY_FILTER_INDIVIDUAL,
+                    athlete_self=athlete_self,
+                ),
+            )
+        )
+    if has_group and current_filter != _HISTORY_FILTER_GROUP:
+        buttons.append(
+            InlineKeyboardButton(
+                "👥 Групповые",
+                callback_data=_subscription_history_list_callback(
+                    athlete_id,
+                    history_filter=_HISTORY_FILTER_GROUP,
+                    athlete_self=athlete_self,
+                ),
+            )
+        )
+    return buttons
 
 
 _VISIT_HISTORY_LOOKBACK_DAYS = 120
@@ -1763,7 +1818,6 @@ async def show_subscription_card(
                 if coach_sport_type:
                     active_subs = [s for s in active_subs if (s.sport_type or "").strip() == coach_sport_type]
 
-                all_athlete_subs = list(athlete.subscriptions or [])
                 active_individual_subs = [
                     s for s in active_subs if _is_individual_subscription(s)
                 ]
@@ -1779,14 +1833,9 @@ async def show_subscription_card(
                     [s for s in active_subs if not _is_individual_subscription(s)],
                     key=lambda s: -(s.id or 0),
                 )
-                past_individual_count = _count_past_individual_subscriptions(
-                    all_athlete_subs,
-                    sport_type=coach_sport_type,
-                )
                 need_picker = _subscription_picker_should_show(
                     group_subs,
                     upcoming_individual_subs,
-                    past_individual_count,
                 )
                 if need_picker:
                     message = f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
@@ -1796,11 +1845,6 @@ async def show_subscription_card(
                         message += (
                             f"Ближайшие индивидуальные: "
                             f"<b>{len(upcoming_individual_subs)}</b>\n\n"
-                        )
-                    elif past_individual_count and not group_subs:
-                        message += (
-                            "Активных индивидуальных броней нет — "
-                            "смотрите прошлые записи ниже.\n\n"
                         )
 
                     keyboard = []
@@ -1822,17 +1866,15 @@ async def show_subscription_card(
                                 callback_data=f"subscription_{sub.id}",
                             )
                         ])
-                    if past_individual_count:
-                        keyboard.append([
-                            InlineKeyboardButton(
-                                "📜 Прошлые индивидуальные",
-                                callback_data=_subscription_history_list_callback(
-                                    athlete.id,
-                                    filter_individual=True,
-                                    athlete_self=False,
-                                ),
-                            )
-                        ])
+                    keyboard.append([
+                        InlineKeyboardButton(
+                            "📜 История",
+                            callback_data=_subscription_history_list_callback(
+                                athlete.id,
+                                athlete_self=False,
+                            ),
+                        )
+                    ])
                     keyboard.append([
                         InlineKeyboardButton(
                             "🔙 Назад к карточке", callback_data=f"athlete_{athlete.id}"
@@ -1901,7 +1943,7 @@ async def show_subscription_card(
                         InlineKeyboardButton(f"✅ Создать абонемент ({coach_sport_type})", callback_data=f"activate_sub_new_{athlete_id}")
                     ])
                     keyboard.append([
-                        InlineKeyboardButton("📜 История абонемента", callback_data=f"subscription_history_{athlete_id}")
+                        InlineKeyboardButton("📜 История", callback_data=f"subscription_history_{athlete_id}")
                     ])
                     keyboard.append([
                         InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
@@ -1943,7 +1985,7 @@ async def show_subscription_card(
                     ])
             
                 keyboard.append([
-                    InlineKeyboardButton("📜 История абонемента", callback_data=f"subscription_history_{athlete_id}")
+                    InlineKeyboardButton("📜 История", callback_data=f"subscription_history_{athlete_id}")
                 ])
                 keyboard.append([
                     InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
@@ -2072,8 +2114,15 @@ async def show_subscription_card(
                         )
                     ])
 
-            # При схеме 1 спортсмен = 1 абонемент кнопка "История абонемента" не нужна
-            # (историю посещений можно открыть через "📅 Посещения" в карточке спортсмена)
+            keyboard.append([
+                InlineKeyboardButton(
+                    "📜 История",
+                    callback_data=_subscription_history_list_callback(
+                        athlete_id,
+                        athlete_self=False,
+                    ),
+                )
+            ])
 
             keyboard.append([
                 InlineKeyboardButton("🔙 Назад к карточке", callback_data=f"athlete_{athlete_id}")
@@ -2283,7 +2332,7 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
 
             # Создаем инлайн клавиатуру
             keyboard = [
-                [InlineKeyboardButton("📜 История абонемента", callback_data=f"subscription_history_athlete_{athlete.id}")],
+                [InlineKeyboardButton("📜 История", callback_data=f"subscription_history_athlete_{athlete.id}")],
                 [InlineKeyboardButton("🔄 Обновить", callback_data="athlete_subscription_refresh")],
                 [InlineKeyboardButton("🏠 В меню", callback_data="athlete_back_to_menu")]
             ]
@@ -2457,7 +2506,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
 
-    athlete_id, filter_individual, athlete_self_cb = _parse_subscription_history_callback(
+    athlete_id, history_filter, athlete_self_cb = _parse_subscription_history_callback(
         query.data
     )
 
@@ -2496,15 +2545,25 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             all_subscriptions = session.query(Subscription).filter_by(athlete_id=athlete_id).all()
             individual_subs = [s for s in all_subscriptions if _is_individual_subscription(s)]
             group_subs = [s for s in all_subscriptions if not _is_individual_subscription(s)]
+            has_individual = bool(individual_subs)
+            has_group = bool(group_subs)
 
-            if filter_individual:
+            if history_filter == _HISTORY_FILTER_INDIVIDUAL:
                 subscriptions = sorted(
                     individual_subs,
                     key=lambda s: (s.start_date or datetime.min, s.id or 0),
                     reverse=True,
                 )
                 list_limit = 25
-                title = "📜 <b>ИСТОРИЯ ИНДИВИДУАЛЬНЫХ ТРЕНИРОВОК</b>"
+                title = "📜 <b>ИСТОРИЯ — ИНДИВИДУАЛЬНЫЕ</b>"
+            elif history_filter == _HISTORY_FILTER_GROUP:
+                subscriptions = sorted(
+                    group_subs,
+                    key=lambda s: s.created_at or datetime.min,
+                    reverse=True,
+                )
+                list_limit = 12
+                title = "📜 <b>ИСТОРИЯ — ГРУППОВЫЕ</b>"
             else:
                 subscriptions = sorted(
                     all_subscriptions,
@@ -2512,35 +2571,32 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                     reverse=True,
                 )
                 list_limit = 12
-                title = "📜 <b>ИСТОРИЯ АБОНЕМЕНТА</b>"
+                title = "📜 <b>ИСТОРИЯ</b>"
 
             back_cb = _subscription_history_back_callback(
                 athlete_id,
                 is_coach_viewing=is_coach_viewing_athlete,
                 athlete_self=athlete_self_cb,
             )
+            filter_nav = _subscription_history_filter_nav_row(
+                athlete_id,
+                history_filter,
+                athlete_self=athlete_self_cb,
+                has_individual=has_individual,
+                has_group=has_group,
+            )
 
             if not subscriptions:
-                empty_text = (
-                    "❌ Индивидуальных броней в истории нет."
-                    if filter_individual
-                    else "❌ История абонемента пуста."
-                )
-                keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=back_cb)]]
-                if filter_individual and all_subscriptions:
-                    keyboard.insert(
-                        0,
-                        [
-                            InlineKeyboardButton(
-                                "📋 Все абонементы",
-                                callback_data=_subscription_history_list_callback(
-                                    athlete_id,
-                                    filter_individual=False,
-                                    athlete_self=athlete_self_cb,
-                                ),
-                            )
-                        ],
-                    )
+                if history_filter == _HISTORY_FILTER_INDIVIDUAL:
+                    empty_text = "❌ Индивидуальных броней в истории нет."
+                elif history_filter == _HISTORY_FILTER_GROUP:
+                    empty_text = "❌ Групповых абонементов в истории нет."
+                else:
+                    empty_text = "❌ История абонемента пуста."
+                keyboard = []
+                if filter_nav:
+                    keyboard.append(filter_nav)
+                keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=back_cb)])
                 await query.edit_message_text(
                     f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n{title}\n\n{empty_text}",
                     reply_markup=InlineKeyboardMarkup(keyboard),
@@ -2549,13 +2605,15 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                 return
 
             message = f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n{title}\n\n"
-            if filter_individual:
+            if history_filter == _HISTORY_FILTER_INDIVIDUAL:
                 message += f"Записей: <b>{len(individual_subs)}</b>\n"
                 message += "Нажмите кнопку, чтобы открыть бронь.\n\n"
+            elif history_filter == _HISTORY_FILTER_GROUP:
+                message += f"Записей: <b>{len(group_subs)}</b>\n\n"
             else:
                 message += (
                     f"Всего: <b>{len(all_subscriptions)}</b> "
-                    f"(групповые/разовые: {len(group_subs)}, "
+                    f"(групповые: {len(group_subs)}, "
                     f"индивидуальные: {len(individual_subs)})\n\n"
                 )
 
@@ -2577,31 +2635,8 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             if hidden > 0:
                 message += f"\n... и ещё {hidden} записей\n"
 
-            nav_row = []
-            if filter_individual:
-                nav_row.append(
-                    InlineKeyboardButton(
-                        "📋 Все абонементы",
-                        callback_data=_subscription_history_list_callback(
-                            athlete_id,
-                            filter_individual=False,
-                            athlete_self=athlete_self_cb,
-                        ),
-                    )
-                )
-            elif individual_subs:
-                nav_row.append(
-                    InlineKeyboardButton(
-                        f"🥊 Индивидуальные ({len(individual_subs)})",
-                        callback_data=_subscription_history_list_callback(
-                            athlete_id,
-                            filter_individual=True,
-                            athlete_self=athlete_self_cb,
-                        ),
-                    )
-                )
-            if nav_row:
-                keyboard.append(nav_row)
+            if filter_nav:
+                keyboard.append(filter_nav)
 
             keyboard.append(
                 [InlineKeyboardButton("🔙 Назад к абонементу", callback_data=back_cb)]
@@ -2758,30 +2793,23 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
             # Создаем инлайн клавиатуру
             keyboard = []
         
-            hist_all_cb = _subscription_history_list_callback(
+            hist_cb = _subscription_history_list_callback(
                 athlete.id,
-                filter_individual=False,
+                history_filter=(
+                    _HISTORY_FILTER_INDIVIDUAL
+                    if is_individual
+                    else _HISTORY_FILTER_ALL
+                ),
                 athlete_self=not is_coach_viewing_athlete,
             )
             keyboard.append([
-                InlineKeyboardButton("📜 История абонемента", callback_data=hist_all_cb)
+                InlineKeyboardButton("📜 История", callback_data=hist_cb)
             ])
-            if is_individual:
-                hist_ind_cb = _subscription_history_list_callback(
-                    athlete.id,
-                    filter_individual=True,
-                    athlete_self=not is_coach_viewing_athlete,
-                )
-                keyboard.append([
-                    InlineKeyboardButton(
-                        "🥊 Все индивидуальные", callback_data=hist_ind_cb
-                    )
-                ])
 
             keyboard.append([
                 InlineKeyboardButton(
                     "🔙 Назад к истории",
-                    callback_data=hist_all_cb,
+                    callback_data=hist_cb,
                 )
             ])
         

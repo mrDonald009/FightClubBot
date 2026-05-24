@@ -5,6 +5,9 @@ import pytest
 
 from database.models import Subscription
 from handlers.card_handlers import (
+    _HISTORY_FILTER_ALL,
+    _HISTORY_FILTER_GROUP,
+    _HISTORY_FILTER_INDIVIDUAL,
     _count_past_individual_subscriptions,
     _history_subscription_button_label,
     _history_subscription_list_lines,
@@ -21,28 +24,41 @@ from handlers.card_handlers import (
 def test_parse_subscription_history_callbacks():
     assert _parse_subscription_history_callback("subscription_history_42") == (
         42,
-        False,
+        _HISTORY_FILTER_ALL,
         False,
     )
     assert _parse_subscription_history_callback("subscription_history_athlete_7") == (
         7,
-        False,
+        _HISTORY_FILTER_ALL,
         True,
     )
     assert _parse_subscription_history_callback(
         "subscription_history_individual_15"
-    ) == (15, True, False)
+    ) == (15, _HISTORY_FILTER_INDIVIDUAL, False)
     assert _parse_subscription_history_callback(
         "subscription_history_individual_athlete_3"
-    ) == (3, True, True)
+    ) == (3, _HISTORY_FILTER_INDIVIDUAL, True)
+    assert _parse_subscription_history_callback(
+        "subscription_history_group_9"
+    ) == (9, _HISTORY_FILTER_GROUP, False)
+    assert _parse_subscription_history_callback(
+        "subscription_history_group_athlete_2"
+    ) == (2, _HISTORY_FILTER_GROUP, True)
 
 
 def test_subscription_history_list_callback():
-    assert _subscription_history_list_callback(5, filter_individual=False, athlete_self=False) == (
+    assert _subscription_history_list_callback(5, athlete_self=False) == (
         "subscription_history_5"
     )
-    assert _subscription_history_list_callback(5, filter_individual=True, athlete_self=True) == (
+    assert _subscription_history_list_callback(
+        5, history_filter=_HISTORY_FILTER_INDIVIDUAL, athlete_self=True
+    ) == (
         "subscription_history_individual_athlete_5"
+    )
+    assert _subscription_history_list_callback(
+        5, history_filter=_HISTORY_FILTER_GROUP, athlete_self=False
+    ) == (
+        "subscription_history_group_5"
     )
 
 
@@ -180,8 +196,7 @@ def test_count_past_individual_subscriptions():
     assert _count_past_individual_subscriptions([past, upcoming, group], now=now) == 1
 
 
-def test_subscription_picker_should_show_when_only_past_individual():
-    assert _subscription_picker_should_show([], [], past_individual_count=2)
-    assert _subscription_picker_should_show([object()], [], past_individual_count=1)
-    assert not _subscription_picker_should_show([object()], [], past_individual_count=0)
-    assert _subscription_picker_should_show([object()], [object()], past_individual_count=0)
+def test_subscription_picker_should_show_only_for_multiple_active():
+    assert _subscription_picker_should_show([object()], [object()])
+    assert not _subscription_picker_should_show([object()], [])
+    assert not _subscription_picker_should_show([], [object()])
