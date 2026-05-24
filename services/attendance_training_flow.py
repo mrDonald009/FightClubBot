@@ -16,6 +16,7 @@ from database.db_utils.training_slots import (
     TRAINING_FORMAT_INDIVIDUAL,
     dedupe_individual_trainings_by_slot,
     find_group_training_on_calendar_day,
+    individual_slot_has_links,
     individual_slot_training_ids,
     is_group_training,
     reconcile_group_training_to_schedule,
@@ -575,6 +576,63 @@ def collect_athlete_visit_history_slots(
 
     out.sort(key=lambda row: row[0].training_date or range_start)
     return out
+
+
+def coach_calendar_day_button_text(
+    session: OrmSession,
+    coach: Coach,
+    day: date,
+    *,
+    today: date,
+) -> str:
+    """
+    Подпись кнопки дня в месячной сетке «Мой календарь»:
+    [n] — сегодня; +n — есть спортсмены на слот; n• — группа по расписанию, без спортсменов.
+    """
+    day_num = day.day
+    if day == today:
+        return f"[{day_num:2d}]"
+
+    slot_rows, _virtual = build_attendance_slots_for_day(session, coach, day)
+    if not slot_rows:
+        return f"{day_num:2d}"
+
+    coach_id = coach.id
+    for_history = day < today
+    has_athletes = False
+    has_group_slot = False
+    has_individual_linked = False
+
+    for slot in slot_rows:
+        if slot.is_individual_format:
+            linked_training = resolve_attendance_slot_training(session, slot, coach_id)
+            if linked_training and individual_slot_has_links(
+                session, linked_training, coach_id=coach_id
+            ):
+                has_individual_linked = True
+        else:
+            has_group_slot = True
+
+        slot_training = resolve_attendance_slot_training(session, slot, coach_id)
+        if slot_training is None:
+            slot_training = _training_stub_from_slot(slot)
+        athletes, _att_map = fetch_athletes_for_training_slot(
+            session,
+            slot_training,
+            for_history=for_history,
+            coach_id=coach_id,
+        )
+        if athletes:
+            has_athletes = True
+            break
+
+    if has_athletes:
+        return f"+{day_num:2d}"
+    if has_group_slot:
+        return f"{day_num}•"
+    if has_individual_linked:
+        return f"+{day_num:2d}"
+    return f"{day_num:2d}"
 
 
 def _surname_initials_button_label(full_name: str, max_len: int = 40) -> str:

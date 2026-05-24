@@ -105,7 +105,8 @@ def _coach_calendar_message_header(*, current_year: int, current_month: int) -> 
     title = _MONTH_NAMES_RU[current_month]
     return (
         "📅 <b>Мой календарь</b>\n\n"
-        f"{html.escape(title)} {current_year}"
+        f"{html.escape(title)} {current_year}\n"
+        "<i>[ ] сегодня · + есть спортсмены · 17• только расписание</i>"
     )
 
 
@@ -2168,44 +2169,9 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                             "❌ У вас не указан вид спорта. Обратитесь к администратору."
                         )
                     else:
-                        month_start = datetime(current_year, current_month, 1)
-                        if current_month == 12:
-                            month_end = datetime(current_year + 1, 1, 1)
-                        else:
-                            month_end = datetime(current_year, current_month + 1, 1)
-
-                        training_query = session.query(Training).filter(
-                            Training.coach_id == user.id,
-                            Training.training_date >= month_start,
-                            Training.training_date < month_end,
-                            Training.is_cancelled == False
+                        from services.attendance_training_flow import (
+                            coach_calendar_day_button_text,
                         )
-                        if sport_type_name:
-                            training_query = training_query.filter(
-                                Training.sport_type == sport_type_name
-                            )
-                        trainings = training_query.order_by(
-                            Training.training_date.asc()
-                        ).all()
-                        trainings = dedupe_individual_trainings_by_slot(trainings)
-                        trainings = [
-                            t
-                            for t in trainings
-                            if (
-                                (getattr(t, "training_format", None) or "").strip().lower()
-                                != TRAINING_FORMAT_INDIVIDUAL
-                            )
-                            or individual_slot_has_links(session, t, coach_id=user.id)
-                        ]
-
-                        trainings_by_date = {}
-                        for training in trainings:
-                            date_key = training.training_date.date()
-                            if date_key not in trainings_by_date:
-                                trainings_by_date[date_key] = []
-                            trainings_by_date[date_key].append(training)
-
-                        scheduled_days = _coach_scheduled_weekdays(sport_type_name)
 
                         calendar_message = _coach_calendar_message_header(
                             current_year=current_year,
@@ -2235,19 +2201,12 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                                     )
                                 else:
                                     date_obj = datetime(current_year, current_month, day).date()
-                                    weekday = date_obj.weekday()
-                                    has_scheduled_training = weekday in scheduled_days
-                                    has_db_training = date_obj in trainings_by_date
-
-                                    if date_obj == today:
-                                        btn_text = f"[{day:2d}]"
-                                    elif has_db_training:
-                                        btn_text = f"+{day:2d}"
-                                    elif has_scheduled_training:
-                                        btn_text = f"{day}•"
-                                    else:
-                                        btn_text = f"{day:2d}"
-
+                                    btn_text = coach_calendar_day_button_text(
+                                        session,
+                                        user,
+                                        date_obj,
+                                        today=today,
+                                    )
                                     callback_data = (
                                         f"cal_date_{current_year}_{current_month}_{day}"
                                     )
