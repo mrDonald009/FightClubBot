@@ -394,7 +394,7 @@ def _build_visit_history_keyboard(
             ]
         )
     elif mode == _VISIT_HISTORY_MODE_OLDER_MENU and older_months:
-        for year, month in sorted(older_months.keys(), reverse=True):
+        for year, month in sorted(older_months.keys()):
             keyboard_rows.append(
                 [
                     InlineKeyboardButton(
