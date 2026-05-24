@@ -1500,111 +1500,136 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.debug("athletes_list user_id=%s", user_id)
 
+    list_message = None
+    list_reply_markup = None
+    empty_message = None
+    callback_alert = None
+    error_reply = None
+
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, user_id)
-            logger.debug("athletes_list user_id=%s found=%s type=%s", user_id, bool(user), type(user).__name__ if user else None)
+            logger.debug(
+                "athletes_list user_id=%s found=%s type=%s",
+                user_id,
+                bool(user),
+                type(user).__name__ if user else None,
+            )
 
             if not user or get_user_role(user) != 'coach':
-                if update.callback_query:
-                    await update.callback_query.answer("❌ У вас нет доступа")
-                else:
-                    await update.message.reply_text("❌ У вас нет доступа к этому меню")
-                return
-
-            athletes, message_header = load_athletes_for_list(session, user)
-
-            if not athletes:
-                if update.callback_query:
-                    await update.callback_query.answer()
-                    await update.callback_query.edit_message_text(
-                        "📭 У вас пока нет спортсменов.\n\n"
-                        "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
+                callback_alert = "❌ У вас нет доступа"
+                error_reply = "❌ У вас нет доступа к этому меню"
+            else:
+                if isinstance(user, Coach):
+                    user = (
+                        session.query(Coach)
+                        .options(joinedload(Coach.sport_type_rel))
+                        .filter_by(id=user.id)
+                        .first()
                     )
+                if not user:
+                    callback_alert = "❌ Пользователь не найден"
+                    error_reply = "❌ Пользователь не найден"
                 else:
-                    await update.message.reply_text(
-                        "📭 У вас пока нет спортсменов.\n\n"
-                        "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
-                    )
-                return
+                    athletes, message_header = load_athletes_for_list(session, user)
 
-            # Считаем статистику по категориям
-            from utils.subscription_checker import SubscriptionChecker
+                    if not athletes:
+                        empty_message = (
+                            "📭 У вас пока нет спортсменов.\n\n"
+                            "Добавьте первого спортсмена через меню '👥 Добавить спортсмена'"
+                        )
+                    else:
+                        from utils.subscription_checker import SubscriptionChecker
 
-            def is_active_status(status: str) -> bool:
-                # expiring_soon всё еще считаем активным
-                return status in ("active", "expiring_soon")
+                        def is_active_status(status: str) -> bool:
+                            return status in ("active", "expiring_soon")
 
-            total_athletes = len(athletes)
-        
-            # Подсчет активных/неактивных с разбивкой на детей/взрослых
-            from utils.age_groups import AGE_GROUP_ADULTS, AGE_GROUP_CODES
+                        total_athletes = len(athletes)
+                        from utils.age_groups import AGE_GROUP_ADULTS, AGE_GROUP_CODES
 
-            active_by_group = {g: 0 for g in AGE_GROUP_CODES}
-            inactive_by_group = {g: 0 for g in AGE_GROUP_CODES}
+                        active_by_group = {g: 0 for g in AGE_GROUP_CODES}
+                        inactive_by_group = {g: 0 for g in AGE_GROUP_CODES}
 
-            coach_sport = coach_sport_type_name(user)
+                        coach_sport = coach_sport_type_name(user)
 
-            for a in athletes:
-                sub = subscription_for_coach_sport(a, coach_sport)
-                status = (
-                    SubscriptionChecker.get_subscription_status(sub) if sub else "no_subscription"
-                )
-                is_active = is_active_status(status)
-                grp = (a.age_group or "").strip() or AGE_GROUP_ADULTS
-                if grp not in active_by_group:
-                    grp = AGE_GROUP_ADULTS
-                if is_active:
-                    active_by_group[grp] += 1
-                else:
-                    inactive_by_group[grp] += 1
+                        for a in athletes:
+                            sub = subscription_for_coach_sport(a, coach_sport)
+                            status = (
+                                SubscriptionChecker.get_subscription_status(sub)
+                                if sub
+                                else "no_subscription"
+                            )
+                            is_active = is_active_status(status)
+                            grp = (a.age_group or "").strip() or AGE_GROUP_ADULTS
+                            if grp not in active_by_group:
+                                grp = AGE_GROUP_ADULTS
+                            if is_active:
+                                active_by_group[grp] += 1
+                            else:
+                                inactive_by_group[grp] += 1
 
-            active_total = sum(active_by_group.values())
-            inactive_total = sum(inactive_by_group.values())
+                        active_total = sum(active_by_group.values())
+                        inactive_total = sum(inactive_by_group.values())
 
-            message = message_header
-            message += "<b>Выберите категорию:</b>"
+                        list_message = message_header
+                        list_message += "<b>Выберите категорию:</b>"
+                        list_reply_markup = InlineKeyboardMarkup([
+                            [
+                                InlineKeyboardButton(
+                                    f"✅ Активные ({active_total})",
+                                    callback_data="athletes_active",
+                                ),
+                                InlineKeyboardButton(
+                                    f"❌ Неактивные ({inactive_total})",
+                                    callback_data="athletes_inactive",
+                                ),
+                            ],
+                            [
+                                InlineKeyboardButton(
+                                    f"📋 Все ({total_athletes})",
+                                    callback_data="athletes_all",
+                                ),
+                            ],
+                            [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")],
+                        ])
 
-            # Меню категорий - сначала активные/неактивные
-            keyboard = [
-                [
-                    InlineKeyboardButton(f"✅ Активные ({active_total})", callback_data="athletes_active"),
-                    InlineKeyboardButton(f"❌ Неактивные ({inactive_total})", callback_data="athletes_inactive"),
-                ],
-                [
-                    InlineKeyboardButton(f"📋 Все ({total_athletes})", callback_data="athletes_all"),
-                ],
-                [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")],
-            ]
-
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            # Отправляем или редактируем сообщение
+        if callback_alert and update.callback_query:
+            await update.callback_query.answer(callback_alert)
+        elif error_reply:
+            if update.callback_query:
+                await update.callback_query.answer(error_reply, show_alert=True)
+            elif update.message:
+                await update.message.reply_text(error_reply)
+        elif empty_message:
+            if update.callback_query:
+                await update.callback_query.answer()
+                await update.callback_query.edit_message_text(empty_message)
+            elif update.message:
+                await update.message.reply_text(empty_message)
+        elif list_message is not None:
             if update.callback_query:
                 await update.callback_query.answer()
                 await update.callback_query.edit_message_text(
-                    message,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
+                    list_message,
+                    reply_markup=list_reply_markup,
+                    parse_mode='HTML',
                 )
-            else:
+            elif update.message:
                 await update.message.reply_text(
-                    message,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
+                    list_message,
+                    reply_markup=list_reply_markup,
+                    parse_mode='HTML',
                 )
 
     except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ СПИСКА СПОРТСМЕНОВ: {e}")
-        print(f"❌ ТРАССИРОВКА: {error_trace}")
-        logger.error(f"❌ ОШИБКА ПРИ ПОЛУЧЕНИИ СПИСКА СПОРТСМЕНОВ: {e}", exc_info=True)
+        logger.error("❌ ОШИБКА ПРИ ПОЛУЧЕНИИ СПИСКА СПОРТСМЕНОВ: %s", e, exc_info=True)
         error_msg = "❌ Ошибка при загрузке списка спортсменов"
         if update.callback_query:
-            await update.callback_query.answer(error_msg)
-        else:
+            await update.callback_query.answer(error_msg, show_alert=True)
+        elif update.message:
             await update.message.reply_text(error_msg)
+
+    return ConversationHandler.END
 
 
 async def athletes_list_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2099,182 +2124,192 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     logger.debug("show_coach_calendar: user_id=%s", user_id)
 
+    calendar_message = None
+    calendar_reply_markup = None
+    callback_alert = None
+    error_reply = None
+
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, user_id)
 
             if not user or get_user_role(user) != 'coach':
-                if update.callback_query:
-                    await update.callback_query.answer("❌ У вас нет доступа")
-                else:
-                    await update.message.reply_text("❌ У вас нет доступа к этому меню")
-                return
-
-            if isinstance(user, Coach):
-                user = (
-                    session.query(Coach)
-                    .options(joinedload(Coach.sport_type_rel))
-                    .filter_by(id=user.id)
-                    .first()
-                )
-                if not user:
-                    if update.callback_query:
-                        await update.callback_query.answer("❌ Пользователь не найден")
-                    else:
-                        await update.message.reply_text("❌ Пользователь не найден")
-                    return
-
-            # Получаем текущую дату или используем переданные параметры
-            now = now_moscow()
-            today = now.date()
-
-            if month is None:
-                current_month = now.month
+                callback_alert = "❌ У вас нет доступа"
+                error_reply = "❌ У вас нет доступа к этому меню"
             else:
-                current_month = month
-
-            if year is None:
-                current_year = now.year
-            else:
-                current_year = year
-
-            sport_type_name = coach_sport_type_name(user)
-            if get_user_role(user) == "coach" and not sport_type_name:
-                if update.callback_query:
-                    await update.callback_query.answer("❌ У вас не указан вид спорта")
-                else:
-                    await update.message.reply_text(
-                        "❌ У вас не указан вид спорта. Обратитесь к администратору.",
-                        parse_mode='HTML'
+                if isinstance(user, Coach):
+                    user = (
+                        session.query(Coach)
+                        .options(joinedload(Coach.sport_type_rel))
+                        .filter_by(id=user.id)
+                        .first()
                     )
-                return
+                if not user:
+                    callback_alert = "❌ Пользователь не найден"
+                    error_reply = "❌ Пользователь не найден"
+                else:
+                    now = now_moscow()
+                    today = now.date()
 
-            # Получаем тренировки для отображаемого месяца
-            month_start = datetime(current_year, current_month, 1)
-            if current_month == 12:
-                month_end = datetime(current_year + 1, 1, 1)
-            else:
-                month_end = datetime(current_year, current_month + 1, 1)
-
-            query = session.query(Training).filter(
-                Training.coach_id == user.id,
-                Training.training_date >= month_start,
-                Training.training_date < month_end,
-                Training.is_cancelled == False
-            )
-            if sport_type_name:
-                query = query.filter(Training.sport_type == sport_type_name)
-            trainings = query.order_by(Training.training_date.asc()).all()
-            trainings = dedupe_individual_trainings_by_slot(trainings)
-            trainings = [
-                t
-                for t in trainings
-                if (
-                    (getattr(t, "training_format", None) or "").strip().lower()
-                    != TRAINING_FORMAT_INDIVIDUAL
-                )
-                or individual_slot_has_links(session, t, coach_id=user.id)
-            ]
-
-            # Группируем тренировки по датам
-            trainings_by_date = {}
-            for training in trainings:
-                date_key = training.training_date.date()
-                if date_key not in trainings_by_date:
-                    trainings_by_date[date_key] = []
-                trainings_by_date[date_key].append(training)
-
-            # Дни недели с тренировками по расписанию (для тренера с видом спорта)
-            scheduled_days = _coach_scheduled_weekdays(sport_type_name)
-
-            message = _coach_calendar_message_header(
-                current_year=current_year,
-                current_month=current_month,
-            )
-
-            # Календарь (monthcalendar: недели с понедельника)
-            cal = calendar.monthcalendar(current_year, current_month)
-            keyboard = []
-
-            day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-            day_names_buttons = [
-                InlineKeyboardButton(f"{day_name}.", callback_data="cal_empty") for day_name in day_names
-            ]
-            keyboard.append(day_names_buttons)
-
-            weeks_to_show = list(cal)
-            while len(weeks_to_show) < 5:
-                weeks_to_show.append([0, 0, 0, 0, 0, 0, 0])
-
-            for week in weeks_to_show:
-                week_buttons = []
-                for day in week:
-                    if day == 0:
-                        week_buttons.append(InlineKeyboardButton(" ", callback_data="cal_empty"))
+                    if month is None:
+                        current_month = now.month
                     else:
-                        date_obj = datetime(current_year, current_month, day).date()
-                        weekday = date_obj.weekday()
-                        has_scheduled_training = weekday in scheduled_days
-                        has_db_training = date_obj in trainings_by_date
+                        current_month = month
 
-                        if date_obj == today:
-                            btn_text = f"[{day:2d}]"
-                        elif has_db_training:
-                            btn_text = f"+{day:2d}"
-                        elif has_scheduled_training:
-                            btn_text = f"{day}•"
+                    if year is None:
+                        current_year = now.year
+                    else:
+                        current_year = year
+
+                    sport_type_name = coach_sport_type_name(user)
+                    if get_user_role(user) == "coach" and not sport_type_name:
+                        callback_alert = "❌ У вас не указан вид спорта"
+                        error_reply = (
+                            "❌ У вас не указан вид спорта. Обратитесь к администратору."
+                        )
+                    else:
+                        month_start = datetime(current_year, current_month, 1)
+                        if current_month == 12:
+                            month_end = datetime(current_year + 1, 1, 1)
                         else:
-                            btn_text = f"{day:2d}"
+                            month_end = datetime(current_year, current_month + 1, 1)
 
-                        callback_data = f"cal_date_{current_year}_{current_month}_{day}"
-                        week_buttons.append(InlineKeyboardButton(btn_text, callback_data=callback_data))
+                        training_query = session.query(Training).filter(
+                            Training.coach_id == user.id,
+                            Training.training_date >= month_start,
+                            Training.training_date < month_end,
+                            Training.is_cancelled == False
+                        )
+                        if sport_type_name:
+                            training_query = training_query.filter(
+                                Training.sport_type == sport_type_name
+                            )
+                        trainings = training_query.order_by(
+                            Training.training_date.asc()
+                        ).all()
+                        trainings = dedupe_individual_trainings_by_slot(trainings)
+                        trainings = [
+                            t
+                            for t in trainings
+                            if (
+                                (getattr(t, "training_format", None) or "").strip().lower()
+                                != TRAINING_FORMAT_INDIVIDUAL
+                            )
+                            or individual_slot_has_links(session, t, coach_id=user.id)
+                        ]
 
-                keyboard.append(week_buttons)
-        
-            # Кнопки навигации по месяцам
-            prev_month = current_month - 1
-            prev_year = current_year
-            if prev_month < 1:
-                prev_month = 12
-                prev_year -= 1
-            
-            next_month = current_month + 1
-            next_year = current_year
-            if next_month > 12:
-                next_month = 1
-                next_year += 1
-        
-            keyboard.append([
-                InlineKeyboardButton("◀️ Предыдущий", callback_data=f"calendar_{prev_year}_{prev_month}"),
-                InlineKeyboardButton("Следующий ▶️", callback_data=f"calendar_{next_year}_{next_month}")
-            ])
-        
-            # Кнопка "Сегодня"
-            if current_month != now.month or current_year != now.year:
-                keyboard.append([
-                    InlineKeyboardButton("📅 Сегодня", callback_data=f"calendar_{now.year}_{now.month}")
-                ])
-        
-            # Кнопка возврата в меню
-            keyboard.append([
-                InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")
-            ])
-        
-            reply_markup = InlineKeyboardMarkup(keyboard)
+                        trainings_by_date = {}
+                        for training in trainings:
+                            date_key = training.training_date.date()
+                            if date_key not in trainings_by_date:
+                                trainings_by_date[date_key] = []
+                            trainings_by_date[date_key].append(training)
 
+                        scheduled_days = _coach_scheduled_weekdays(sport_type_name)
+
+                        calendar_message = _coach_calendar_message_header(
+                            current_year=current_year,
+                            current_month=current_month,
+                        )
+
+                        cal = calendar.monthcalendar(current_year, current_month)
+                        keyboard = []
+
+                        day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+                        day_names_buttons = [
+                            InlineKeyboardButton(f"{day_name}.", callback_data="cal_empty")
+                            for day_name in day_names
+                        ]
+                        keyboard.append(day_names_buttons)
+
+                        weeks_to_show = list(cal)
+                        while len(weeks_to_show) < 5:
+                            weeks_to_show.append([0, 0, 0, 0, 0, 0, 0])
+
+                        for week in weeks_to_show:
+                            week_buttons = []
+                            for day in week:
+                                if day == 0:
+                                    week_buttons.append(
+                                        InlineKeyboardButton(" ", callback_data="cal_empty")
+                                    )
+                                else:
+                                    date_obj = datetime(current_year, current_month, day).date()
+                                    weekday = date_obj.weekday()
+                                    has_scheduled_training = weekday in scheduled_days
+                                    has_db_training = date_obj in trainings_by_date
+
+                                    if date_obj == today:
+                                        btn_text = f"[{day:2d}]"
+                                    elif has_db_training:
+                                        btn_text = f"+{day:2d}"
+                                    elif has_scheduled_training:
+                                        btn_text = f"{day}•"
+                                    else:
+                                        btn_text = f"{day:2d}"
+
+                                    callback_data = (
+                                        f"cal_date_{current_year}_{current_month}_{day}"
+                                    )
+                                    week_buttons.append(
+                                        InlineKeyboardButton(btn_text, callback_data=callback_data)
+                                    )
+
+                            keyboard.append(week_buttons)
+
+                        prev_month = current_month - 1
+                        prev_year = current_year
+                        if prev_month < 1:
+                            prev_month = 12
+                            prev_year -= 1
+
+                        next_month = current_month + 1
+                        next_year = current_year
+                        if next_month > 12:
+                            next_month = 1
+                            next_year += 1
+
+                        keyboard.append([
+                            InlineKeyboardButton(
+                                "◀️ Предыдущий",
+                                callback_data=f"calendar_{prev_year}_{prev_month}",
+                            ),
+                            InlineKeyboardButton(
+                                "Следующий ▶️",
+                                callback_data=f"calendar_{next_year}_{next_month}",
+                            ),
+                        ])
+
+                        if current_month != now.month or current_year != now.year:
+                            keyboard.append([
+                                InlineKeyboardButton(
+                                    "📅 Сегодня",
+                                    callback_data=f"calendar_{now.year}_{now.month}",
+                                )
+                            ])
+
+                        keyboard.append([
+                            InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")
+                        ])
+
+                        calendar_reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if callback_alert and update.callback_query:
+            await update.callback_query.answer(callback_alert)
+        elif error_reply and not update.callback_query:
+            await update.message.reply_text(error_reply, parse_mode='HTML')
+        elif calendar_message is not None:
             if update.callback_query:
                 await update.callback_query.answer()
-                # При редактировании явно обновляем и текст, и клавиатуру
-                # Обновляем текст и клавиатуру одновременно, чтобы размер не менялся
                 await update.callback_query.edit_message_text(
-                    message,
-                    reply_markup=reply_markup,
+                    calendar_message,
+                    reply_markup=calendar_reply_markup,
                     parse_mode='HTML'
                 )
             else:
                 await update.message.reply_text(
-                    message,
-                    reply_markup=reply_markup,
+                    calendar_message,
+                    reply_markup=calendar_reply_markup,
                     parse_mode='HTML'
                 )
 
@@ -2285,6 +2320,8 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.callback_query.answer(error_msg)
         else:
             await update.message.reply_text(error_msg)
+
+    return ConversationHandler.END
 
 
 async def handle_calendar_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -377,6 +377,181 @@ def fetch_athletes_for_training_slot(
     return athletes, attendance_map
 
 
+def _training_stub_from_slot(slot: TodaySlotDisplay) -> Training:
+    """Несохранённый Training для проверки абонемента (виртуальный групповой слот)."""
+    fmt = TRAINING_FORMAT_INDIVIDUAL if slot.is_individual_format else None
+    return Training(
+        sport_type=slot.sport_type,
+        age_group=slot.age_group,
+        training_date=slot.training_datetime,
+        training_format=fmt,
+        is_cancelled=False,
+    )
+
+
+def resolve_attendance_slot_training(
+    session: OrmSession,
+    slot: TodaySlotDisplay,
+    coach_id: Optional[int],
+) -> Optional[Training]:
+    """Существующая запись trainings для слота (без создания новой)."""
+    if slot.training_id:
+        return (
+            session.query(Training)
+            .filter_by(id=slot.training_id, is_cancelled=False)
+            .first()
+        )
+    if slot.is_individual_format:
+        return None
+    return find_group_training_on_calendar_day(
+        session,
+        sport_type=slot.sport_type,
+        age_group=slot.age_group,
+        day=slot.training_datetime.date(),
+        coach_id=coach_id,
+    )
+
+
+def athlete_subscription_for_attendance_slot(
+    session: OrmSession,
+    athlete: Athlete,
+    training: Training,
+    *,
+    for_history: bool = False,
+) -> Optional[Subscription]:
+    """
+    Тот же критерий, что fetch_athletes_for_training_slot, для одного спортсмена.
+    for_history=True — без фильтра is_active (истёкшие абонементы за прошлые даты).
+    """
+    if not training.training_date:
+        return None
+    training_day = training.training_date.date()
+    is_individual_slot = (
+        (getattr(training, "training_format", None) or "").strip().lower()
+        == TRAINING_FORMAT_INDIVIDUAL
+    )
+    q = session.query(Subscription).filter(
+        Subscription.athlete_id == athlete.id,
+        Subscription.sport_type == training.sport_type,
+        func.date(Subscription.start_date) <= training_day,
+        func.date(Subscription.end_date) >= training_day,
+    )
+    if not for_history:
+        q = q.filter(Subscription.is_active.is_(True))
+    if is_individual_slot:
+        slot_key = training.training_date.strftime("%Y-%m-%d %H:%M")
+        q = q.filter(
+            Subscription.subscription_type == "individual",
+            func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
+        )
+    else:
+        athlete_group = (athlete.age_group or "").strip()
+        training_group = (training.age_group or "").strip()
+        if athlete_group != training_group:
+            return None
+        q = q.filter(
+            or_(
+                Subscription.subscription_type.is_(None),
+                Subscription.subscription_type != "individual",
+            ),
+        )
+    subs = q.order_by(Subscription.id.desc()).all()
+    if not subs:
+        return None
+    if is_individual_slot:
+        return subs[0]
+    for sub in subs:
+        if (getattr(sub, "subscription_type", None) or "").strip().lower() == "single":
+            return sub
+    for sub in subs:
+        st = (getattr(sub, "subscription_type", None) or "").strip().lower()
+        if st != "individual":
+            return sub
+    return subs[0]
+
+
+def _attendance_for_athlete_on_training(
+    session: OrmSession,
+    athlete_id: int,
+    training: Training,
+) -> Optional[Attendance]:
+    if not getattr(training, "id", None):
+        return None
+    slot_tids = individual_slot_training_ids(session, training)
+    return (
+        session.query(Attendance)
+        .filter(
+            Attendance.athlete_id == athlete_id,
+            Attendance.training_id.in_(slot_tids),
+        )
+        .order_by(Attendance.created_at.desc())
+        .first()
+    )
+
+
+def collect_athlete_visit_history_slots(
+    session: OrmSession,
+    athlete: Athlete,
+    coach: Coach,
+    *,
+    range_start: datetime,
+    range_end: datetime,
+) -> List[Tuple[Training, Optional[Attendance], Optional[Subscription]]]:
+    """
+    Слоты истории посещений спортсмена — тот же набор, что «Отметить посещения»:
+    build_attendance_slots_for_day по дням + абонемент спортсмена на слот.
+    """
+    coach_id = getattr(coach, "id", None)
+    seen_keys: Set[Tuple[str, str, str, str]] = set()
+    out: List[Tuple[Training, Optional[Attendance], Optional[Subscription]]] = []
+
+    day = range_start.date()
+    last_day = range_end.date()
+    while day <= last_day:
+        slot_dt_end = datetime.combine(day, datetime.max.time())
+        if slot_dt_end < range_start:
+            day += timedelta(days=1)
+            continue
+
+        slot_rows, _virtual = build_attendance_slots_for_day(session, coach, day)
+        for slot in slot_rows:
+            if slot.training_datetime > range_end:
+                continue
+            if slot.training_datetime < range_start:
+                continue
+
+            training = resolve_attendance_slot_training(session, slot, coach_id)
+            probe = training if training is not None else _training_stub_from_slot(slot)
+            sub = athlete_subscription_for_attendance_slot(
+                session, athlete, probe, for_history=True
+            )
+            if sub is None:
+                continue
+
+            dedupe_key = (
+                slot.sport_type or "",
+                slot.age_group or "",
+                slot.training_datetime.strftime("%Y-%m-%d %H:%M"),
+                "ind" if slot.is_individual_format else "grp",
+            )
+            if dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
+
+            display_training = training if training is not None else probe
+            att = (
+                _attendance_for_athlete_on_training(session, athlete.id, display_training)
+                if getattr(display_training, "id", None)
+                else None
+            )
+            out.append((display_training, att, sub))
+
+        day += timedelta(days=1)
+
+    out.sort(key=lambda row: row[0].training_date or range_start)
+    return out
+
+
 def _surname_initials_button_label(full_name: str, max_len: int = 40) -> str:
     """Фамилия и инициалы (как в списках): «Иванов И.П.» — компактно для кнопки."""
     parts = [p for p in (full_name or "").strip().split() if p]

@@ -477,7 +477,11 @@ if DATABASE_URL.startswith("sqlite:///"):
         os.makedirs(db_dir, exist_ok=True)
 
 # Создаем движок SQLAlchemy
-engine = create_engine(DATABASE_URL)
+_engine_kwargs = {}
+if DATABASE_URL.startswith("sqlite:///"):
+    # Ожидание при блокировке (параллельные handlers + открытая сессия на await).
+    _engine_kwargs["connect_args"] = {"timeout": 30}
+engine = create_engine(DATABASE_URL, **_engine_kwargs)
 
 # Создаем таблицы если их нет
 Base.metadata.create_all(engine)

@@ -3338,251 +3338,194 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     try:
+        render_message = None
+        render_markup = None
+        error_message = None
+
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
 
             if not user or get_user_role(user) not in ['coach', 'admin']:
-                await query.edit_message_text("❌ У вас нет доступа")
-                return
+                error_message = "❌ У вас нет доступа"
+            else:
+                athlete = session.query(Athlete).filter_by(id=athlete_id).first()
+                if not athlete:
+                    error_message = "❌ Спортсмен не найден"
+                elif isinstance(user, Coach) and athlete.created_by != user.id:
+                    error_message = "❌ Вы не можете просматривать этого спортсмена"
+                else:
+                    now = now_moscow()
+                    entries: List[tuple] = []
+                    covered_tids = set()
 
-            athlete = session.query(Athlete).filter_by(id=athlete_id).first()
-            if not athlete:
-                await query.edit_message_text("❌ Спортсмен не найден")
-                return
+                    coach_for_slots = None
+                    if getattr(athlete, "created_by", None):
+                        coach_for_slots = (
+                            session.query(Coach)
+                            .options(joinedload(Coach.sport_type_rel))
+                            .filter_by(id=athlete.created_by)
+                            .first()
+                        )
+                    if coach_for_slots is None and isinstance(user, Coach):
+                        coach_for_slots = (
+                            session.query(Coach)
+                            .options(joinedload(Coach.sport_type_rel))
+                            .filter_by(id=user.id)
+                            .first()
+                        )
 
-            # Проверяем права
-            if isinstance(user, Coach) and athlete.created_by != user.id:
-                await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
-                return
+                    if coach_for_slots and athlete.sport_type and athlete.age_group:
+                        from services.attendance_training_flow import (
+                            collect_athlete_visit_history_slots,
+                        )
 
-            now = now_moscow()
-            entries: List[tuple] = []
-            slots_for_history: List[Training] = []
+                        lookback = now - timedelta(days=_VISIT_HISTORY_LOOKBACK_DAYS)
+                        slot_rows = collect_athlete_visit_history_slots(
+                            session,
+                            athlete,
+                            coach_for_slots,
+                            range_start=lookback,
+                            range_end=now,
+                        )
+                        for training, att, sub in slot_rows:
+                            if getattr(training, "id", None):
+                                covered_tids.update(
+                                    individual_slot_training_ids(session, training)
+                                )
+                                label = attendance_label_ru_for_training(
+                                    att, training, now=now, with_note=(att is None)
+                                )
+                                if att is not None and att.attended:
+                                    status_code = "present"
+                                    history_source = "attendance_mark"
+                                else:
+                                    status_code = "absent"
+                                    history_source = (
+                                        "attendance_mark"
+                                        if att is not None
+                                        else "calendar_derived"
+                                    )
+                                upsert_visit_history_for_training(
+                                    session,
+                                    athlete_id=athlete_id,
+                                    training_id=training.id,
+                                    attendance=att,
+                                    status_code=status_code,
+                                    status_label=label,
+                                    source=history_source,
+                                    recorded_at=now,
+                                )
 
-            if athlete.sport_type and athlete.age_group:
-                lookback = now - timedelta(days=_VISIT_HISTORY_LOOKBACK_DAYS)
-                _fit = TRAINING_FORMAT_INDIVIDUAL
-                has_group_sub = exists().where(
-                    and_(
-                        Subscription.athlete_id == athlete_id,
-                        Subscription.sport_type == Training.sport_type,
-                        func.date(Subscription.start_date) <= func.date(Training.training_date),
-                        func.date(Subscription.end_date) >= func.date(Training.training_date),
-                        or_(
-                            Subscription.subscription_type.is_(None),
-                            Subscription.subscription_type != "individual",
-                        ),
-                    )
-                )
-                # Групповые слоты: совпадение вида спорта и возрастной группы, без individual.
-                trainings_group = (
-                    session.query(Training)
-                    .filter(
-                        Training.sport_type == athlete.sport_type,
-                        Training.age_group == athlete.age_group,
-                        Training.is_cancelled.is_(False),
-                        Training.training_date >= lookback,
-                        Training.training_date <= now,
-                        has_group_sub,
-                        or_(
-                            Training.training_format.is_(None),
-                            func.trim(Training.training_format) == "",
-                            func.lower(func.trim(Training.training_format)) != _fit,
-                        ),
-                    )
-                    .order_by(Training.training_date.desc())
-                    .limit(80)
-                    .all()
-                )
-                if getattr(athlete, "created_by", None):
-                    trainings_group = [t for t in trainings_group if t.coach_id == athlete.created_by]
-                # Индивидуальные слоты: в trainings.age_group часто «adults» для всех;
-                # отбор по факту абонемента individual с тем же start_date, что у слота.
-                has_individual_sub = exists().where(
-                    and_(
-                        Subscription.athlete_id == athlete_id,
-                        Subscription.sport_type == Training.sport_type,
-                        Subscription.subscription_type == "individual",
-                        func.strftime("%Y-%m-%d %H:%M", Subscription.start_date)
-                        == func.strftime("%Y-%m-%d %H:%M", Training.training_date),
-                    )
-                )
-                trainings_indiv = (
-                    session.query(Training)
-                    .filter(
-                        Training.sport_type == athlete.sport_type,
-                        Training.is_cancelled.is_(False),
-                        Training.training_date >= lookback,
-                        Training.training_date <= now,
-                        has_individual_sub,
-                        func.lower(func.coalesce(func.trim(Training.training_format), "")) == _fit,
-                    )
-                    .order_by(Training.training_date.desc())
-                    .limit(80)
-                    .all()
-                )
-                if getattr(athlete, "created_by", None):
-                    trainings_indiv = [t for t in trainings_indiv if t.coach_id == athlete.created_by]
-                all_slots = dedupe_individual_trainings_by_slot(trainings_group + trainings_indiv)
-                slots_for_history = sorted(
-                    all_slots, key=lambda tr: tr.training_date or now
-                )
-                if slots_for_history:
-                    tids_flat = set()
-                    for tr in slots_for_history:
-                        tids_flat.update(individual_slot_training_ids(session, tr))
-                    atts = (
+                            present = _visit_history_slot_present(att)
+                            kind = _visit_training_kind_ru(training, att, subscription=sub)
+                            line = _format_visit_history_slot_line(
+                                training, att, subscription=sub
+                            )
+                            if training.training_date:
+                                entries.append(
+                                    (training.training_date, line, present, kind)
+                                )
+
+                    extra = (
                         session.query(Attendance)
                         .options(joinedload(Attendance.training))
-                        .filter(
-                            Attendance.athlete_id == athlete_id,
-                            Attendance.training_id.in_(list(tids_flat)),
-                        )
+                        .filter_by(athlete_id=athlete_id)
+                        .order_by(Attendance.created_at.asc())
+                        .limit(80)
                         .all()
                     )
-                    att_by_tid = {a.training_id: a for a in atts}
+                    for att in extra:
+                        tid = att.training_id
+                        if tid and tid in covered_tids:
+                            continue
+                        tr = att.training
+                        if tr and tr.training_date:
+                            dt = tr.training_date
+                            sub = att.subscription or _subscription_for_visit_slot(
+                                session, athlete_id, tr
+                            )
+                            present = _visit_history_slot_present(att)
+                            kind = _visit_training_kind_ru(tr, att, subscription=sub)
+                            line = _format_visit_history_slot_line(tr, att, subscription=sub)
+                            entries.append((dt, line, present, kind))
+                        elif tr:
+                            dt = now
+                            sub = att.subscription
+                            present = _visit_history_slot_present(att)
+                            kind = _visit_training_kind_ru(tr, att, subscription=sub)
+                            line = _format_visit_history_slot_line(tr, att, subscription=sub)
+                            entries.append((dt, line, present, kind))
 
-                    def _attendance_for_slot(tr: Training):
-                        for sid in individual_slot_training_ids(session, tr):
-                            if sid in att_by_tid:
-                                return att_by_tid[sid]
-                        return None
-
-                    for t in slots_for_history:
-                        att = _attendance_for_slot(t)
-                        label = attendance_label_ru_for_training(
-                            att, t, now=now, with_note=(att is None)
-                        )
-                        if att is not None and att.attended:
-                            status_code = "present"
-                            history_source = "attendance_mark"
-                        else:
-                            # В истории не используем «не отмечено»: отсутствие отметки считаем «не был».
-                            status_code = "absent"
-                            history_source = "attendance_mark" if att is not None else "calendar_derived"
-                        upsert_visit_history_for_training(
-                            session,
-                            athlete_id=athlete_id,
-                            training_id=t.id,
-                            attendance=att,
-                            status_code=status_code,
-                            status_label=label,
-                            source=history_source,
-                            recorded_at=now,
-                        )
-
-                        sub = (
-                            att.subscription
-                            if att is not None and att.subscription is not None
-                            else _subscription_for_visit_slot(session, athlete_id, t)
-                        )
-                        present = _visit_history_slot_present(att)
-                        kind = _visit_training_kind_ru(t, att, subscription=sub)
-                        line = _format_visit_history_slot_line(t, att, subscription=sub)
-                        entries.append((t.training_date, line, present, kind))
-            covered_tids = set()
-            if athlete.sport_type and athlete.age_group:
-                for tr in slots_for_history:
-                    covered_tids.update(individual_slot_training_ids(session, tr))
-
-            # Добавляем сохранённые отметки вне видимых слотов (другая дисциплина/группа/старше окна),
-            # чтобы не терялась история прежних записей.
-            extra = (
-                session.query(Attendance)
-                .options(joinedload(Attendance.training))
-                .filter_by(athlete_id=athlete_id)
-                .order_by(Attendance.created_at.asc())
-                .limit(80)
-                .all()
-            )
-            for att in extra:
-                tid = att.training_id
-                if tid and tid in covered_tids:
-                    continue
-                tr = att.training
-                if tr and tr.training_date:
-                    dt = tr.training_date
-                    sub = att.subscription or _subscription_for_visit_slot(
-                        session, athlete_id, tr
+                    lookback_cutoff = now - timedelta(days=_VISIT_HISTORY_LOOKBACK_DAYS)
+                    entries_in_window = sorted(
+                        (e for e in entries if e[0] >= lookback_cutoff),
+                        key=lambda x: x[0],
                     )
-                    present = _visit_history_slot_present(att)
-                    kind = _visit_training_kind_ru(tr, att, subscription=sub)
-                    line = _format_visit_history_slot_line(tr, att, subscription=sub)
-                    entries.append((dt, line, present, kind))
-                elif tr:
-                    dt = now
-                    sub = att.subscription
-                    present = _visit_history_slot_present(att)
-                    kind = _visit_training_kind_ru(tr, att, subscription=sub)
-                    line = _format_visit_history_slot_line(tr, att, subscription=sub)
-                    entries.append((dt, line, present, kind))
+                    display_rows = [
+                        (dt, line, present)
+                        for dt, line, present, _kind in entries_in_window
+                    ]
+                    has_older = _has_older_visit_rows(display_rows, now=now)
+                    older_by_month = _group_older_visit_rows_by_month(
+                        display_rows, now=now
+                    )
 
-            lookback_cutoff = now - timedelta(days=_VISIT_HISTORY_LOOKBACK_DAYS)
-            entries_in_window = sorted(
-                (e for e in entries if e[0] >= lookback_cutoff),
-                key=lambda x: x[0],
-            )
-            display_rows = [
-                (dt, line, present)
-                for dt, line, present, _kind in entries_in_window
-            ]
-            has_older = _has_older_visit_rows(display_rows, now=now)
-            older_by_month = _group_older_visit_rows_by_month(
-                display_rows, now=now
-            )
+                    if visit_mode == _VISIT_HISTORY_MODE_OLDER_MENU:
+                        render_message = _render_visit_history_month_picker(
+                            athlete.full_name, older_by_month
+                        )
+                        render_markup = _build_visit_history_keyboard(
+                            athlete_id,
+                            visit_mode,
+                            older_months=older_by_month,
+                        )
+                    elif visit_mode == _VISIT_HISTORY_MODE_OLDER_MONTH:
+                        year, month = _yyyymm_to_year_month(older_yyyymm)
+                        period_rows = _filter_visit_rows_older_month(
+                            display_rows, year=year, month=month, now=now
+                        )
+                        shown_rows = period_rows
+                        if len(shown_rows) > _VISIT_HISTORY_MAX_LINES:
+                            shown_rows = shown_rows[-_VISIT_HISTORY_MAX_LINES:]
+                        period_caption = _visit_history_month_label(year, month)
+                        render_message = _render_visit_history_message(
+                            athlete.full_name,
+                            shown_rows,
+                            total_matching=len(period_rows),
+                            period_caption=period_caption,
+                        )
+                        render_markup = _build_visit_history_keyboard(
+                            athlete_id, visit_mode
+                        )
+                    else:
+                        period_rows = _filter_visit_rows_last_month(
+                            display_rows, now=now
+                        )
+                        shown_rows = period_rows
+                        if len(shown_rows) > _VISIT_HISTORY_MAX_LINES:
+                            shown_rows = shown_rows[-_VISIT_HISTORY_MAX_LINES:]
+                        render_message = _render_visit_history_message(
+                            athlete.full_name,
+                            shown_rows,
+                            total_matching=len(period_rows),
+                            period_caption="За последний месяц",
+                        )
+                        render_markup = _build_visit_history_keyboard(
+                            athlete_id,
+                            _VISIT_HISTORY_MODE_MONTH,
+                            has_older=has_older,
+                        )
 
-            if visit_mode == _VISIT_HISTORY_MODE_OLDER_MENU:
-                message = _render_visit_history_month_picker(
-                    athlete.full_name, older_by_month
-                )
-                reply_markup = _build_visit_history_keyboard(
-                    athlete_id,
-                    visit_mode,
-                    older_months=older_by_month,
-                )
-            elif visit_mode == _VISIT_HISTORY_MODE_OLDER_MONTH:
-                year, month = _yyyymm_to_year_month(older_yyyymm)
-                period_rows = _filter_visit_rows_older_month(
-                    display_rows, year=year, month=month, now=now
-                )
-                shown_rows = period_rows
-                if len(shown_rows) > _VISIT_HISTORY_MAX_LINES:
-                    shown_rows = shown_rows[-_VISIT_HISTORY_MAX_LINES:]
-                period_caption = _visit_history_month_label(year, month)
-                message = _render_visit_history_message(
-                    athlete.full_name,
-                    shown_rows,
-                    total_matching=len(period_rows),
-                    period_caption=period_caption,
-                )
-                reply_markup = _build_visit_history_keyboard(
-                    athlete_id, visit_mode
-                )
-            else:
-                period_rows = _filter_visit_rows_last_month(
-                    display_rows, now=now
-                )
-                shown_rows = period_rows
-                if len(shown_rows) > _VISIT_HISTORY_MAX_LINES:
-                    shown_rows = shown_rows[-_VISIT_HISTORY_MAX_LINES:]
-                message = _render_visit_history_message(
-                    athlete.full_name,
-                    shown_rows,
-                    total_matching=len(period_rows),
-                    period_caption="За последний месяц",
-                )
-                reply_markup = _build_visit_history_keyboard(
-                    athlete_id,
-                    _VISIT_HISTORY_MODE_MONTH,
-                    has_older=has_older,
-                )
-        
+        if error_message:
+            await query.edit_message_text(error_message)
+            return
+        if render_message is not None:
             await query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
+                render_message,
+                reply_markup=render_markup,
+                parse_mode='HTML',
             )
-    
+
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ ПОСЕЩЕНИЙ: {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка при загрузке посещений")
