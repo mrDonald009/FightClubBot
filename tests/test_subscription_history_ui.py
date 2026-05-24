@@ -77,8 +77,9 @@ def test_individual_history_button_shows_slot_datetime():
     )
     assert _is_individual_subscription(sub)
     label = _history_subscription_button_label(sub)
-    assert "#101" in label
-    assert "16.05.2026 10:30" in label
+    assert label.startswith("🥊")
+    assert "16.05 10:30" in label
+    assert "(MMA)" in label
 
     block = _history_subscription_list_lines(sub, 1)
     assert "Индивидуальная бронь #101" in block
@@ -86,7 +87,7 @@ def test_individual_history_button_shows_slot_datetime():
     assert "MMA" in block
 
 
-def test_group_history_button_shows_type_and_date():
+def test_group_history_button_shows_type_and_period():
     sub = Subscription(
         id=50,
         subscription_type="monthly",
@@ -100,9 +101,25 @@ def test_group_history_button_shows_type_and_date():
         created_at=datetime(2026, 4, 1, 9, 0),
     )
     label = _history_subscription_button_label(sub)
+    assert label.startswith("👥")
     assert "Месячный" in label
-    assert "01.04.2026" in label
+    assert "01.04" in label
+    assert "0/12" in label
 
+
+def test_group_history_list_lines_detail_block():
+    sub = Subscription(
+        id=50,
+        subscription_type="monthly",
+        discipline_key="mma_group",
+        sport_type="MMA",
+        is_active=False,
+        start_date=datetime(2026, 4, 1, 0, 0),
+        end_date=datetime(2026, 5, 1, 0, 0),
+        trainings_total=12,
+        trainings_remaining=0,
+        created_at=datetime(2026, 4, 1, 9, 0),
+    )
     block = _history_subscription_list_lines(sub, 2)
     assert "Абонемент #50" in block
     assert "Месячный" in block

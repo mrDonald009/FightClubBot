@@ -183,19 +183,44 @@ def _truncate_inline_button_text(text: str, max_len: int = 64) -> str:
     return text[: max_len - 1] + "…"
 
 
-def _history_subscription_button_label(sub: Subscription) -> str:
-    """Подпись кнопки в списке истории абонементов."""
+def _history_subscription_button_label(sub: Subscription, session=None) -> str:
+    """Компактная подпись кнопки в списке истории (без дублирования текста в сообщении)."""
     status_icon = _status_icon_from_status_text(_format_subscription_status_ui(sub))
     if _is_individual_subscription(sub):
+        prefix = "🥊 "
         if sub.start_date:
-            slot = _format_dt(sub.start_date)
+            slot = sub.start_date.strftime("%d.%m %H:%M")
         else:
             slot = "без слота"
-        text = f"{status_icon} #{sub.id} | {slot}"
+        sport = (sub.sport_type or "—").strip()
+        if not sub.is_active:
+            tail = " · неактивна"
+        elif _individual_subscription_is_past_or_completed(sub):
+            tail = " · завершена"
+        else:
+            hint = _individual_slot_relative_hint(sub)
+            tail = f" · {hint}" if hint and hint != "без даты" else ""
+        attendance = _individual_attendance_suffix(session, sub)
+        text = f"{prefix}{status_icon} {slot} ({sport}){tail}{attendance}"
     else:
-        start_date_str = sub.start_date.strftime("%d.%m.%Y") if sub.start_date else "—"
+        prefix = "👥 "
         sub_type = _format_subscription_type_ru(sub.subscription_type)
-        text = f"{status_icon} #{sub.id} | {sub_type} | {start_date_str}"
+        if sub.start_date and sub.end_date:
+            period = (
+                f"{sub.start_date.strftime('%d.%m')}—"
+                f"{sub.end_date.strftime('%d.%m.%Y')}"
+            )
+        elif sub.start_date:
+            period = sub.start_date.strftime("%d.%m.%Y")
+        else:
+            period = "—"
+        trainings_total = sub.trainings_total
+        if trainings_total is not None:
+            rem = sub.trainings_remaining if sub.trainings_remaining is not None else "—"
+            trainings = f" · {rem}/{trainings_total}"
+        else:
+            trainings = ""
+        text = f"{prefix}{status_icon} {sub_type} · {period}{trainings}"
     return _truncate_inline_button_text(text)
 
 
@@ -322,6 +347,75 @@ def _subscription_history_filter_nav_row(
             )
         )
     return buttons
+
+
+def _history_group_subscriptions_sorted(group_subs):
+    return sorted(
+        group_subs,
+        key=lambda s: (s.created_at or datetime.min, s.id or 0),
+        reverse=True,
+    )
+
+
+def _history_individual_subscriptions_sorted(individual_subs):
+    return sorted(
+        individual_subs,
+        key=lambda s: (s.start_date or datetime.min, s.id or 0),
+        reverse=True,
+    )
+
+
+def _history_list_header(
+    history_filter: str,
+    *,
+    group_count: int,
+    individual_count: int,
+) -> str:
+    if history_filter == _HISTORY_FILTER_INDIVIDUAL:
+        return (
+            f"Записей: <b>{individual_count}</b>\n"
+            "Сначала новые слоты.\n"
+            "Нажмите кнопку, чтобы открыть детали."
+        )
+    if history_filter == _HISTORY_FILTER_GROUP:
+        return (
+            f"Записей: <b>{group_count}</b>\n"
+            "Нажмите кнопку, чтобы открыть детали."
+        )
+    parts = []
+    if group_count:
+        parts.append(f"👥 {group_count}")
+    if individual_count:
+        parts.append(f"🥊 {individual_count}")
+    summary = " · ".join(parts) if parts else "0"
+    return (
+        f"Всего: <b>{group_count + individual_count}</b> ({summary})\n"
+        "Нажмите кнопку, чтобы открыть детали."
+    )
+
+
+def _history_list_keyboard_rows(
+    subscriptions,
+    *,
+    history_filter: str,
+    group_subs,
+    individual_subs,
+    list_limit: int,
+):
+    """Кнопки списка истории; для «Все» — сначала групповые, потом individual."""
+    if history_filter == _HISTORY_FILTER_ALL and group_subs and individual_subs:
+        group_shown = _history_group_subscriptions_sorted(group_subs)[: min(5, list_limit)]
+        ind_limit = max(list_limit - len(group_shown), 0)
+        individual_shown = _history_individual_subscriptions_sorted(individual_subs)[
+            :ind_limit
+        ]
+        rows = list(group_shown) + list(individual_shown)
+        hidden = (len(group_subs) + len(individual_subs)) - len(rows)
+        return rows, hidden
+
+    shown = subscriptions[:list_limit]
+    hidden = len(subscriptions) - len(shown)
+    return shown, hidden
 
 
 _VISIT_HISTORY_LOOKBACK_DAYS = 120
@@ -2549,28 +2643,21 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             has_group = bool(group_subs)
 
             if history_filter == _HISTORY_FILTER_INDIVIDUAL:
-                subscriptions = sorted(
-                    individual_subs,
-                    key=lambda s: (s.start_date or datetime.min, s.id or 0),
-                    reverse=True,
-                )
+                subscriptions = _history_individual_subscriptions_sorted(individual_subs)
                 list_limit = 25
                 title = "📜 <b>ИСТОРИЯ — ИНДИВИДУАЛЬНЫЕ</b>"
             elif history_filter == _HISTORY_FILTER_GROUP:
-                subscriptions = sorted(
-                    group_subs,
-                    key=lambda s: s.created_at or datetime.min,
-                    reverse=True,
-                )
+                subscriptions = _history_group_subscriptions_sorted(group_subs)
                 list_limit = 12
                 title = "📜 <b>ИСТОРИЯ — ГРУППОВЫЕ</b>"
             else:
-                subscriptions = sorted(
-                    all_subscriptions,
-                    key=lambda s: s.created_at or datetime.min,
-                    reverse=True,
-                )
-                list_limit = 12
+                if group_subs and not individual_subs:
+                    subscriptions = _history_group_subscriptions_sorted(group_subs)
+                elif individual_subs and not group_subs:
+                    subscriptions = _history_individual_subscriptions_sorted(individual_subs)
+                else:
+                    subscriptions = []
+                list_limit = 18
                 title = "📜 <b>ИСТОРИЯ</b>"
 
             back_cb = _subscription_history_back_callback(
@@ -2605,38 +2692,35 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                 return
 
             message = f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n{title}\n\n"
-            if history_filter == _HISTORY_FILTER_INDIVIDUAL:
-                message += f"Записей: <b>{len(individual_subs)}</b>\n"
-                message += "Нажмите кнопку, чтобы открыть бронь.\n\n"
-            elif history_filter == _HISTORY_FILTER_GROUP:
-                message += f"Записей: <b>{len(group_subs)}</b>\n\n"
-            else:
-                message += (
-                    f"Всего: <b>{len(all_subscriptions)}</b> "
-                    f"(групповые: {len(group_subs)}, "
-                    f"индивидуальные: {len(individual_subs)})\n\n"
-                )
+            message += _history_list_header(
+                history_filter,
+                group_count=len(group_subs),
+                individual_count=len(individual_subs),
+            )
+
+            shown, hidden = _history_list_keyboard_rows(
+                subscriptions,
+                history_filter=history_filter,
+                group_subs=group_subs,
+                individual_subs=individual_subs,
+                list_limit=list_limit,
+            )
 
             keyboard = []
-            shown = subscriptions[:list_limit]
-
-            for idx, sub in enumerate(shown, 1):
+            if filter_nav:
+                keyboard.append(filter_nav)
+            for sub in shown:
                 keyboard.append(
                     [
                         InlineKeyboardButton(
-                            _history_subscription_button_label(sub),
+                            _history_subscription_button_label(sub, session),
                             callback_data=f"view_sub_{sub.id}",
                         )
                     ]
                 )
-                message += _history_subscription_list_lines(sub, idx)
 
-            hidden = len(subscriptions) - len(shown)
             if hidden > 0:
-                message += f"\n... и ещё {hidden} записей\n"
-
-            if filter_nav:
-                keyboard.append(filter_nav)
+                message += f"\n\n... и ещё {hidden} записей"
 
             keyboard.append(
                 [InlineKeyboardButton("🔙 Назад к абонементу", callback_data=back_cb)]
