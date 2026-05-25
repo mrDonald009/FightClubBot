@@ -507,7 +507,7 @@ def _group_subscriptions_by_month(subscriptions, *, now: datetime) -> dict:
 
 
 def _render_subscription_archive_type_picker_message(athlete_name: str) -> str:
-    message = "📅 <b>Абонемент</b>\n\n"
+    message = "<b>Абонемент</b>\n\n"
     message += f"👤 <b>{html.escape(athlete_name)}</b>\n\n"
     message += "<i>Архив</i>\n"
     message += "<b>Выберите тип абонемента:</b>"
@@ -521,7 +521,7 @@ def _render_subscription_history_section_message(
     period_caption: str = None,
     is_month_picker: bool = False,
 ) -> str:
-    message = "🎫 <b>Абонемент</b>\n\n"
+    message = "<b>Абонемент</b>\n\n"
     message += f"👤 <b>{html.escape(athlete_name)}</b>"
     if title:
         message += f"\n\n{title}"
@@ -2884,74 +2884,96 @@ def _subscription_used_trainings_count(session, subscription: Subscription) -> i
     return max(int(total) - int(remaining), 0)
 
 
-def _render_subscription_archive_detail_message(
-    session, subscription: Subscription, athlete: Athlete
-) -> str:
-    is_individual = _is_individual_subscription(subscription)
+def _archive_slot_booking_kind_label(subscription: Subscription) -> str:
+    """Подпись вида «Индивидуальная» / «Разовая» для строки архива."""
     sub_type = (subscription.subscription_type or "").strip().lower()
-    is_monthly = sub_type == "monthly"
+    if _is_individual_subscription(subscription) or sub_type == "individual":
+        return "Индивидуальная"
+    if sub_type == "single":
+        return "Разовая"
+    return _format_subscription_type_ru(subscription.subscription_type) or "—"
 
-    if is_individual:
-        title = f"🥊 <b>Индивидуальная бронь #{subscription.id}</b>"
+
+def _format_archive_training_datetime(subscription: Subscription) -> str:
+    """Дата и время одной тренировки: 17.05.2026 08:00–09:00."""
+    start = subscription.start_date
+    if not start:
+        return "не назначена"
+    end = subscription.end_date
+    if end and start.date() == end.date() and end > start:
+        return f"{start.strftime('%d.%m.%Y %H:%M')}–{end.strftime('%H:%M')}"
+    return _format_dt(start)
+
+
+def _format_archive_period_dates(subscription: Subscription) -> str:
+    """Период абonementа в архиве — только даты."""
+    start = subscription.start_date.strftime("%d.%m.%Y") if subscription.start_date else "—"
+    end = subscription.end_date.strftime("%d.%m.%Y") if subscription.end_date else "—"
+    return f"{start} — {end}"
+
+
+def _archive_group_format_label(discipline_key: Optional[str]) -> str:
+    """Групповая / индивидуальная — для строки архива."""
+    fmt = format_training_format_ru(discipline_key)
+    if fmt == "Групповые":
+        return "Групповая"
+    if fmt == "Индивидуальные":
+        return "Индивидуальная"
+    return fmt
+
+
+def _render_subscription_archive_monthly_detail_message(
+    subscription: Subscription, athlete: Athlete
+) -> str:
+    """Компактная карточка месячного абonementа в архиве."""
+    sport = (subscription.sport_type or "—").strip()
+    dk = getattr(subscription, "discipline_key", None)
+    fmt = _archive_group_format_label(dk)
+    age_group = format_age_group_label(athlete.age_group)
+
+    message = f"<b>Абонемент</b>\n\n"
+    message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+    message += f"{html.escape(sport)} | {fmt} | {html.escape(age_group)}\n"
+    message += f"• Период действия: {_format_archive_period_dates(subscription)}\n"
+    if subscription.created_at:
+        message += f"• Оформлен: {subscription.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+    return message
+
+
+def _render_subscription_archive_slot_detail_message(
+    subscription: Subscription, athlete: Athlete
+) -> str:
+    """Компактная карточка индивидуальной / разовой записи в архиве."""
+    sub_type = (subscription.subscription_type or "").strip().lower()
+    if _is_individual_subscription(subscription) or sub_type == "individual":
+        title = f"<b>Индивидуальная бронь</b>"
     else:
-        title = f"🎫 <b>Абонемент #{subscription.id}</b>"
+        title = f"<b>Разовая тренировка</b>"
+
+    sport = (subscription.sport_type or "—").strip()
+    kind = _archive_slot_booking_kind_label(subscription)
 
     message = f"{title}\n\n"
     message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
-
-    age_group_display = format_age_group_label(athlete.age_group)
-    dk = getattr(subscription, "discipline_key", None)
-
-    message += "<b>📋 ОСНОВНАЯ ИНФОРМАЦИЯ</b>\n"
-    message += f"• Вид спорта: {subscription.sport_type or '—'}\n"
-    message += f"• Возрастная группа: {age_group_display}\n"
-    message += f"• Формат занятий: {format_training_format_ru(dk)}\n"
-    message += f"• Тип абонемента: {_format_subscription_type_ru(subscription.subscription_type)}\n"
-    message += f"• Статус: {_format_subscription_status_ui(subscription)}\n"
-
-    if is_individual or sub_type == "single":
-        if subscription.start_date:
-            message += (
-                f"• Слот тренировки: <b>{_format_dt(subscription.start_date)}</b>\n"
-            )
-        else:
-            message += "• Слот тренировки: не назначен\n"
-        if subscription.end_date:
-            message += (
-                f"• Дата окончания: {_format_dt(subscription.end_date)}"
-                f"{_freeze_note(subscription)}\n"
-            )
-    else:
-        start_date_str = _format_dt(subscription.start_date) if subscription.start_date else "—"
-        end_date_str = _format_dt(subscription.end_date) if subscription.end_date else "—"
-        message += f"• Период: {start_date_str} — {end_date_str}"
-        if subscription.end_date:
-            message += _freeze_note(subscription)
-        message += "\n"
-
+    message += f"{html.escape(sport)} | {kind}\n"
+    message += (
+        "• Дата и время начала и окончания тренировки: "
+        f"<b>{_format_archive_training_datetime(subscription)}</b>\n"
+    )
     if subscription.created_at:
-        created_str = subscription.created_at.strftime("%d.%m.%Y %H:%M")
-        message += f"• Создан: {created_str}\n"
-
-    if is_monthly and subscription.trainings_total is not None:
-        used = _subscription_used_trainings_count(session, subscription)
-        remaining = calculate_actual_trainings_remaining(session, subscription)
-        if remaining is None:
-            remaining = subscription.trainings_remaining or 0
-        total = subscription.trainings_total or 0
-        message += "\n<b>🏋️ ТРЕНИРОВКИ</b>\n"
-        message += f"• Всего: {total}\n"
-        message += f"• Использовано: {used}\n"
-        message += f"• Осталось: {remaining}\n"
-        if total > 0:
-            usage_percent = min(round(used / total * 100, 1), 100.0)
-            progress_length = 15
-            filled = min(int(usage_percent * progress_length / 100), progress_length)
-            progress_bar = "█" * filled + "░" * (progress_length - filled)
-            message += f"\n<b>📊 ИСПОЛЬЗОВАНИЕ</b>\n"
-            message += f"{progress_bar} {usage_percent}%\n"
-
+        message += f"• Оформлена: {subscription.created_at.strftime('%d.%m.%Y %H:%M')}\n"
     return message
+
+
+def _render_subscription_archive_detail_message(
+    session, subscription: Subscription, athlete: Athlete
+) -> str:
+    sub_type = (subscription.subscription_type or "").strip().lower()
+
+    if _is_individual_subscription(subscription) or sub_type == "single":
+        return _render_subscription_archive_slot_detail_message(subscription, athlete)
+
+    return _render_subscription_archive_monthly_detail_message(subscription, athlete)
 
 
 async def view_subscription_from_history(update: Update, context: ContextTypes.DEFAULT_TYPE):

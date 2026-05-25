@@ -22,6 +22,8 @@ from handlers.card_handlers import (
     _history_subscription_list_lines,
     _is_individual_subscription,
     _parse_subscription_history_callback,
+    _render_subscription_archive_monthly_detail_message,
+    _render_subscription_archive_slot_detail_message,
     _render_subscription_archive_type_picker_message,
     _render_subscription_history_section_message,
     _subscription_history_list_callback,
@@ -177,7 +179,7 @@ def test_subscription_history_screen_titles():
     assert _history_section_title(_HISTORY_FILTER_INDIVIDUAL) == "<b>Индивидуальный</b>"
     assert _history_section_title(_HISTORY_FILTER_GROUP) == "<b>Месячный</b>"
     picker = _render_subscription_archive_type_picker_message("Иван")
-    assert "📅 <b>Абонемент</b>" in picker
+    assert "<b>Абонемент</b>" in picker
     assert "Архив" in picker
     assert "Выберите тип абонемента" in picker
     text = _render_subscription_history_section_message(
@@ -185,7 +187,7 @@ def test_subscription_history_screen_titles():
         _history_section_title(_HISTORY_FILTER_GROUP),
         period_caption="За последний год",
     )
-    assert "🎫 <b>Абонемент</b>" in text
+    assert "<b>Абонемент</b>" in text
     assert "Иван" in text
     assert "Месячный" in text
     assert "За последний год" in text
@@ -196,3 +198,60 @@ def test_subscription_picker_should_show_only_for_multiple_active():
     assert _subscription_picker_should_show([object()], [object()])
     assert not _subscription_picker_should_show([object()], [])
     assert not _subscription_picker_should_show([], [object()])
+
+
+def test_archive_individual_slot_detail_is_compact():
+    athlete = type("A", (), {"full_name": "ВасильевОдин Иван Петрович"})()
+    sub = Subscription(
+        id=67,
+        subscription_type="individual",
+        discipline_key="mma_individual",
+        sport_type="MMA",
+        start_date=datetime(2026, 5, 17, 8, 0),
+        end_date=datetime(2026, 5, 17, 9, 0),
+        created_at=datetime(2026, 5, 16, 23, 41),
+    )
+    text = _render_subscription_archive_slot_detail_message(sub, athlete)
+    assert "MMA | Индивидуальная" in text
+    assert "Дата и время начала и окончания тренировки:" in text
+    assert "17.05.2026 08:00–09:00" in text
+    assert "Оформлена: 16.05.2026 23:41" in text
+    assert "Возрастная группа" not in text
+    assert "Тренировка:" not in text
+    assert "Дата окончания" not in text
+
+
+def test_archive_single_slot_detail_matches_coach_format():
+    athlete = type("A", (), {"full_name": "Иванов Иван"})()
+    sub = Subscription(
+        id=12,
+        subscription_type="single",
+        discipline_key="mma_group",
+        sport_type="MMA",
+        start_date=datetime(2026, 5, 20, 17, 0),
+        end_date=datetime(2026, 5, 20, 18, 30),
+        created_at=datetime(2026, 5, 19, 12, 0),
+    )
+    text = _render_subscription_archive_slot_detail_message(sub, athlete)
+    assert "MMA | Разовая" in text
+    assert "20.05.2026 17:00–18:30" in text
+    assert "Оформлена: 19.05.2026 12:00" in text
+
+
+def test_archive_monthly_detail_matches_coach_format():
+    athlete = type("A", (), {"full_name": "ВасильевОдин Иван Петрович", "age_group": "children"})()
+    sub = Subscription(
+        id=45,
+        subscription_type="monthly",
+        discipline_key="mma_group",
+        sport_type="MMA",
+        start_date=datetime(2026, 5, 11, 17, 0),
+        end_date=datetime(2026, 6, 5, 18, 30),
+        created_at=datetime(2026, 5, 10, 14, 20),
+    )
+    text = _render_subscription_archive_monthly_detail_message(sub, athlete)
+    assert "MMA | Групповая | Детская" in text
+    assert "Период действия: 11.05.2026 — 05.06.2026" in text
+    assert "Оформлен: 10.05.2026 14:20" in text
+    assert "ОСНОВНАЯ ИНФОРМАЦИЯ" not in text
+    assert "ТРЕНИРОВКИ" not in text
