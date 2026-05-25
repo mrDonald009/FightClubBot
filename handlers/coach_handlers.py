@@ -2535,6 +2535,10 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                             f"{CAL_BOOK_ADD_ICON} Групповая",
                             callback_data=f"cal_grp_book_{year}_{month}_{day}",
                         ),
+                    ]
+                )
+                keyboard.append(
+                    [
                         InlineKeyboardButton(
                             f"{CAL_BOOK_ADD_ICON} Разовая",
                             callback_data=f"cal_sgl_book_{year}_{month}_{day}",
