@@ -29,6 +29,7 @@ from .users import (
     get_user_role,
 )
 from .schedule import (
+    _align_start_date_to_schedule,
     _calculate_12th_training_date,
     _calculate_end_date,
     _find_nearest_training_date,
@@ -98,6 +99,7 @@ __all__ = [
     "get_user_by_telegram_id",
     "get_user_role",
     "_calculate_12th_training_date",
+    "_align_start_date_to_schedule",
     "_calculate_end_date",
     "_find_nearest_training_date",
     "_create_and_deduct_scheduled_trainings",

@@ -84,6 +84,7 @@ from handlers.card_handlers import (
     handle_athlete_back_to_menu,
     show_subscription_history,
     view_subscription_from_history,
+    view_subscription_freezes_from_history,
     handle_activate_subscription,
     handle_activation_calendar_nav,
     handle_activation_date_pick,
@@ -1085,6 +1086,11 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     # До subscription_: иначе subscription_history_* попадает в show_subscription_card
     registrar.register(
         CallbackQueryHandler(show_subscription_history, pattern="^subscription_history_")
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            view_subscription_freezes_from_history, pattern="^view_sub_freezes_"
+        )
     )
     registrar.register(
         CallbackQueryHandler(view_subscription_from_history, pattern="^view_sub_")

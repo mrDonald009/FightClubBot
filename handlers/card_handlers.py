@@ -12,7 +12,7 @@ from handlers.coach_handlers import (
     has_digits,
     is_valid_name_format,
 )
-from database.models import Athlete, Subscription, Training, Attendance, Coach, Admin, GlobalFreeze
+from database.models import Athlete, Subscription, Training, Attendance, Coach, Admin, GlobalFreeze, GlobalFreezeApplication
 from core.database import get_db_session
 from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
@@ -212,7 +212,6 @@ def _truncate_inline_button_text(text: str, max_len: int = 64) -> str:
 
 def _history_subscription_button_label(sub: Subscription, session=None) -> str:
     """Краткая подпись записи в списке истории; детали — на следующем экране."""
-    del session  # детали посещения только в карточке записи
     if _is_individual_subscription(sub):
         if sub.start_date:
             text = sub.start_date.strftime("%d.%m.%Y %H:%M")
@@ -233,6 +232,10 @@ def _history_subscription_button_label(sub: Subscription, session=None) -> str:
             text = sub.start_date.strftime("%d.%m.%Y")
         else:
             text = "—"
+    if session is not None and _subscription_has_freeze_history(sub, session):
+        text = f"❄️ {text}"
+    elif (sub.frozen_training_days_total or 0) > 0 or subscription_is_currently_frozen(sub):
+        text = f"❄️ {text}"
     return _truncate_inline_button_text(text)
 
 
@@ -532,11 +535,11 @@ def _render_subscription_history_section_message(
     return message
 
 
-def _build_subscription_archive_list_keyboard(shown_subs, sections_cb: str):
+def _build_subscription_archive_list_keyboard(shown_subs, sections_cb: str, session=None):
     keyboard = [
         [
             InlineKeyboardButton(
-                _history_subscription_button_label(sub),
+                _history_subscription_button_label(sub, session=session),
                 callback_data=f"view_sub_{sub.id}",
             )
         ]
@@ -977,6 +980,129 @@ def _append_subscription_freeze_ui_lines(message: str, subscription: Subscriptio
     return message
 
 
+def _fetch_subscription_global_freeze_rows(session, subscription_id: int):
+    """Записи массовой заморозки, применённой к абонементу."""
+    return (
+        session.query(GlobalFreezeApplication, GlobalFreeze)
+        .join(GlobalFreeze, GlobalFreezeApplication.global_freeze_id == GlobalFreeze.id)
+        .filter(GlobalFreezeApplication.subscription_id == subscription_id)
+        .order_by(GlobalFreezeApplication.created_at.asc(), GlobalFreezeApplication.id.asc())
+        .all()
+    )
+
+
+def _subscription_has_freeze_history(subscription: Subscription, session) -> bool:
+    """Есть ли что показать в архиве по заморозкам."""
+    if (subscription.frozen_training_days_total or 0) > 0:
+        return True
+    if (subscription.frozen_days_total or 0) > 0:
+        return True
+    if subscription_is_currently_frozen(subscription):
+        return True
+    return (
+        session.query(GlobalFreezeApplication.id)
+        .filter(GlobalFreezeApplication.subscription_id == subscription.id)
+        .first()
+        is not None
+    )
+
+
+def _append_subscription_archive_freeze_summary(
+    message: str, subscription: Subscription, session, *, now=None
+) -> str:
+    """Краткая сводка заморозок в карточке архива."""
+    if not _subscription_has_freeze_history(subscription, session):
+        return message
+    message = _append_subscription_freeze_ui_lines(message, subscription, now=now)
+    global_rows = _fetch_subscription_global_freeze_rows(session, subscription.id)
+    if global_rows:
+        extended = sum(
+            1 for app, _gf in global_rows if (app.training_days_added or 0) > 0
+        )
+        message += f"• ❄️ Массовых заморозок: {len(global_rows)}"
+        if extended:
+            message += f" (с продлением: {extended})"
+        message += "\n"
+    return message
+
+
+def _render_subscription_archive_freeze_detail_message(
+    session, subscription: Subscription, athlete: Athlete, *, now=None
+) -> str:
+    """Подробный экран заморозок абонемента из архива."""
+    now = now or now_moscow()
+    if _is_individual_subscription(subscription):
+        title = f"🥊 <b>Индивидуальная бронь #{subscription.id}</b>"
+    else:
+        title = f"🎫 <b>Абонемент #{subscription.id}</b>"
+
+    message = f"❄️ <b>ЗАМОРОЗКИ</b>\n\n{title}\n\n"
+    message += f"👤 <b>{html.escape(athlete.full_name)}</b>\n\n"
+
+    personal_lines = []
+    if subscription_is_currently_frozen(subscription, now=now):
+        if subscription.frozen_from:
+            personal_lines.append(
+                f"• Период: {_format_dt(subscription.frozen_from)} — "
+                f"{_format_dt(subscription.frozen_until) if subscription.frozen_until else '—'}"
+            )
+        elif subscription.frozen_until:
+            personal_lines.append(f"• До: {_format_dt(subscription.frozen_until)}")
+        personal_lines.append("• Статус: активна сейчас")
+    training_days = subscription.frozen_training_days_total or 0
+    if training_days > 0:
+        personal_lines.append(f"• Продлено на {training_days} тр. дней (личная заморозка)")
+    calendar_days = subscription.frozen_days_total or 0
+    if calendar_days > 0:
+        personal_lines.append(f"• Календарных дней заморозки: {calendar_days}")
+
+    if personal_lines:
+        message += "<b>👤 Персональная</b>\n"
+        message += "\n".join(personal_lines) + "\n\n"
+    else:
+        message += "<b>👤 Персональная</b>\n"
+        message += "• Нет данных о продлении\n\n"
+
+    global_rows = _fetch_subscription_global_freeze_rows(session, subscription.id)
+    message += "<b>🏢 Массовые заморозки клуба</b>\n"
+    if not global_rows:
+        message += "• Не применялись\n"
+    else:
+        for idx, (app, gf) in enumerate(global_rows, start=1):
+            message += f"\n<b>{idx}. {html.escape(gf.title or 'Массовая заморозка')}</b>\n"
+            message += (
+                f"   Период: {gf.start_date.strftime('%d.%m.%Y')} — "
+                f"{gf.end_date.strftime('%d.%m.%Y')}\n"
+            )
+            added = app.training_days_added or 0
+            if added > 0:
+                old_end = _format_dt(app.old_end_date) if app.old_end_date else "—"
+                new_end = _format_dt(app.new_end_date) if app.new_end_date else "—"
+                message += f"   Продление: +{added} тр. дн.\n"
+                message += f"   Окончание: {old_end} → {new_end}\n"
+            else:
+                message += "   Без продления срока абонемента\n"
+            if app.created_at:
+                message += f"   Применено: {app.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+
+    return message
+
+
+async def _assert_subscription_archive_access(session, user, subscription: Subscription):
+    """Проверка доступа к архивной карточке абонемента."""
+    athlete = subscription.athlete
+    is_athlete_viewing_own = (
+        isinstance(user, Athlete) and athlete.telegram_id == user.telegram_id
+    )
+    is_coach_viewing_athlete = (
+        (isinstance(user, Coach) or isinstance(user, Admin))
+        and (isinstance(user, Admin) or athlete.created_by == user.id)
+    )
+    if not (is_athlete_viewing_own or is_coach_viewing_athlete):
+        return None, False
+    return athlete, is_coach_viewing_athlete
+
+
 def _athlete_has_active_frozen_subscription(athlete: Athlete, *, now=None) -> bool:
     now = now or now_moscow()
     return any(
@@ -1045,11 +1171,21 @@ async def _finalize_subscription_activation(
     )
 
     if subscription.subscription_type == "monthly":
-        end_date = _calculate_12th_training_date(start_date, sport_type, age_group)
+        end_date = _calculate_12th_training_date(
+            start_date, sport_type, age_group, session=session
+        )
     elif subscription.subscription_type == "single":
-        end_date = training_end_time(start_date)
+        from database.db_utils.club_settings import get_group_training_duration_minutes
+
+        end_date = training_end_time(
+            start_date, get_group_training_duration_minutes(session)
+        )
     elif subscription.subscription_type == "individual":
-        end_date = individual_training_end_time(start_date)
+        from database.db_utils.club_settings import get_individual_training_duration_minutes
+
+        end_date = individual_training_end_time(
+            start_date, get_individual_training_duration_minutes(session)
+        )
     else:
         await query.edit_message_text("❌ Сначала выберите тип абонемента.")
         return
@@ -2853,7 +2989,7 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
             elif hidden > 0:
                 message += f"\n\n<i>Показаны последние {len(shown)} из {len(period_subs)}</i>"
 
-            keyboard = _build_subscription_archive_list_keyboard(shown, sections_cb)
+            keyboard = _build_subscription_archive_list_keyboard(shown, sections_cb, session=session)
             await query.edit_message_text(
                 message,
                 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -2941,6 +3077,11 @@ def _render_subscription_archive_detail_message(
             message += f"\n<b>📊 ИСПОЛЬЗОВАНИЕ</b>\n"
             message += f"{progress_bar} {usage_percent}%\n"
 
+    if _subscription_has_freeze_history(subscription, session):
+        message += "\n<b>❄️ ЗАМОРОЗКИ</b>\n"
+        message = _append_subscription_archive_freeze_summary(message, subscription, session)
+        message += "<i>Подробнее — по кнопке ниже</i>\n"
+
     return message
 
 
@@ -2961,17 +3102,10 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
 
             from services.subscription_service import SubscriptionService
             subscription = SubscriptionService.get_subscription_or_raise(session, subscription_id)
-            athlete = subscription.athlete
-
-            is_athlete_viewing_own = (
-                isinstance(user, Athlete) and athlete.telegram_id == user.telegram_id
+            athlete, is_coach_viewing_athlete = await _assert_subscription_archive_access(
+                session, user, subscription
             )
-            is_coach_viewing_athlete = (
-                (isinstance(user, Coach) or isinstance(user, Admin))
-                and (isinstance(user, Admin) or athlete.created_by == user.id)
-            )
-
-            if not (is_athlete_viewing_own or is_coach_viewing_athlete):
+            if athlete is None:
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 
@@ -2995,7 +3129,15 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
                 history_filter=hist_filter,
                 athlete_self=not is_coach_viewing_athlete,
             )
-            keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data=hist_cb)]]
+            keyboard = []
+            if _subscription_has_freeze_history(subscription, session):
+                keyboard.append([
+                    InlineKeyboardButton(
+                        "❄️ Заморозки (подробнее)",
+                        callback_data=f"view_sub_freezes_{subscription.id}",
+                    )
+                ])
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data=hist_cb)])
 
             await query.edit_message_text(
                 message,
@@ -3006,6 +3148,54 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
     except Exception as e:
         logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ АБОНЕМЕНТА ИЗ ИСТОРИИ: {e}", exc_info=True)
         await query.edit_message_text("❌ Ошибка при загрузке абонемента")
+
+
+async def view_subscription_freezes_from_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подробная информация о заморозках абонемента из архива."""
+    query = update.callback_query
+    await query.answer()
+
+    subscription_id = int(query.data.replace("view_sub_freezes_", ""))
+
+    try:
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, query.from_user.id)
+            if not user:
+                await query.edit_message_text("❌ Пользователь не найден")
+                return
+
+            from services.subscription_service import SubscriptionService
+            subscription = SubscriptionService.get_subscription_or_raise(session, subscription_id)
+            athlete, _is_coach_viewing_athlete = await _assert_subscription_archive_access(
+                session, user, subscription
+            )
+            if athlete is None:
+                await query.edit_message_text("❌ У вас нет доступа")
+                return
+
+            if not _subscription_has_freeze_history(subscription, session):
+                await query.edit_message_text("❄️ По этому абонементу нет данных о заморозках")
+                return
+
+            message = _render_subscription_archive_freeze_detail_message(
+                session, subscription, athlete
+            )
+            keyboard = [[
+                InlineKeyboardButton(
+                    "🔙 К абонементу",
+                    callback_data=f"view_sub_{subscription.id}",
+                )
+            ]]
+
+            await query.edit_message_text(
+                message,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML",
+            )
+
+    except Exception as e:
+        logger.error(f"❌ ОШИБКА ПРИ ПОКАЗЕ ЗАМОРОЗОК ИЗ АРХИВА: {e}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при загрузке заморозок")
 
 
 async def handle_activate_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):

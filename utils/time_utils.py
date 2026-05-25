@@ -80,14 +80,24 @@ def today_moscow():
     return now_moscow().date()
 
 
-def training_end_time(training_start: datetime) -> datetime:
-    """Время окончания групповой тренировки (TRAINING_DURATION, по умолчанию 1,5 ч)."""
-    return training_start + TRAINING_DURATION
+def training_end_time(training_start: datetime, duration_minutes: int = None) -> datetime:
+    """Время окончания групповой тренировки."""
+    if duration_minutes is None:
+        delta = TRAINING_DURATION
+    else:
+        delta = timedelta(minutes=duration_minutes)
+    return training_start + delta
 
 
-def individual_training_end_time(training_start: datetime) -> datetime:
-    """Конец индивидуальной тренировки (по умолчанию 1 ч)."""
-    return training_start + INDIVIDUAL_TRAINING_DURATION
+def individual_training_end_time(
+    training_start: datetime, duration_minutes: int = None
+) -> datetime:
+    """Конец индивидуальной тренировки."""
+    if duration_minutes is None:
+        delta = INDIVIDUAL_TRAINING_DURATION
+    else:
+        delta = timedelta(minutes=duration_minutes)
+    return training_start + delta
 
 
 def training_slot_end_time(

@@ -70,6 +70,17 @@ class SubscriptionTariff(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class ClubSetting(Base):
+    """Операционные настройки клуба (длительность тренировок и т.п.) — не .env."""
+
+    __tablename__ = "club_settings"
+    __table_args__ = {"extend_existing": True}
+
+    key = Column(String(64), primary_key=True)
+    value = Column(String(255), nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Coach(Base):
     """Таблица тренеров"""
     __tablename__ = 'coaches'

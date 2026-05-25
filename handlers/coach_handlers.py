@@ -1246,11 +1246,21 @@ async def _finalize_add_athlete_from_selected_date(
                 return ATHLETE_TRAINING_DATE
 
             if subscription_type == "monthly":
-                end_date = db_utils_pkg._calculate_12th_training_date(start_date, sport_type, age_group)
+                end_date = db_utils_pkg._calculate_12th_training_date(
+                    start_date, sport_type, age_group, session=session
+                )
             elif subscription_type == "individual":
-                end_date = db_utils_pkg.individual_training_end_time(start_date)
+                from database.db_utils.club_settings import get_individual_training_duration_minutes
+
+                end_date = db_utils_pkg.individual_training_end_time(
+                    start_date, get_individual_training_duration_minutes(session)
+                )
             else:
-                end_date = db_utils_pkg.training_end_time(start_date)
+                from database.db_utils.club_settings import get_group_training_duration_minutes
+
+                end_date = db_utils_pkg.training_end_time(
+                    start_date, get_group_training_duration_minutes(session)
+                )
 
             from utils.discipline_keys import discipline_key_for
 

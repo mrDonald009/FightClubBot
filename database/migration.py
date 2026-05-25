@@ -139,6 +139,24 @@ def _migrate_multi_individual_bookings(cursor) -> None:
     print("✅ Multi-individual: partial UNIQUE indexes (несколько броней на спортсмена)")
 
 
+def _seed_default_club_settings(cursor) -> None:
+    """Длительность тренировок в БД (при первом запуске — из .env)."""
+    group_min = os.getenv("TRAINING_DURATION_MINUTES", "90").strip() or "90"
+    ind_min = os.getenv("INDIVIDUAL_TRAINING_DURATION_MINUTES", "60").strip() or "60"
+    for key, value in (
+        ("group_training_duration_minutes", group_min),
+        ("individual_training_duration_minutes", ind_min),
+    ):
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO club_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            """,
+            (key, value),
+        )
+    print("✅ club_settings: длительность групповых/индивидуальных тренировок")
+
+
 def _sync_standard_subscription_tariffs(cursor) -> None:
     """Привести активные тарифы MMA / Тайский Бокс к эталонным суммам."""
     for sport, kind, amount in STANDARD_SUBSCRIPTION_TARIFFS:
@@ -693,6 +711,16 @@ def migrate_database():
         if cursor.fetchone():
             _seed_default_subscription_tariffs(cursor)
             _sync_standard_subscription_tariffs(cursor)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS club_settings (
+                key VARCHAR(64) PRIMARY KEY,
+                value VARCHAR(255) NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        print("✅ Таблица club_settings создана")
+        _seed_default_club_settings(cursor)
 
         cursor.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='subscription_payments'"

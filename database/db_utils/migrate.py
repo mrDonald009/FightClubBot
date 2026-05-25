@@ -17,7 +17,7 @@ from .remaining import (
     purge_auto_attendances_during_active_global_freeze,
     sync_subscription_trainings_remaining,
 )
-from .schedule import _calculate_12th_training_date
+from .schedule import _align_start_date_to_schedule, _calculate_12th_training_date
 
 def migrate_existing_subscription(session: Session, subscription_id: int):
     """
@@ -39,12 +39,23 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
     
     changes = []
     
-    # 1. Пересчитываем дату окончания (дата 12-й тренировки + 1,5 часа)
+    # 1. Выравниваем start_date и пересчитываем end_date (12-я тренировка + длительность из БД).
     # НЕ перезаписываем end_date, если абонемент заморожен или был продлён личной заморозкой.
-    # Массовая заморозка не ставит is_frozen / frozen_training_days_total, но фиксируется
-    # в global_freeze_applications — нижняя граница end_date не должна быть ниже max(new_end_date).
     if subscription.start_date and not subscription.is_frozen and not (subscription.frozen_training_days_total or 0):
-        correct_end_date = _calculate_12th_training_date(subscription.start_date, athlete.sport_type, athlete.age_group)
+        aligned_start = _align_start_date_to_schedule(
+            subscription.start_date, athlete.sport_type, athlete.age_group
+        )
+        if aligned_start != subscription.start_date.replace(second=0, microsecond=0):
+            old_start = subscription.start_date
+            subscription.start_date = aligned_start
+            changes.append(
+                f"Дата начала выровнена: {old_start.strftime('%d.%m.%Y %H:%M')} → "
+                f"{aligned_start.strftime('%d.%m.%Y %H:%M')}"
+            )
+
+        correct_end_date = _calculate_12th_training_date(
+            subscription.start_date, athlete.sport_type, athlete.age_group, session=session
+        )
         gf_ceiling = (
             session.query(func.max(GlobalFreezeApplication.new_end_date))
             .join(GlobalFreeze, GlobalFreezeApplication.global_freeze_id == GlobalFreeze.id)
