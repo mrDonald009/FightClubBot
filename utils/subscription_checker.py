@@ -17,6 +17,9 @@ class SubscriptionChecker:
         try:
             print("🔄 Проверка статусов абонементов...")
 
+            from database.db_utils import expire_stale_subscription_freezes
+            expire_stale_subscription_freezes(session, commit=False)
+
             # Находим активные абонементы с истекшим сроком или с 0 тренировок
             expired_subscriptions = session.query(Subscription).filter(
                 Subscription.is_active == True

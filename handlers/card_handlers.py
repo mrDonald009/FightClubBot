@@ -25,6 +25,8 @@ from database.db_utils import (
     calculate_actual_trainings_remaining as db_calculate_actual_trainings_remaining,
     sync_subscription_trainings_remaining,
     is_training_in_global_freeze,
+    expire_stale_subscription_freezes,
+    subscription_is_currently_frozen,
     find_next_non_frozen_calendar_date,
     find_next_non_frozen_training_date,
     training_datetime_compact,
@@ -957,16 +959,38 @@ def _format_dt(dt: datetime) -> str:
 
 
 def _freeze_note(subscription: Subscription) -> str:
-    if (subscription.frozen_training_days_total or 0) > 0 and not subscription.is_frozen:
-        return f" (продлена на {subscription.frozen_training_days_total} тр. дней)"
+    """Устарело: продление показывается в _append_subscription_freeze_ui_lines."""
     return ""
+
+
+def _append_subscription_freeze_ui_lines(message: str, subscription: Subscription, *, now=None) -> str:
+    """Строки заморозки / продления срока для карточки абонемента."""
+    now = now or now_moscow()
+    if subscription_is_currently_frozen(subscription, now=now):
+        if subscription.frozen_until:
+            message += f"• ❄️ Заморожен до: {_format_dt(subscription.frozen_until)}\n"
+        if subscription.frozen_from:
+            message += f"• ❄️ Заморожен с: {_format_dt(subscription.frozen_from)}\n"
+    days = subscription.frozen_training_days_total or 0
+    if days > 0:
+        message += f"• 📅 Продлено на {days} тр. дней (заморозки)\n"
+    return message
+
+
+def _athlete_has_active_frozen_subscription(athlete: Athlete, *, now=None) -> bool:
+    now = now or now_moscow()
+    return any(
+        s.is_active and subscription_is_currently_frozen(s, now=now)
+        for s in athlete.subscriptions
+    )
 
 
 def _format_subscription_status_ui(subscription: Subscription) -> str:
     """
     Единое отображение статуса абонемента в UI (по МСК):
     - Истек N дней назад
-    - Действует, осталось N дней
+    - Заморожен (персональная заморозка)
+    - Активен
     - fallback в базовый статус checker
     """
     if subscription and subscription.end_date:
@@ -975,6 +999,8 @@ def _format_subscription_status_ui(subscription: Subscription) -> str:
             days_expired = (now - subscription.end_date).days
             return f"🔴 Истек {days_expired} дней назад"
         if subscription.is_active:
+            if subscription_is_currently_frozen(subscription, now=now):
+                return "❄️ Заморожен"
             return "✅ Активен"
     return SubscriptionChecker.format_subscription_status(subscription)
 
@@ -989,6 +1015,8 @@ def _status_icon_from_status_text(status_text: str) -> str:
         return "🔴"
     if status_text.startswith("🟡"):
         return "🟡"
+    if status_text.startswith("❄️"):
+        return "❄️"
     return "⚪"
 
 
@@ -2032,6 +2060,11 @@ async def show_subscription_card(
                 await query.edit_message_text("❌ Вы не можете просматривать этого спортсмена")
                 return
 
+            expire_stale_subscription_freezes(session, athlete_id=athlete.id, commit=True)
+            session.refresh(athlete)
+            if subscription:
+                session.refresh(subscription)
+
             # Для маршрута subscription_athlete_* при одновременных активных
             # group + individual показываем раздельный экран выбора, а не одну карточку.
             if subscription_id is None:
@@ -2247,16 +2280,8 @@ async def show_subscription_card(
             # Статус
             status_display = _format_subscription_status_ui(subscription)
             message += f"• Статус: {status_display}\n"
-        
-            # Статус заморозки
-            if subscription.is_frozen and subscription.frozen_until:
-                frozen_until_str = subscription.frozen_until.strftime('%d.%m.%Y %H:%M')
-                message += f"• ❄️ Заморожен до: {frozen_until_str}\n"
-                if subscription.frozen_from:
-                    frozen_from_str = subscription.frozen_from.strftime('%d.%m.%Y %H:%M')
-                    message += f"• ❄️ Заморожен с: {frozen_from_str}\n"
-            if (subscription.frozen_training_days_total or 0) > 0:
-                message += f"• ❄️ Заморожено тренировочных дней: {subscription.frozen_training_days_total}\n"
+
+            message = _append_subscription_freeze_ui_lines(message, subscription)
 
             # Даты (до активации не показываем "дату начала", даже если она случайно заполнена в БД)
             start_date_str = _format_dt(subscription.start_date) if (subscription.is_active and subscription.start_date) else "—"
@@ -2317,9 +2342,7 @@ async def show_subscription_card(
                 ])
         
             # Заморозка/разморозка — на уровне спортсмена (все активные абонементы)
-            any_active_frozen = any(
-                s.is_active and s.is_frozen for s in athlete.subscriptions
-            )
+            any_active_frozen = _athlete_has_active_frozen_subscription(athlete)
             if subscription.is_active:
                 if any_active_frozen:
                     keyboard.append([
@@ -2431,6 +2454,9 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
                     await message.reply_text(error_msg)
                 return
         
+            expire_stale_subscription_freezes(session, athlete_id=athlete.id, commit=True)
+            session.refresh(athlete)
+
             from database.db_utils import auto_deduct_daily_trainings, migrate_existing_subscription
 
             active_subs = sorted(active_subscriptions_all(athlete), key=lambda s: s.id)
@@ -2503,6 +2529,7 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
 
                 status_display = _format_subscription_status_ui(subscription)
                 message_text += f"• Статус: {status_display}\n"
+                message_text = _append_subscription_freeze_ui_lines(message_text, subscription)
 
                 start_date_str = _format_dt(subscription.start_date)
                 message_text += f"• Дата начала: {start_date_str}\n"
@@ -2543,9 +2570,6 @@ async def show_my_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
 
                 if subscription.total_restored > 0:
                     message_text += f"• Восстановлено: {subscription.total_restored}\n"
-
-                if (subscription.frozen_training_days_total or 0) > 0:
-                    message_text += f"• Заморожено тренировочных дней: {subscription.frozen_training_days_total}\n"
 
                 message_text += f"\n<b>📊 ИСПОЛЬЗОВАНИЕ</b>\n"
                 message_text += f"{progress_bar} {usage_percent}%\n"
@@ -4808,7 +4832,11 @@ async def handle_freeze_subscription_start(update: Update, context: ContextTypes
                 await query.edit_message_text("❌ Нет активного абонемента")
                 return
 
-            if any(s.is_frozen for s in active_subs):
+            expire_stale_subscription_freezes(session, athlete_id=athlete_id, commit=True)
+            session.refresh(athlete)
+            active_subs = [s for s in athlete.subscriptions if s.is_active]
+
+            if any(subscription_is_currently_frozen(s) for s in active_subs):
                 await query.edit_message_text("❌ У спортсмена уже есть заморозка")
                 return
 

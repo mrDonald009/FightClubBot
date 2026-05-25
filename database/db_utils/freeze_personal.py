@@ -357,6 +357,54 @@ def unfreeze_subscription(
     return {"success": True, "message": "Абонемент разморожен"}
 
 
+def subscription_is_currently_frozen(
+    subscription: Subscription, *, now: datetime = None
+) -> bool:
+    """True, если персональная заморозка ещё действует (frozen_until не прошёл)."""
+    if not subscription or not subscription.is_frozen:
+        return False
+    now = now or now_moscow()
+    if subscription.frozen_until and subscription.frozen_until < now:
+        return False
+    return True
+
+
+def expire_stale_subscription_freezes(
+    session: Session, *, athlete_id: int = None, commit: bool = True
+) -> int:
+    """
+    Снять is_frozen у абонементов с истёкшим frozen_until.
+    Возвращает число обновлённых строк subscriptions.
+    """
+    now = now_moscow()
+    q = session.query(Subscription).filter(
+        Subscription.is_frozen == True,
+        Subscription.frozen_until.isnot(None),
+        Subscription.frozen_until < now,
+    )
+    if athlete_id is not None:
+        q = q.filter(Subscription.athlete_id == athlete_id)
+    updated = 0
+    for sub in q.all():
+        sub.is_frozen = False
+        sub.frozen_from = None
+        sub.frozen_until = None
+        sync_subscription_trainings_remaining(
+            session, sub, reason="after_auto_unfreeze"
+        )
+        updated += 1
+    if updated:
+        af_q = session.query(AthleteFreeze).filter(AthleteFreeze.frozen_until < now)
+        if athlete_id is not None:
+            af_q = af_q.filter(AthleteFreeze.athlete_id == athlete_id)
+        af_q.delete(synchronize_session=False)
+    if updated and commit:
+        session.commit()
+    elif updated:
+        session.flush()
+    return updated
+
+
 def freeze_athlete(
     session: Session,
     athlete_id: int,
