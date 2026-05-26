@@ -2429,7 +2429,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                     Attendance.subscription_id.in_(sub_ids),
                                 ).all()
                             }
-                            for sub in subs[:10]:
+                            for sub in subs:
                                 ath = athletes_map.get(sub.athlete_id)
                                 if not ath:
                                     continue
@@ -2445,8 +2445,6 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                     f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}"
                                     f"{html.escape(age_suffix)}\n"
                                 )
-                            if len(subs) > 10:
-                                athlete_lines.append(f"    ... и еще {len(subs) - 10}\n")
                         else:
                             # Fallback: если абонемент не найден, но есть Attendance по слоту.
                             slot_training_ids = individual_slot_training_ids(session, training)
@@ -2467,7 +2465,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                     a.id: a
                                     for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
                                 }
-                                for att in fallback_atts[:10]:
+                                for att in fallback_atts:
                                     ath = athletes_map.get(att.athlete_id)
                                     if not ath:
                                         continue
@@ -2480,10 +2478,6 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                                     athlete_lines.append(
                                         f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}"
                                         f"{html.escape(age_suffix)}\n"
-                                    )
-                                if len(fallback_atts) > 10:
-                                    athlete_lines.append(
-                                        f"    ... и еще {len(fallback_atts) - 10}\n"
                                     )
                     else:
                         slot_training = training or resolve_attendance_slot_training(
@@ -2499,7 +2493,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                             coach_id=user.id if isinstance(user, Coach) else None,
                         )
                         athlete_count = len(athletes)
-                        for athlete in athletes[:10]:
+                        for athlete in athletes:
                             attendance = attendance_map.get(athlete.id)
                             status_icon = attendance_icon_for_slot(
                                 attendance, slot.training_datetime, now=now
@@ -2507,8 +2501,6 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                             athlete_lines.append(
                                 f"    {status_icon} {html.escape(_surname_initials(athlete.full_name))}\n"
                             )
-                        if len(athletes) > 10:
-                            athlete_lines.append(f"    ... и еще {len(athletes) - 10}\n")
 
                     rendered_slots += 1
                     if rendered_slots == 1:
