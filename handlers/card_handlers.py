@@ -967,10 +967,10 @@ def _append_subscription_freeze_ui_lines(message: str, subscription: Subscriptio
     """Строки заморозки / продления срока для карточки абонемента."""
     now = now or now_moscow()
     if subscription_is_currently_frozen(subscription, now=now):
-        if subscription.frozen_until:
-            message += f"• ❄️ Заморожен до: {_format_dt(subscription.frozen_until)}\n"
         if subscription.frozen_from:
             message += f"• ❄️ Заморожен с: {_format_dt(subscription.frozen_from)}\n"
+        if subscription.frozen_until:
+            message += f"• ❄️ Заморожен до: {_format_dt(subscription.frozen_until)}\n"
     days = subscription.frozen_training_days_total or 0
     if days > 0:
         message += f"• 📅 Продлено на {days} тр. дней (заморозки)\n"

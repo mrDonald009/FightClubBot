@@ -266,6 +266,24 @@ def apply_global_freeze(
     }
 
 
+def _subscription_has_other_active_gf_extensions(
+    session: Session, subscription_id: int, exclude_gf_id: int
+) -> bool:
+    """Есть ли у абонемента продление от другой ещё активной массовой заморозки."""
+    return (
+        session.query(GlobalFreezeApplication.id)
+        .join(GlobalFreeze, GlobalFreezeApplication.global_freeze_id == GlobalFreeze.id)
+        .filter(
+            GlobalFreezeApplication.subscription_id == subscription_id,
+            GlobalFreezeApplication.training_days_added > 0,
+            GlobalFreeze.is_active == True,
+            GlobalFreeze.id != exclude_gf_id,
+        )
+        .first()
+        is not None
+    )
+
+
 def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
     """
     Деактивировать массовую заморозку (is_active=False) и пересчитать затронутые абонементы.
@@ -309,6 +327,8 @@ def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
     gf.is_active = False
     session.commit()
 
+    early_cancel = bool(gf.end_date and now < gf.end_date)
+
     subscription_ids = (
         session.query(GlobalFreezeApplication.subscription_id)
         .filter(GlobalFreezeApplication.global_freeze_id == gf_id)
@@ -323,14 +343,36 @@ def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
     checked = 0
     synced = 0
     updated = 0
+    reverted = 0
     for sid in subscription_ids:
         sub = session.query(Subscription).filter_by(id=sid).first()
         if not sub:
             continue
         checked += 1
         sub_updated = False
+        preserve_end_date = False
+        app = (
+            session.query(GlobalFreezeApplication)
+            .filter_by(global_freeze_id=gf_id, subscription_id=sid)
+            .first()
+        )
+        if (
+            early_cancel
+            and app
+            and (app.training_days_added or 0) > 0
+            and app.old_end_date
+            and not _subscription_has_other_active_gf_extensions(session, sid, gf_id)
+        ):
+            if sub.end_date != app.old_end_date:
+                sub.end_date = app.old_end_date
+                sub_updated = True
+            preserve_end_date = True
+            reverted += 1
+
         if sub.subscription_type == "monthly":
-            migrate_result = migrate_existing_subscription(session, sid)
+            migrate_result = migrate_existing_subscription(
+                session, sid, preserve_end_date=preserve_end_date
+            )
             migrated += 1
             if migrate_result.get("success") and (
                 migrate_result.get("message") == "Абонемент обновлен" or migrate_result.get("changes")
@@ -342,15 +384,18 @@ def deactivate_global_freeze_and_migrate(session: Session, gf_id: int) -> dict:
         if sub_updated:
             updated += 1
 
-    if synced > 0:
+    if synced > 0 or reverted > 0:
         session.commit()
 
     logger.info(
-        "GF deactivate: id=%s title=%r checked=%s migrated=%s synced=%s updated=%s",
+        "GF deactivate: id=%s title=%r early_cancel=%s checked=%s migrated=%s "
+        "reverted=%s synced=%s updated=%s",
         gf_id,
         gf.title,
+        early_cancel,
         checked,
         migrated,
+        reverted,
         synced,
         updated,
     )

@@ -19,12 +19,16 @@ from .remaining import (
 )
 from .schedule import _align_start_date_to_schedule, _calculate_12th_training_date
 
-def migrate_existing_subscription(session: Session, subscription_id: int):
+def migrate_existing_subscription(
+    session: Session, subscription_id: int, *, preserve_end_date: bool = False
+):
     """
     Применить новую логику к существующему абонементу.
     - Пересчитывает дату окончания (если нужно)
     - Создает тренировки по расписанию
     - Списывает уже прошедшие тренировки как "неиспользовано"
+
+    preserve_end_date: не трогать start_date/end_date (после отката продления массовой заморозки).
     """
     subscription = session.query(Subscription).filter_by(id=subscription_id).first()
     if not subscription:
@@ -41,7 +45,12 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
     
     # 1. Выравниваем start_date и пересчитываем end_date (12-я тренировка + длительность из БД).
     # НЕ перезаписываем end_date, если абонемент заморожен или был продлён личной заморозкой.
-    if subscription.start_date and not subscription.is_frozen and not (subscription.frozen_training_days_total or 0):
+    if (
+        not preserve_end_date
+        and subscription.start_date
+        and not subscription.is_frozen
+        and not (subscription.frozen_training_days_total or 0)
+    ):
         aligned_start = _align_start_date_to_schedule(
             subscription.start_date, athlete.sport_type, athlete.age_group
         )
@@ -56,7 +65,7 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
         correct_end_date = _calculate_12th_training_date(
             subscription.start_date, athlete.sport_type, athlete.age_group, session=session
         )
-        gf_ceiling = (
+        gf_ceiling_active = (
             session.query(func.max(GlobalFreezeApplication.new_end_date))
             .join(GlobalFreeze, GlobalFreezeApplication.global_freeze_id == GlobalFreeze.id)
             .filter(
@@ -67,8 +76,18 @@ def migrate_existing_subscription(session: Session, subscription_id: int):
             )
             .scalar()
         )
-        if gf_ceiling is not None:
-            correct_end_date = max(correct_end_date, gf_ceiling)
+        gf_ceiling_applied = (
+            session.query(func.max(GlobalFreezeApplication.new_end_date))
+            .filter(
+                GlobalFreezeApplication.subscription_id == subscription.id,
+                GlobalFreezeApplication.training_days_added > 0,
+                GlobalFreezeApplication.new_end_date.isnot(None),
+            )
+            .scalar()
+        )
+        for ceiling in (gf_ceiling_active, gf_ceiling_applied):
+            if ceiling is not None:
+                correct_end_date = max(correct_end_date, ceiling)
         if subscription.end_date != correct_end_date:
             old_end = subscription.end_date
             subscription.end_date = correct_end_date

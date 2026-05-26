@@ -383,7 +383,9 @@ def test_global_freeze_cycle_deactivate_then_reapply_recalculates_monthly_consis
 
     s.refresh(sub)
     end_after_deactivate = sub.end_date
-    assert end_after_deactivate <= end_after_apply1
+    app_for_sub = next(a for a in apps if a.subscription_id == sub.id)
+    assert end_after_deactivate == app_for_sub.old_end_date
+    assert end_after_deactivate < end_after_apply1
 
     r_apply2 = apply_global_freeze(
         session=s,
@@ -406,6 +408,38 @@ def test_global_freeze_cycle_deactivate_then_reapply_recalculates_monthly_consis
     codes = {issue["code"] for issue in report["issues"]}
     assert "overlapping_global_freezes" not in codes
     s.close()
+
+
+def test_early_deactivate_global_freeze_reverts_monthly_end_date():
+    """Досрочное отключение GF возвращает end_date из GlobalFreezeApplication.old_end_date."""
+    s, sub = _session_with_monthly_sub_and_without_any_gf()
+    original_end = sub.end_date
+    freeze_start = datetime(2026, 3, 27)
+    freeze_end = datetime(2026, 3, 29, 23, 59, 59)
+    r_apply = apply_global_freeze(
+        session=s,
+        start_date=freeze_start,
+        end_date=freeze_end,
+        title="early_off",
+        created_by=1,
+    )
+    assert r_apply["success"] is True
+    s.refresh(sub)
+    assert sub.end_date > original_end
+    app = (
+        s.query(GlobalFreezeApplication)
+        .filter_by(global_freeze_id=r_apply["global_freeze_id"], subscription_id=sub.id)
+        .one()
+    )
+    assert app.old_end_date == original_end
+    assert app.training_days_added > 0
+
+    with _freeze_now(datetime(2026, 3, 28, 10, 0, 0)):
+        r_deact = deactivate_global_freeze_and_migrate(s, r_apply["global_freeze_id"])
+
+    assert r_deact["success"] is True
+    s.refresh(sub)
+    assert sub.end_date == original_end
 
 
 def test_deactivate_global_freeze_checks_non_monthly_subscriptions_too():
