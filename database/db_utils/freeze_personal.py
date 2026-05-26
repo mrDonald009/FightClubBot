@@ -5,7 +5,12 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 from database.models import Athlete, AthleteFreeze, Subscription
 from utils.training_manager import TrainingManager
-from utils.time_utils import ACTIVATION_GRACE_AFTER_START, now_moscow, training_end_time
+from utils.time_utils import (
+    ACTIVATION_GRACE_AFTER_START,
+    individual_training_end_time,
+    now_moscow,
+    training_end_time,
+)
 
 from .remaining import sync_subscription_trainings_remaining
 
@@ -141,8 +146,66 @@ def _find_freeze_end_date(selected_date: datetime, sport_type: str, age_group: s
 
 def _clear_last_freeze_revert_markers(subscription: Subscription) -> None:
     subscription.last_freeze_pre_end_date = None
+    subscription.last_freeze_pre_start_date = None
     subscription.last_freeze_credit_training_days = None
     subscription.last_freeze_credit_calendar_days = None
+
+
+def _recalculate_slot_subscription_dates(
+    session: Session,
+    subscription: Subscription,
+    sport_type: str,
+    age_group: str,
+) -> bool:
+    """
+    Разовый / индивидуальный: выровнять start_date и end_date под один слот по расписанию.
+    Опорная точка — end_date (после переноса заморозкой), иначе start_date.
+    """
+    st = (subscription.subscription_type or "").strip().lower()
+    if st not in ("single", "individual"):
+        return False
+
+    anchor = subscription.end_date or subscription.start_date
+    if not anchor:
+        return False
+
+    schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
+    if schedule:
+        days = schedule["days"]
+        date_only = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
+        if date_only.weekday() not in days:
+            for i in range(7):
+                check = date_only - timedelta(days=i)
+                if check.weekday() in days:
+                    date_only = check
+                    break
+        hour, minute = TrainingManager.get_hour_minute_for_weekday(
+            schedule, date_only.weekday()
+        )
+        training_start = date_only.replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+    else:
+        training_start = subscription.start_date or anchor
+
+    if st == "individual":
+        from database.db_utils.club_settings import get_individual_training_duration_minutes
+
+        new_end = individual_training_end_time(
+            training_start,
+            get_individual_training_duration_minutes(session),
+        )
+    else:
+        new_end = training_end_time(training_start)
+
+    changed = False
+    if subscription.start_date != training_start:
+        subscription.start_date = training_start
+        changed = True
+    if subscription.end_date != new_end:
+        subscription.end_date = new_end
+        changed = True
+    return changed
 
 
 def _revert_last_freeze_extension(subscription: Subscription) -> bool:
@@ -153,9 +216,12 @@ def _revert_last_freeze_extension(subscription: Subscription) -> bool:
     pre_end = subscription.last_freeze_pre_end_date
     if pre_end is None:
         return False
+    pre_start = subscription.last_freeze_pre_start_date
     training_credit = subscription.last_freeze_credit_training_days or 0
     calendar_credit = subscription.last_freeze_credit_calendar_days or 0
     subscription.end_date = pre_end
+    if pre_start is not None:
+        subscription.start_date = pre_start
     subscription.frozen_training_days_total = max(
         0, (subscription.frozen_training_days_total or 0) - training_credit
     )
@@ -275,6 +341,8 @@ def freeze_subscription(
     
     freeze_calendar_days = (effective_freeze_end.date() - effective_freeze_start.date()).days
     pre_extension_end_date = subscription.end_date
+    is_slot_subscription = subscription.subscription_type in ("single", "individual")
+    pre_extension_start_date = subscription.start_date if is_slot_subscription else None
 
     # Продлеваем срок действия абонемента при активации заморозки:
     # Дата окончания = следующий(е) тренировочный(е) день(дни) после текущего end_date.
@@ -300,11 +368,25 @@ def freeze_subscription(
                 if current_date.weekday() in days:
                     added_training_days += 1
                     if added_training_days == training_days_count:
-                        # Это последний тренировочный день - устанавливаем дату окончания с временем окончания тренировки
-                        hour, minute = TrainingManager.get_hour_minute_for_weekday(schedule, current_date.weekday())
-                        subscription.end_date = training_end_time(
-                            current_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                        hour, minute = TrainingManager.get_hour_minute_for_weekday(
+                            schedule, current_date.weekday()
                         )
+                        training_start = current_date.replace(
+                            hour=hour, minute=minute, second=0, microsecond=0
+                        )
+                        if subscription.subscription_type == "individual":
+                            from database.db_utils.club_settings import (
+                                get_individual_training_duration_minutes,
+                            )
+
+                            subscription.end_date = individual_training_end_time(
+                                training_start,
+                                get_individual_training_duration_minutes(session),
+                            )
+                        else:
+                            subscription.end_date = training_end_time(training_start)
+                        if is_slot_subscription:
+                            subscription.start_date = training_start
                         break
                 # Переходим к следующему дню
                 current_date += timedelta(days=1)
@@ -333,6 +415,7 @@ def freeze_subscription(
             credited_training_days = training_days_count
 
     subscription.last_freeze_pre_end_date = pre_extension_end_date
+    subscription.last_freeze_pre_start_date = pre_extension_start_date
     subscription.last_freeze_credit_training_days = credited_training_days
     subscription.last_freeze_credit_calendar_days = freeze_calendar_days
 
@@ -390,6 +473,14 @@ def unfreeze_subscription(
     subscription.frozen_until = None
     if not reverted:
         _clear_last_freeze_revert_markers(subscription)
+
+    athlete = subscription.athlete
+    if athlete and athlete.sport_type and athlete.age_group:
+        sport_type = subscription.sport_type or athlete.sport_type
+        _recalculate_slot_subscription_dates(
+            session, subscription, sport_type, athlete.age_group
+        )
+
     sync_subscription_trainings_remaining(session, subscription, reason="after_unfreeze")
     if commit:
         session.commit()
@@ -435,6 +526,12 @@ def expire_stale_subscription_freezes(
         sub.frozen_from = None
         sub.frozen_until = None
         _clear_last_freeze_revert_markers(sub)
+        athlete = sub.athlete
+        if athlete and athlete.sport_type and athlete.age_group:
+            sport_type = sub.sport_type or athlete.sport_type
+            _recalculate_slot_subscription_dates(
+                session, sub, sport_type, athlete.age_group
+            )
         sync_subscription_trainings_remaining(
             session, sub, reason="after_auto_unfreeze"
         )

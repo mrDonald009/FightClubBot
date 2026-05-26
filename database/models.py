@@ -256,6 +256,7 @@ class Subscription(Base):
     frozen_training_days_total = Column(Integer, default=0)  # Общее количество замороженных тренировочных дней
     # Снимок для отката продления при ручной разморозке текущей сессии заморозки
     last_freeze_pre_end_date = Column(DateTime, nullable=True)
+    last_freeze_pre_start_date = Column(DateTime, nullable=True)
     last_freeze_credit_training_days = Column(Integer, nullable=True)
     last_freeze_credit_calendar_days = Column(Integer, nullable=True)
 

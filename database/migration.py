@@ -392,6 +392,11 @@ def migrate_database():
             cursor.execute("ALTER TABLE subscriptions ADD COLUMN last_freeze_pre_end_date DATETIME")
             print("✅ last_freeze_pre_end_date добавлен")
 
+        if 'last_freeze_pre_start_date' not in columns:
+            print("🔧 Добавляю last_freeze_pre_start_date в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN last_freeze_pre_start_date DATETIME")
+            print("✅ last_freeze_pre_start_date добавлен")
+
         if 'last_freeze_credit_training_days' not in columns:
             print("🔧 Добавляю last_freeze_credit_training_days в таблицу subscriptions...")
             cursor.execute(

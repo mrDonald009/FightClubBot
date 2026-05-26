@@ -973,7 +973,11 @@ def _append_subscription_freeze_ui_lines(message: str, subscription: Subscriptio
             message += f"• ❄️ Заморожен до: {_format_dt(subscription.frozen_until)}\n"
     days = subscription.frozen_training_days_total or 0
     if days > 0:
-        message += f"• 📅 Продлено на {days} тр. дней (заморозки)\n"
+        st = (subscription.subscription_type or "").strip().lower()
+        if st in ("single", "individual"):
+            message += "• 📅 Тренировка перенесена (заморозка)\n"
+        else:
+            message += f"• 📅 Продлено на {days} тр. дней (заморозки)\n"
     return message
 
 
