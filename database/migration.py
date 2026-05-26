@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 from pathlib import Path
 
 # Windows/PowerShell часто падает на emoji в выводе (cp1251/cp866).
@@ -21,12 +22,264 @@ sys.path.append(str(project_root))
 
 import sqlite3
 
+from sqlalchemy.engine.url import make_url
+
+from utils.discipline_keys import default_group_key_for_subscription_sport
+
+
+def _rename_create_table_sql(sql: str, old_name: str, new_name: str) -> str:
+    """Переименовать CREATE TABLE old_name -> new_name c учетом кавычек и IF NOT EXISTS."""
+    pattern = rf'CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?(")?{re.escape(old_name)}(")?'
+    return re.sub(
+        pattern,
+        lambda m: f"CREATE TABLE {(m.group(1) or '')}{new_name}",
+        sql,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+
+def _sqlite_database_path_for_migration() -> str:
+    """Тот же файл SQLite, что и в DATABASE_URL (для dev/prod с разными путями)."""
+    raw = os.getenv("DATABASE_URL", "sqlite:///database/club.db")
+    try:
+        u = make_url(raw)
+        if u.drivername != "sqlite":
+            return "database/club.db"
+        db = u.database
+        if not db or db == ":memory:":
+            return "database/club.db"
+        return db
+    except Exception:
+        return "database/club.db"
+
+
+# Эталонные цены (MMA и Тайский Бокс): месячный групповой, разовый, индивидуальная.
+STANDARD_SUBSCRIPTION_TARIFFS = (
+    ("MMA", "subscription_monthly", 6500),
+    ("MMA", "subscription_single", 550),
+    ("MMA", "individual_training", 3000),
+    ("Тайский Бокс", "subscription_monthly", 6500),
+    ("Тайский Бокс", "subscription_single", 550),
+    ("Тайский Бокс", "individual_training", 3000),
+)
+
+
+def _migrate_multi_individual_bookings(cursor) -> None:
+    """Несколько individual-абонементов на спортсмена: partial UNIQUE вместо (athlete, discipline_key)."""
+    cursor.execute("DROP INDEX IF EXISTS uq_subscriptions_athlete_discipline")
+    cursor.execute(
+        "DROP INDEX IF EXISTS uq_subscriptions_athlete_discipline_non_individual"
+    )
+    cursor.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='subscriptions'"
+    )
+    for name, sql in cursor.fetchall():
+        if not name or not sql:
+            continue
+        name_s = str(name)
+        sql_l = sql.lower()
+        if "where" in sql_l:
+            continue
+        if name_s in (
+            "uq_subscriptions_individual_slot",
+            "uq_subscriptions_athlete_discipline_non_individual",
+        ):
+            continue
+        if "unique" in sql_l and "athlete_id" in sql_l and "discipline_key" in sql_l:
+            cursor.execute(f'DROP INDEX IF EXISTS "{name_s}"')
+            print(f"🔧 Снят legacy UNIQUE index subscriptions: {name_s}")
+
+    cursor.execute(
+        """
+        SELECT athlete_id, discipline_key, COUNT(*) as cnt
+        FROM subscriptions
+        WHERE COALESCE(subscription_type, '') != 'individual'
+        GROUP BY athlete_id, discipline_key
+        HAVING COUNT(*) > 1
+        """
+    )
+    if cursor.fetchall():
+        print(
+            "⚠️ Дубли (athlete_id, discipline_key) для group/monthly — "
+            "индексы multi-individual не созданы"
+        )
+        return
+
+    cursor.execute(
+        """
+        SELECT athlete_id, start_date, COUNT(*) as cnt
+        FROM subscriptions
+        WHERE subscription_type = 'individual' AND start_date IS NOT NULL
+        GROUP BY athlete_id, start_date
+        HAVING COUNT(*) > 1
+        """
+    )
+    if cursor.fetchall():
+        print(
+            "⚠️ Дубли individual (athlete_id, start_date) — "
+            "индекс uq_subscriptions_individual_slot не создан"
+        )
+        return
+
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_discipline_non_individual
+        ON subscriptions (athlete_id, discipline_key)
+        WHERE COALESCE(subscription_type, '') != 'individual'
+        """
+    )
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_individual_slot
+        ON subscriptions (athlete_id, start_date)
+        WHERE subscription_type = 'individual' AND start_date IS NOT NULL
+        """
+    )
+    print("✅ Multi-individual: partial UNIQUE indexes (несколько броней на спортсмена)")
+
+
+def _seed_default_club_settings(cursor) -> None:
+    """Длительность тренировок в БД (при первом запуске — из .env)."""
+    group_min = os.getenv("TRAINING_DURATION_MINUTES", "90").strip() or "90"
+    ind_min = os.getenv("INDIVIDUAL_TRAINING_DURATION_MINUTES", "60").strip() or "60"
+    for key, value in (
+        ("group_training_duration_minutes", group_min),
+        ("individual_training_duration_minutes", ind_min),
+    ):
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO club_settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            """,
+            (key, value),
+        )
+    print("✅ club_settings: длительность групповых/индивидуальных тренировок")
+
+
+def _sync_standard_subscription_tariffs(cursor) -> None:
+    """Привести активные тарифы MMA / Тайский Бокс к эталонным суммам."""
+    for sport, kind, amount in STANDARD_SUBSCRIPTION_TARIFFS:
+        cursor.execute(
+            """
+            UPDATE subscription_tariffs
+            SET amount_rubles = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE sport_type_name = ? AND tariff_kind = ? AND is_active = 1
+            """,
+            (amount, sport, kind),
+        )
+    print("✅ Тарифы MMA / Тайский Бокс синхронизированы с эталоном (6500 / 550 / 3000)")
+
+
+def _seed_default_subscription_tariffs(cursor) -> None:
+    """Тарифы по умолчанию: MMA и Тайский Бокс (как в TRAINING_SCHEDULE).
+
+    Месячный абонемент = групповые занятия; разовый = одно разовое занятие.
+    Одна сумма на взрослую и детскую группу (поле age_group в тарифах не используется).
+
+    Вставка только если для пары (вид спорта, tariff_kind) ещё нет ни одной строки —
+    затем активные строки приводятся к эталону (_sync_standard_subscription_tariffs).
+    """
+    note = "Групповые / разовое; взрослая и детская группа (единая цена)"
+    defaults = STANDARD_SUBSCRIPTION_TARIFFS
+    for sport, kind, amount in defaults:
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM subscription_tariffs
+            WHERE sport_type_name = ? AND tariff_kind = ?
+            """,
+            (sport, kind),
+        )
+        if (cursor.fetchone() or (0,))[0] > 0:
+            continue
+        cursor.execute(
+            """
+            INSERT INTO subscription_tariffs
+            (sport_type_name, tariff_kind, amount_rubles, is_active, note)
+            VALUES (?, ?, ?, 1, ?)
+            """,
+            (sport, kind, amount, note),
+        )
+    print("✅ Тарифы по умолчанию (MMA / Тайский Бокс): проверены при необходимости добавлены")
+
+
+def _migrate_athletes_age_group_check_allow_middle(cursor, connection) -> None:
+    """SQLite: расширить CHECK athletes.age_group — добавить middle."""
+    cursor.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='athletes'"
+    )
+    row = cursor.fetchone()
+    if not row or not row[0]:
+        return
+    ddl = row[0]
+    if "'middle'" in ddl:
+        return
+
+    print("🔧 Пересоздаю таблицу athletes (CHECK age_group: children, middle, adults)...")
+    cursor.execute("PRAGMA foreign_keys=OFF")
+    cursor.execute(
+        """
+        CREATE TABLE athletes_new (
+            id INTEGER NOT NULL PRIMARY KEY,
+            telegram_id INTEGER UNIQUE,
+            full_name VARCHAR(200) NOT NULL,
+            phone VARCHAR(20),
+            birth_date DATETIME,
+            height INTEGER,
+            weight INTEGER,
+            medical_info TEXT,
+            sport_type VARCHAR(50),
+            age_group VARCHAR(20),
+            created_by INTEGER,
+            created_at DATETIME,
+            subscription_id INTEGER,
+            current_subscription_id INTEGER,
+            FOREIGN KEY(created_by) REFERENCES coaches (id),
+            CHECK (age_group IS NULL OR age_group IN ('children', 'middle', 'adults'))
+        )
+        """
+    )
+    cursor.execute("PRAGMA table_info(athletes)")
+    old_cols = [r[1] for r in cursor.fetchall()]
+    new_cols = [
+        c
+        for c in (
+            "id",
+            "telegram_id",
+            "full_name",
+            "phone",
+            "birth_date",
+            "height",
+            "weight",
+            "medical_info",
+            "sport_type",
+            "age_group",
+            "created_by",
+            "created_at",
+            "subscription_id",
+            "current_subscription_id",
+        )
+        if c in old_cols
+    ]
+    cols_csv = ", ".join(new_cols)
+    cursor.execute(f"INSERT INTO athletes_new ({cols_csv}) SELECT {cols_csv} FROM athletes")
+    cursor.execute("DROP TABLE athletes")
+    cursor.execute("ALTER TABLE athletes_new RENAME TO athletes")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS ix_athletes_created_by ON athletes (created_by)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS ix_athletes_sport_age ON athletes (sport_type, age_group)"
+    )
+    cursor.execute("PRAGMA foreign_keys=ON")
+    connection.commit()
+    print("✅ CHECK age_group обновлён (добавлена middle)")
+
 
 def migrate_database():
     """Миграция базы данных для добавления новых полей"""
 
-    # Путь к базе данных
-    db_path = "database/club.db"
+    db_path = _sqlite_database_path_for_migration()
 
     # Создаем папку если её нет
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -76,14 +329,17 @@ def migrate_database():
         cursor.execute("""
             UPDATE athletes
             SET age_group = CASE
-                WHEN age_group IN ('children', 'adults') THEN age_group
+                WHEN age_group IN ('children', 'middle', 'adults') THEN age_group
                 WHEN age_group IN ('Детская', 'детская', 'child', 'kids') THEN 'children'
-                WHEN age_group IN ('Взрослая', 'взрослая', 'adult') THEN 'adults'
+                WHEN age_group IN ('Средняя', 'средняя') THEN 'middle'
+                WHEN age_group IN ('Взрослая', 'взрослая', 'adult', 'adults') THEN 'adults'
                 ELSE age_group
             END
             WHERE age_group IS NOT NULL
         """)
         print("✅ Нормализованы значения age_group (если были legacy-значения)")
+
+        _migrate_athletes_age_group_check_allow_middle(cursor, connection)
 
         # Проверяем таблицу subscriptions
         cursor.execute("PRAGMA table_info(subscriptions)")
@@ -131,6 +387,30 @@ def migrate_database():
             cursor.execute("ALTER TABLE subscriptions ADD COLUMN frozen_training_days_total INTEGER DEFAULT 0")
             print("✅ frozen_training_days_total добавлен")
 
+        if 'last_freeze_pre_end_date' not in columns:
+            print("🔧 Добавляю last_freeze_pre_end_date в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN last_freeze_pre_end_date DATETIME")
+            print("✅ last_freeze_pre_end_date добавлен")
+
+        if 'last_freeze_pre_start_date' not in columns:
+            print("🔧 Добавляю last_freeze_pre_start_date в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN last_freeze_pre_start_date DATETIME")
+            print("✅ last_freeze_pre_start_date добавлен")
+
+        if 'last_freeze_credit_training_days' not in columns:
+            print("🔧 Добавляю last_freeze_credit_training_days в таблицу subscriptions...")
+            cursor.execute(
+                "ALTER TABLE subscriptions ADD COLUMN last_freeze_credit_training_days INTEGER"
+            )
+            print("✅ last_freeze_credit_training_days добавлен")
+
+        if 'last_freeze_credit_calendar_days' not in columns:
+            print("🔧 Добавляю last_freeze_credit_calendar_days в таблицу subscriptions...")
+            cursor.execute(
+                "ALTER TABLE subscriptions ADD COLUMN last_freeze_credit_calendar_days INTEGER"
+            )
+            print("✅ last_freeze_credit_calendar_days добавлен")
+
         # Добавляем created_at если его нет (без DEFAULT для SQLite)
         if 'created_at' not in columns:
             print("🔧 Добавляю created_at в таблицу subscriptions...")
@@ -163,9 +443,10 @@ def migrate_database():
         cursor.execute("""
             UPDATE subscriptions
             SET subscription_type = CASE
-                WHEN subscription_type IN ('monthly', 'single') THEN subscription_type
+                WHEN subscription_type IN ('monthly', 'single', 'individual') THEN subscription_type
                 WHEN subscription_type IN ('Месячный', 'месячный', 'month') THEN 'monthly'
                 WHEN subscription_type IN ('Разовый', 'разовый', 'one_time', 'single_use') THEN 'single'
+                WHEN subscription_type IN ('Индивидуальный', 'индивидуальный') THEN 'individual'
                 ELSE subscription_type
             END
             WHERE subscription_type IS NOT NULL
@@ -192,6 +473,83 @@ def migrate_database():
         """)
         print("✅ Нормализованы trainings_total/trainings_remaining")
 
+        # Мульти-абонементы: направление (discipline_key) и ответственный тренер
+        cursor.execute("PRAGMA table_info(subscriptions)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if "discipline_key" not in columns:
+            print("🔧 Добавляю discipline_key в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN discipline_key VARCHAR(64)")
+            print("✅ discipline_key добавлен")
+
+        if "responsible_coach_id" not in columns:
+            print("🔧 Добавляю responsible_coach_id в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN responsible_coach_id INTEGER")
+            print("✅ responsible_coach_id добавлен")
+
+        cursor.execute(
+            """
+            SELECT s.id, s.sport_type, a.sport_type
+            FROM subscriptions s
+            LEFT JOIN athletes a ON a.id = s.athlete_id
+            """
+        )
+        for sid, st_sub, st_ath in cursor.fetchall():
+            cursor.execute("SELECT discipline_key FROM subscriptions WHERE id = ?", (sid,))
+            current = cursor.fetchone()[0]
+            if current is None or current == "":
+                st = (st_sub or st_ath or "").strip()
+                dk = default_group_key_for_subscription_sport(st or "unknown")
+                cursor.execute(
+                    "UPDATE subscriptions SET discipline_key = ? WHERE id = ?",
+                    (dk, sid),
+                )
+        print("✅ Заполнен discipline_key (где был пустой)")
+
+        while True:
+            cursor.execute(
+                """
+                SELECT athlete_id, discipline_key, COUNT(*) AS cnt
+                FROM subscriptions
+                GROUP BY athlete_id, discipline_key
+                HAVING cnt > 1
+                LIMIT 1
+                """
+            )
+            row = cursor.fetchone()
+            if not row:
+                break
+            aid, dk, _cnt = row
+            cursor.execute(
+                """
+                SELECT id FROM subscriptions
+                WHERE athlete_id = ? AND discipline_key = ?
+                ORDER BY id
+                """,
+                (aid, dk),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            for sid in ids[1:]:
+                suffix = f"_{sid}"
+                base = (dk or "legacy")[: max(0, 64 - len(suffix))]
+                new_dk = f"{base}{suffix}"
+                cursor.execute(
+                    "UPDATE subscriptions SET discipline_key = ? WHERE id = ?",
+                    (new_dk, sid),
+                )
+        print("✅ Устранены дубликаты (athlete_id, discipline_key) при необходимости")
+
+        cursor.execute(
+            """
+            UPDATE subscriptions
+            SET responsible_coach_id = (
+                SELECT created_by FROM athletes WHERE athletes.id = subscriptions.athlete_id
+            )
+            WHERE responsible_coach_id IS NULL
+            """
+        )
+        print("✅ Заполнен responsible_coach_id из athletes.created_by (где был NULL)")
+
         # Проверяем таблицу attendances
         cursor.execute("PRAGMA table_info(attendances)")
         columns = [row[1] for row in cursor.fetchall()]
@@ -211,6 +569,11 @@ def migrate_database():
             print("🔧 Добавляю subscription_id в таблицу attendances...")
             cursor.execute("ALTER TABLE attendances ADD COLUMN subscription_id INTEGER")
             print("✅ subscription_id добавлен")
+
+        if "locked_at" not in columns:
+            print("🔧 Добавляю locked_at в таблицу attendances...")
+            cursor.execute("ALTER TABLE attendances ADD COLUMN locked_at DATETIME")
+            print("✅ locked_at добавлен")
 
         # Создаем таблицу restoration_requests если её нет
         cursor.execute("""
@@ -255,25 +618,49 @@ def migrate_database():
         """)
         print("✅ Таблица global_freeze_applications создана")
 
+        # Персональная заморозка спортсмена (все направления)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS athlete_freezes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                athlete_id INTEGER NOT NULL,
+                frozen_from DATETIME NOT NULL,
+                frozen_until DATETIME NOT NULL,
+                initiated_by_coach_id INTEGER,
+                global_freeze_id INTEGER,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS ix_athlete_freezes_athlete_range
+            ON athlete_freezes (athlete_id, frozen_from, frozen_until)
+        """)
+        print("✅ Таблица athlete_freezes и индекс созданы")
+
         # --- СТРУКТУРНЫЕ ОГРАНИЧЕНИЯ (SQLite UNIQUE INDEX) ---
-        # Правило домена: у одного спортсмена (athlete_id) один абонемент.
-        # В SQLite добавляем это через UNIQUE INDEX.
+        # Раньше: один абонемент на спортсмена (uq_subscriptions_athlete_id).
+        # Теперь: уникальная пара (athlete_id, discipline_key).
+
+        cursor.execute("DROP INDEX IF EXISTS uq_subscriptions_athlete_id")
 
         cursor.execute("""
-            SELECT athlete_id, COUNT(*) as cnt
+            SELECT athlete_id, discipline_key, COUNT(*) as cnt
             FROM subscriptions
-            GROUP BY athlete_id
+            WHERE discipline_key IS NOT NULL AND discipline_key != ''
+            GROUP BY athlete_id, discipline_key
             HAVING COUNT(*) > 1
         """)
-        duplicates = cursor.fetchall()
-        if duplicates:
-            print(f"⚠️ Найдены дубли subscriptions по athlete_id. UNIQUE athlete_id не включаем. Пример: {duplicates[0]}")
+        pair_dups = cursor.fetchall()
+        if pair_dups:
+            print(
+                f"⚠️ Остаются дубли (athlete_id, discipline_key). "
+                f"UNIQUE не создан. Пример: {pair_dups[0]}"
+            )
         else:
             cursor.execute("""
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_id
-                ON subscriptions (athlete_id)
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_discipline
+                ON subscriptions (athlete_id, discipline_key)
             """)
-            print("✅ UNIQUE: uq_subscriptions_athlete_id создана")
+            print("✅ UNIQUE: uq_subscriptions_athlete_discipline создана")
 
         # Защита от дублей посещений: один athlete не должен иметь более одной записи на одну training.
         cursor.execute("""
@@ -317,6 +704,184 @@ def migrate_database():
         """)
         print("✅ Индексы global_freezes/global_freeze_applications созданы")
 
+        # Тарифы абонементов (редактируемые цены при активации)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS subscription_tariffs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sport_type_name VARCHAR(50) NOT NULL,
+                tariff_kind VARCHAR(40) NOT NULL,
+                amount_rubles INTEGER NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                note TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                CHECK (amount_rubles >= 0),
+                CHECK (tariff_kind IN (
+                    'subscription_monthly',
+                    'subscription_single',
+                    'individual_training'
+                ))
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS ix_subscription_tariffs_kind_active_sport
+            ON subscription_tariffs (tariff_kind, is_active, sport_type_name)
+        """)
+        print("✅ Таблица subscription_tariffs и индекс созданы")
+
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='subscription_tariffs'"
+        )
+        if cursor.fetchone():
+            _seed_default_subscription_tariffs(cursor)
+            _sync_standard_subscription_tariffs(cursor)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS club_settings (
+                key VARCHAR(64) PRIMARY KEY,
+                value VARCHAR(255) NOT NULL,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        print("✅ Таблица club_settings создана")
+        _seed_default_club_settings(cursor)
+
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='subscription_payments'"
+        )
+        if cursor.fetchone():
+            cursor.execute("PRAGMA table_info(subscription_payments)")
+            pay_cols = [row[1] for row in cursor.fetchall()]
+            if "payment_kind" not in pay_cols:
+                print("🔧 Добавляю payment_kind в subscription_payments...")
+                cursor.execute(
+                    "ALTER TABLE subscription_payments ADD COLUMN payment_kind VARCHAR(40)"
+                )
+                cursor.execute(
+                    """
+                    UPDATE subscription_payments SET payment_kind = (
+                        SELECT CASE
+                            WHEN s.subscription_type = 'monthly' THEN 'subscription_monthly'
+                            WHEN s.subscription_type = 'single' THEN 'subscription_single'
+                            WHEN s.subscription_type = 'individual' THEN 'individual_training'
+                            ELSE 'individual_training'
+                        END
+                        FROM subscriptions s WHERE s.id = subscription_payments.subscription_id
+                    ) WHERE payment_kind IS NULL
+                    """
+                )
+                print("✅ payment_kind добавлен и заполнен по типу абонемента")
+
+        # Расширение CHECK subscription_type (individual): SQLite не умеет ALTER CHECK
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='subscriptions'")
+        sub_sql_row = cursor.fetchone()
+        if sub_sql_row and sub_sql_row[0]:
+            sub_sql = sub_sql_row[0]
+            if (
+                "individual" not in sub_sql.lower()
+                and "IN ('monthly', 'single')" in sub_sql
+            ):
+                print("🔧 Пересоздаю таблицу subscriptions (CHECK + individual)...")
+                cursor.execute("PRAGMA foreign_keys=OFF")
+                try:
+                    new_sql = sub_sql.replace(
+                        "IN ('monthly', 'single')",
+                        "IN ('monthly', 'single', 'individual')",
+                        1,
+                    )
+                    new_sql = _rename_create_table_sql(
+                        new_sql, "subscriptions", "subscriptions_mig_nr"
+                    )
+                    cursor.execute(new_sql)
+                    cursor.execute(
+                        "INSERT INTO subscriptions_mig_nr SELECT * FROM subscriptions"
+                    )
+                    cursor.execute("DROP TABLE subscriptions")
+                    cursor.execute(
+                        "ALTER TABLE subscriptions_mig_nr RENAME TO subscriptions"
+                    )
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS ix_subscriptions_active_end
+                        ON subscriptions (is_active, end_date)
+                    """)
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS ix_subscriptions_athlete_active
+                        ON subscriptions (athlete_id, is_active)
+                    """)
+                    cursor.execute("""
+                        SELECT athlete_id, discipline_key, COUNT(*) as cnt
+                        FROM subscriptions
+                        WHERE discipline_key IS NOT NULL AND discipline_key != ''
+                        GROUP BY athlete_id, discipline_key
+                        HAVING COUNT(*) > 1
+                    """)
+                    if not cursor.fetchall():
+                        cursor.execute("""
+                            CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_discipline
+                            ON subscriptions (athlete_id, discipline_key)
+                        """)
+                    print("✅ subscriptions: CHECK допускает individual")
+                finally:
+                    cursor.execute("PRAGMA foreign_keys=ON")
+
+        # Снятие legacy-ограничения UNIQUE(athlete_id): нужно для мульти-абонементов
+        # (group + individual у одного спортсмена).
+        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='subscriptions'")
+        sub_sql_row = cursor.fetchone()
+        if sub_sql_row and sub_sql_row[0]:
+            sub_sql = sub_sql_row[0]
+            sub_sql_l = sub_sql.lower()
+            has_legacy_unique_athlete = (
+                "unique (athlete_id)" in sub_sql_l
+                or "unique(\"athlete_id\")" in sub_sql_l
+            )
+            if has_legacy_unique_athlete:
+                print("🔧 Пересоздаю subscriptions без legacy UNIQUE(athlete_id)...")
+                cursor.execute("PRAGMA foreign_keys=OFF")
+                try:
+                    new_sql = sub_sql
+                    new_sql = new_sql.replace(
+                        "IN ('monthly', 'single')",
+                        "IN ('monthly', 'single', 'individual')",
+                        1,
+                    )
+                    new_sql = new_sql.replace("UNIQUE (athlete_id),", "", 1)
+                    new_sql = new_sql.replace("UNIQUE(\"athlete_id\"),", "", 1)
+                    new_sql = _rename_create_table_sql(
+                        new_sql, "subscriptions", "subscriptions_mig_multi"
+                    )
+                    cursor.execute(new_sql)
+                    cursor.execute(
+                        "INSERT INTO subscriptions_mig_multi SELECT * FROM subscriptions"
+                    )
+                    cursor.execute("DROP TABLE subscriptions")
+                    cursor.execute(
+                        "ALTER TABLE subscriptions_mig_multi RENAME TO subscriptions"
+                    )
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS ix_subscriptions_active_end
+                        ON subscriptions (is_active, end_date)
+                    """)
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS ix_subscriptions_athlete_active
+                        ON subscriptions (athlete_id, is_active)
+                    """)
+                    cursor.execute("""
+                        SELECT athlete_id, discipline_key, COUNT(*) as cnt
+                        FROM subscriptions
+                        WHERE discipline_key IS NOT NULL AND discipline_key != ''
+                        GROUP BY athlete_id, discipline_key
+                        HAVING COUNT(*) > 1
+                    """)
+                    if not cursor.fetchall():
+                        cursor.execute("""
+                            CREATE UNIQUE INDEX IF NOT EXISTS uq_subscriptions_athlete_discipline
+                            ON subscriptions (athlete_id, discipline_key)
+                        """)
+                    print("✅ subscriptions: legacy UNIQUE(athlete_id) снят")
+                finally:
+                    cursor.execute("PRAGMA foreign_keys=ON")
+
         # Проверяем таблицу trainings
         cursor.execute("PRAGMA table_info(trainings)")
         columns = [row[1] for row in cursor.fetchall()]
@@ -326,6 +891,55 @@ def migrate_database():
             print("🔧 Добавляю coach_id в таблицу trainings...")
             cursor.execute("ALTER TABLE trainings ADD COLUMN coach_id INTEGER")
             print("✅ coach_id добавлен в trainings")
+
+        if "training_format" not in columns:
+            print("🔧 Добавляю training_format в таблицу trainings...")
+            cursor.execute(
+                "ALTER TABLE trainings ADD COLUMN training_format VARCHAR(20)"
+            )
+            print("✅ training_format добавлен в trainings")
+
+        # Материализованная история посещений
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS visit_history (
+                id INTEGER PRIMARY KEY,
+                athlete_id INTEGER NOT NULL,
+                training_id INTEGER NOT NULL,
+                subscription_id INTEGER NULL,
+                attendance_id INTEGER NULL,
+                status_code VARCHAR(16) NOT NULL,
+                status_label VARCHAR(128) NULL,
+                source VARCHAR(24) NULL,
+                recorded_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY(athlete_id) REFERENCES athletes(id),
+                FOREIGN KEY(training_id) REFERENCES trainings(id),
+                FOREIGN KEY(subscription_id) REFERENCES subscriptions(id),
+                FOREIGN KEY(attendance_id) REFERENCES attendances(id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_visit_history_athlete_training
+            ON visit_history (athlete_id, training_id)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_visit_history_athlete_date
+            ON visit_history (athlete_id, training_id)
+            """
+        )
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS ix_visit_history_status
+            ON visit_history (status_code)
+            """
+        )
+
+        _migrate_multi_individual_bookings(cursor)
 
         connection.commit()
         print("🎉 Миграция завершена успешно!")

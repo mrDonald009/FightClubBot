@@ -10,35 +10,47 @@ logger = logging.getLogger(__name__)
 class TrainingManager:
     """Управление тренировками и автоматическим списанием"""
 
-    # Расписание тренировок
+    # Расписание групповых тренировок (начало слота; длительность = TRAINING_DURATION, 1,5 ч).
+    # MMA: Пн, Ср, Пт — 17:00–18:30 дети, 18:30–20:00 средняя, 20:00–21:30 взрослые.
+    # Тайский бокс: Вт, Чт — как MMA по времени; Сб — 11:00 / 12:30 / 14:00.
     TRAINING_SCHEDULE = {
         'MMA': {
             'children': {
-                'days': [0, 2, 4],  # Пн, Ср, Пт (0=понедельник)
-                'time': '18:00'
+                'days': [0, 2, 4],  # Пн, Ср, Пт
+                'time': '17:00',
+            },
+            'middle': {
+                'days': [0, 2, 4],
+                'time': '18:30',
             },
             'adults': {
                 'days': [0, 2, 4],
-                'time': '20:00'
-            }
+                'time': '20:00',
+            },
         },
         'Тайский Бокс': {
             'children': {
                 'days': [1, 3, 5],  # Вт, Чт, Сб
-                'time': '18:00',
-                # Точечные переопределения времени по дням недели (0=Пн ... 6=Вс)
+                'time': '17:00',
                 'day_times': {
-                    5: '12:30',  # Суббота
+                    5: '11:00',  # Сб 11:00–12:30
+                },
+            },
+            'middle': {
+                'days': [1, 3, 5],
+                'time': '18:30',
+                'day_times': {
+                    5: '12:30',  # Сб 12:30–14:00
                 },
             },
             'adults': {
                 'days': [1, 3, 5],
                 'time': '20:00',
                 'day_times': {
-                    5: '14:00',  # Суббота
+                    5: '14:00',  # Сб 14:00–15:30
                 },
-            }
-        }
+            },
+        },
     }
 
     @staticmethod
@@ -79,12 +91,19 @@ class TrainingManager:
         """Рассчитать пропущенные тренировки для спортсмена"""
         session = Session()
         try:
+            from utils.subscription_resolve import active_subscription_for_sport
+
             athlete = session.query(Athlete).filter_by(id=athlete_id).first()
-            if not athlete or not athlete.current_subscription:
+            subscription = (
+                active_subscription_for_sport(athlete, athlete.sport_type)
+                if athlete
+                else None
+            )
+            if not athlete or not subscription:
                 return {"missed": 0, "total_passed": 0, "details": []}
 
-            subscription = athlete.current_subscription
-            schedule = TrainingManager.TRAINING_SCHEDULE.get(athlete.sport_type, {}).get(athlete.age_group)
+            sport_key = subscription.sport_type or athlete.sport_type
+            schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_key, {}).get(athlete.age_group)
             if not schedule:
                 return {"missed": 0, "total_passed": 0, "details": []}
 
@@ -120,7 +139,7 @@ class TrainingManager:
 
                     # Проверяем, была ли эта тренировка
                     training = session.query(Training).filter_by(
-                        sport_type=athlete.sport_type,
+                        sport_type=sport_key,
                         age_group=athlete.age_group,
                         training_date=training_start_datetime,
                         is_cancelled=False
@@ -172,11 +191,18 @@ class TrainingManager:
         """Автоматическое списание тренировок по расписанию"""
         session = Session()
         try:
+            from utils.subscription_resolve import active_subscription_for_sport
+
             athlete = session.query(Athlete).filter_by(id=athlete_id).first()
-            if not athlete or not athlete.current_subscription:
+            subscription = (
+                active_subscription_for_sport(athlete, athlete.sport_type)
+                if athlete
+                else None
+            )
+            if not athlete or not subscription:
                 return {"success": False, "message": "Спортсмен или абонемент не найден"}
 
-            subscription = athlete.current_subscription
+            sport_key = subscription.sport_type or athlete.sport_type
 
             # Проверяем статус абонемента
             status = SubscriptionChecker.get_subscription_status(subscription)
@@ -203,7 +229,7 @@ class TrainingManager:
 
                 # Находим или создаем тренировку
                 training = session.query(Training).filter_by(
-                    sport_type=athlete.sport_type,
+                    sport_type=sport_key,
                     age_group=athlete.age_group,
                     training_date=training_date,
                     is_cancelled=False
@@ -214,7 +240,7 @@ class TrainingManager:
                     coach_id = athlete.created_by if athlete.created_by else None
                     
                     training = Training(
-                        sport_type=athlete.sport_type,
+                        sport_type=sport_key,
                         age_group=athlete.age_group,
                         training_date=training_date,
                         is_cancelled=False,

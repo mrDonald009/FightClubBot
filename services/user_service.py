@@ -224,7 +224,7 @@ class UserService:
             return user
         if isinstance(user, Admin):
             logger.warning(
-                "ensure_test_coach: telegram_id=%s уже администратор — тренер не создаётся (используйте другой THAI_COACH_TELEGRAM_ID).",
+                "ensure_test_coach: telegram_id=%s уже администратор — тренер не создаётся (снимите роль админа или уберите id из списка тренеров).",
                 telegram_id,
             )
             raise ValueError("telegram_id уже занят администратором")

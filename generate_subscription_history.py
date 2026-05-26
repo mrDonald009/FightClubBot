@@ -81,6 +81,8 @@ def generate_subscription_history():
                 # Создаем абонемент
                 subscription = Subscription(
                     athlete_id=athlete.id,
+                    discipline_key=f"hist_{athlete.id}_{i}",
+                    sport_type=athlete.sport_type,
                     subscription_type=subscription_type,
                     start_date=start_date,
                     end_date=end_date,

@@ -18,12 +18,16 @@ from services.user_service import UserService
 from database.db_utils import get_user_role
 from services.subscription_service import SubscriptionService
 from services.subscription_audit_service import run_subscription_audit, format_audit_report
-from database.db_utils import (
-    apply_global_freeze,
-    deactivate_global_freeze_and_migrate,
-    list_active_global_freezes_overlapping_range,
+from services.global_freeze_service import (
+    apply_global_freeze_service,
+    deactivate_global_freeze_service,
+    format_current_global_freezes_html as _format_current_global_freezes_html,
+    format_global_freeze_history_html as _format_global_freeze_history_html,
+    gf_keyboard_button_label_from_parts as _gf_keyboard_button_label_from_parts,
+    list_active_global_freezes as _list_active_global_freezes,
+    overlapping_global_freeze_ids,
+    parse_ui_date as _parse_ui_date,
 )
-from utils.time_utils import now_moscow
 from handlers.start import start
 from handlers.coach_handlers import (
     coach_menu,
@@ -36,12 +40,14 @@ from handlers.coach_handlers import (
     add_athlete_subscription,
     handle_add_athlete_calendar_nav,
     handle_add_athlete_calendar_date_pick,
+    handle_add_athlete_individual_time_pick,
     handle_add_athlete_calendar_ignore,
     handle_add_athlete_shift_confirm,
     handle_add_athlete_shift_cancel,
     handle_training_date_selection,
     athletes_list,
     athletes_list_filtered,
+    athletes_list_page,
     athletes_categories,
     cancel_athlete_creation,
     cancel_global_freeze,
@@ -53,6 +59,14 @@ from handlers.coach_handlers import (
     handle_calendar_navigation,
     handle_calendar_date_click,
     handle_calendar_empty_click,
+    handle_calendar_individual_book_start,
+    handle_calendar_individual_time_pick,
+    handle_calendar_individual_athlete_pick,
+    handle_calendar_individual_athlete_page,
+    handle_calendar_group_book_start,
+    handle_calendar_group_time_pick,
+    handle_calendar_group_athlete_pick,
+    handle_calendar_group_athlete_page,
     ATHLETE_FULL_NAME,
     ATHLETE_PHONE,
     ATHLETE_BIRTH_DATE,
@@ -73,6 +87,8 @@ from handlers.card_handlers import (
     handle_activate_subscription,
     handle_activation_calendar_nav,
     handle_activation_date_pick,
+    handle_activation_individual_shift_confirm,
+    handle_activation_time_pick,
     handle_activation_ignore,
     handle_activation_shift_confirm,
     handle_activation_shift_cancel,
@@ -82,6 +98,17 @@ from handlers.card_handlers import (
     show_restore_menu,
     execute_restore_training,
     show_edit_athlete_menu,
+    start_edit_athlete_name,
+    start_edit_athlete_phone,
+    start_edit_athlete_medical,
+    save_edit_athlete_name,
+    save_edit_athlete_phone,
+    save_edit_athlete_medical,
+    cancel_edit_athlete,
+    cancel_edit_athlete_command,
+    EDIT_ATHLETE_NAME,
+    EDIT_ATHLETE_PHONE,
+    EDIT_ATHLETE_MEDICAL,
     select_subscription,
     view_subscription_card,
     handle_freeze_subscription_start,
@@ -92,10 +119,16 @@ from handlers.card_handlers import (
 )
 from handlers.attendance_handlers import (
     select_training_for_attendance,
+    handle_attendance_athletes_page,
+    handle_attendance_page_info,
+    handle_attendance_name_column,
+    handle_attendance_slot_locked,
     mark_attendance_start,
     handle_training_selection,
     execute_mark_attendance,
+    execute_mark_attendance_slot,
 )
+from handlers.coach_report_handlers import coach_report_entry, coach_statistics_callback
 
 logger = logging.getLogger(__name__)
 
@@ -121,11 +154,6 @@ async def handle_statistics(update, context):
 async def handle_financial_stats(update, context):
     """Обработчик для финансовой статистики (в разработке)."""
     await update.message.reply_text("💰 Функция в разработке")
-
-
-async def handle_attendance(update, context):
-    """Обработчик для отметки посещения (в разработке)."""
-    await update.message.reply_text("📅 Функция в разработке")
 
 
 async def handle_settings(update, context):
@@ -242,7 +270,7 @@ async def create_global_freeze(update, context):
 
     try:
         with get_db_session() as session:
-            result = apply_global_freeze(
+            result = apply_global_freeze_service(
                 session=session,
                 start_date=start_date,
                 end_date=end_date,
@@ -265,103 +293,6 @@ async def create_global_freeze(update, context):
     except Exception as e:
         logger.error(f"Ошибка применения массовой заморозки: {e}", exc_info=True)
         await update.message.reply_text("❌ Ошибка при применении массовой заморозки")
-
-
-def _parse_ui_date(text: str):
-    """Парсинг даты UI формата ДД.ММ.ГГГГ."""
-    try:
-        return datetime.strptime(text.strip(), "%d.%m.%Y")
-    except Exception:
-        return None
-
-
-def _format_current_global_freezes_html(session) -> str:
-    """
-    Текст для UI: массовые заморозки, действующие «сейчас» (по времени и is_active).
-    """
-    from database.models import GlobalFreeze
-
-    now = now_moscow()
-    rows = (
-        session.query(GlobalFreeze)
-        .filter(GlobalFreeze.is_active == True)
-        .filter(GlobalFreeze.start_date <= now)
-        .filter(GlobalFreeze.end_date >= now)
-        .order_by(GlobalFreeze.id.asc())
-        .all()
-    )
-    if not rows:
-        return "📭 <b>Сейчас действующих массовых заморозок нет.</b>"
-
-    header = (
-        "📌 <b>Сейчас действует массовая заморозка:</b>"
-        if len(rows) == 1
-        else "📌 <b>Сейчас действуют массовые заморозки:</b>"
-    )
-    lines = [header]
-    for g in rows:
-        title = html.escape((g.title or "").strip() or "без названия")
-        ds = g.start_date.strftime("%d.%m.%Y")
-        de = g.end_date.strftime("%d.%m.%Y")
-        lines.append(f"• ID <code>{g.id}</code> — <b>{title}</b>")
-        lines.append(f"  <i>{ds} — {de}</i>")
-    return "\n".join(lines)
-
-
-def _list_active_global_freezes(session):
-    """Все массовые заморозки с is_active=True (в т.ч. будущие по календарю)."""
-    from database.models import GlobalFreeze
-
-    return (
-        session.query(GlobalFreeze)
-        .filter(GlobalFreeze.is_active == True)
-        .order_by(GlobalFreeze.start_date.asc())
-        .all()
-    )
-
-
-def _format_global_freeze_history_html(session, limit: int = 15) -> str:
-    """Короткая история массовых заморозок (активные и неактивные)."""
-    from database.models import GlobalFreeze
-
-    rows = (
-        session.query(GlobalFreeze)
-        .order_by(GlobalFreeze.id.desc())
-        .limit(limit)
-        .all()
-    )
-    if not rows:
-        return "📭 <b>История массовых заморозок пуста.</b>"
-
-    lines = [f"📚 <b>История массовых заморозок</b> (последние {len(rows)}):"]
-    for g in rows:
-        status = "🟢 Действует" if g.is_active else "⚪ Отключена"
-        title = html.escape((g.title or "").strip() or "без названия")
-        ds = g.start_date.strftime("%d.%m.%Y")
-        de = g.end_date.strftime("%d.%m.%Y")
-        created = g.created_at.strftime("%d.%m.%Y") if g.created_at else "—"
-        initiator = str(g.created_by) if g.created_by else "не указан"
-        lines.append(f"• <b>{title}</b>")
-        lines.append(f"  Создано: {created}")
-        lines.append(f"  Период действия: {ds}—{de}")
-        lines.append(f"  Текущий статус: {status}")
-        lines.append(f"  Инициатор: {initiator}")
-    return "\n".join(lines)
-
-
-def _gf_keyboard_button_label(g) -> str:
-    t = (g.title or "").strip() or "без названия"
-    if len(t) > 28:
-        t = t[:25] + "…"
-    return f"#{g.id} {t}"
-
-
-def _gf_keyboard_button_label_from_parts(gf_id: int, title: str) -> str:
-    """Безопасный label: работает с примитивами, не зависит от ORM-сессии."""
-    t = (title or "").strip() or "без названия"
-    if len(t) > 28:
-        t = t[:25] + "…"
-    return f"#{gf_id} {t}"
 
 
 async def _gf_safe_edit(
@@ -438,7 +369,7 @@ async def start_global_freeze_flow(update, context):
     main_status_block = "" if status_block.startswith("📭 ") else f"{status_block}\n\n"
 
     await update.message.reply_text(
-        "🌍 <b>МАССОВАЯ ЗАМОРОЗКА</b>\n\n"
+        "🌍 <b>Массовая заморозка</b>\n\n"
         f"{main_status_block}"
         "Выберите действие:",
         parse_mode="HTML",
@@ -634,7 +565,7 @@ async def handle_gf_deact_confirm(update, context):
             if not user or get_user_role(user) not in ["coach", "admin"]:
                 await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
-            result = deactivate_global_freeze_and_migrate(session, gf_id)
+            result = deactivate_global_freeze_service(session, gf_id)
     except Exception as e:
         logger.error(f"Ошибка (gf_deact_confirm): {e}", exc_info=True)
         await _gf_safe_edit(update, context, "❌ Ошибка при деактивации")
@@ -754,11 +685,8 @@ async def handle_global_freeze_title(update, context):
     overlap_note = ""
     try:
         with get_db_session() as session:
-            overlapping = list_active_global_freezes_overlapping_range(session, start_date, end_date)
-            if overlapping:
-                oids = ", ".join(str(g.id) for g in overlapping[:5])
-                if len(overlapping) > 5:
-                    oids += ", …"
+            oids = overlapping_global_freeze_ids(session, start_date, end_date)
+            if oids:
                 overlap_note = (
                     f"\n\n⚠️ Период пересекается с уже действующей массовой заморозкой "
                     f"(записи: <code>{html.escape(oids)}</code>). "
@@ -801,7 +729,7 @@ async def handle_global_freeze_confirm_apply(update, context):
 
     try:
         with get_db_session() as session:
-            result = apply_global_freeze(
+            result = apply_global_freeze_service(
                 session=session,
                 start_date=start_date,
                 end_date=end_date,
@@ -883,7 +811,7 @@ async def deactivate_global_freeze(update, context):
                 await update.message.reply_text("❌ У вас нет прав для этой команды")
                 return
 
-            result = deactivate_global_freeze_and_migrate(session, gf_id)
+            result = deactivate_global_freeze_service(session, gf_id)
 
             if not result.get("success"):
                 await update.message.reply_text(f"❌ {result.get('message', 'Ошибка')}")
@@ -947,72 +875,31 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     # Сначала регистрируем обычные обработчики кнопок меню (они должны иметь приоритет)
     # Обработчики для кнопок меню
     logger.info("📝 Регистрируем обработчики кнопок меню...")
-    registrar.register(
-        MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list)
-    )
+    _list_pat = r"^\s*📋\s*Список\s*спортсменов\s*$"
+    _calendar_pat = r"^\s*(?:📅\s*)?Мой\s*календарь\s*$"
+    registrar.register(MessageHandler(filters.Regex(_list_pat), athletes_list))
     logger.info("✅ Зарегистрирован обработчик: 📋 Список спортсменов")
     registrar.register(
-        MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training)
+        MessageHandler(
+            filters.Regex(
+                "^(📅 Отметить посещение|📅 Отметить посещения|📝 Отметить посещения)$"
+            ),
+            start_training,
+        )
     )
-    logger.info("✅ Зарегистрирован обработчик: 🏋️ Начать тренировку")
+    logger.info("✅ Зарегистрирован обработчик: 📝 Отметить посещения")
     registrar.register(
-        MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar)
+        MessageHandler(filters.Regex(_calendar_pat), show_coach_calendar)
     )
     logger.info("✅ Зарегистрирован обработчик: 📅 Мой календарь")
-
-    # ConversationHandler для добавления спортсмена (регистрируем после обычных обработчиков)
-    logger.info("📝 Регистрируем ConversationHandler для добавления спортсмена...")
-    conv_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start)
-        ],
-        states={
-            ATHLETE_FULL_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_full_name)
-            ],
-            ATHLETE_PHONE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_phone)
-            ],
-            ATHLETE_BIRTH_DATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_birth_date)
-            ],
-            ATHLETE_MEDICAL: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_medical)
-            ],
-            ATHLETE_AGE_GROUP: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_age_group)
-            ],
-            ATHLETE_SUBSCRIPTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_subscription)
-            ],
-            ATHLETE_TRAINING_DATE: [
-                CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_"),
-                CallbackQueryHandler(handle_add_athlete_calendar_nav, pattern="^addath_cal_"),
-                CallbackQueryHandler(handle_add_athlete_calendar_date_pick, pattern="^addath_date_"),
-                CallbackQueryHandler(handle_add_athlete_calendar_ignore, pattern="^addath_ignore$"),
-                CallbackQueryHandler(
-                    handle_add_athlete_shift_confirm,
-                    pattern=r"^addath_shift_confirm(?:_\d{12})?$",
-                ),
-                CallbackQueryHandler(handle_add_athlete_shift_cancel, pattern="^addath_shift_cancel$"),
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_athlete_creation),
-            # Добавляем кнопки меню в fallbacks, чтобы они могли прерывать разговор
-            MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
-            MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training),
-            MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
-            MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
-        ],
-        name="add_athlete_conversation",
-        persistent=False,
-        allow_reentry=True
+    registrar.register(
+        MessageHandler(filters.Regex("^(📊 Статистика)$"), coach_report_entry)
     )
-    registrar.register(conv_handler)
-    logger.info("✅ Зарегистрирован ConversationHandler для добавления спортсмена")
+    logger.info("✅ Зарегистрирован обработчик: 📊 Статистика")
 
-    # ConversationHandler для массовой заморозки (по датам)
+    # Массовая заморозка — РАНЬШЕ диалога добавления спортсмена: иначе при «залипшем» состоянии
+    # add_athlete команда /cancel обрабатывается первым зарегистрированным CH и показывает текст про спортсмена.
+    logger.info("📝 Регистрируем ConversationHandler для массовой заморозки...")
     gf_conv = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex("^(🌍 Массовая заморозка)$"), start_global_freeze_flow)
@@ -1047,9 +934,15 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
             CallbackQueryHandler(handle_global_freeze_action_cancel, pattern="^gf_action_cancel$"),
             CallbackQueryHandler(handle_global_freeze_action_history, pattern="^gf_action_history$"),
             CommandHandler("cancel", cancel_global_freeze),
-            MessageHandler(filters.Regex("^(📋 Список спортсменов)$"), athletes_list),
-            MessageHandler(filters.Regex("^(🏋️ Начать тренировку)$"), start_training),
-            MessageHandler(filters.Regex("^(📅 Мой календарь)$"), show_coach_calendar),
+            MessageHandler(filters.Regex(_list_pat), athletes_list),
+            MessageHandler(
+                filters.Regex(
+                    "^(📅 Отметить посещение|📅 Отметить посещения|📝 Отметить посещения)$"
+                ),
+                start_training,
+            ),
+            MessageHandler(filters.Regex(_calendar_pat), show_coach_calendar),
+            MessageHandler(filters.Regex("^(📊 Статистика)$"), coach_report_entry),
             MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
         ],
         name="global_freeze_conversation",
@@ -1074,6 +967,94 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         registrar.register(CallbackQueryHandler(_cb, pattern=_pat))
     logger.info("✅ Зарегистрирован ConversationHandler для массовой заморозки (+ резервные callback)")
 
+    logger.info("📝 Регистрируем ConversationHandler для добавления спортсмена...")
+    conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start)
+        ],
+        states={
+            ATHLETE_FULL_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_full_name)
+            ],
+            ATHLETE_PHONE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_phone)
+            ],
+            ATHLETE_BIRTH_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_birth_date)
+            ],
+            ATHLETE_MEDICAL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_medical)
+            ],
+            ATHLETE_AGE_GROUP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_age_group)
+            ],
+            ATHLETE_SUBSCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_athlete_subscription)
+            ],
+            ATHLETE_TRAINING_DATE: [
+                CallbackQueryHandler(handle_training_date_selection, pattern="^select_training_date_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_nav, pattern="^addath_cal_"),
+                CallbackQueryHandler(
+                    handle_add_athlete_individual_time_pick,
+                    pattern=r"^addath_it_\d{12}$",
+                ),
+                CallbackQueryHandler(handle_add_athlete_calendar_date_pick, pattern="^addath_date_"),
+                CallbackQueryHandler(handle_add_athlete_calendar_ignore, pattern="^addath_ignore$"),
+                CallbackQueryHandler(
+                    handle_add_athlete_shift_confirm,
+                    pattern=r"^addath_shift_confirm(?:_\d{12})?$",
+                ),
+                CallbackQueryHandler(handle_add_athlete_shift_cancel, pattern="^addath_shift_cancel$"),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_athlete_creation),
+            MessageHandler(filters.Regex(_list_pat), athletes_list),
+            MessageHandler(
+                filters.Regex(
+                    "^(📅 Отметить посещение|📅 Отметить посещения|📝 Отметить посещения)$"
+                ),
+                start_training,
+            ),
+            MessageHandler(filters.Regex(_calendar_pat), show_coach_calendar),
+            MessageHandler(filters.Regex("^(📊 Статистика)$"), coach_report_entry),
+            MessageHandler(filters.Regex("^(👥 Добавить спортсмена)$"), add_athlete_start),
+        ],
+        name="add_athlete_conversation",
+        persistent=False,
+        allow_reentry=True
+    )
+    registrar.register(conv_handler)
+    logger.info("✅ Зарегистрирован ConversationHandler для добавления спортсмена")
+
+    edit_athlete_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_edit_athlete_name, pattern=r"^edit_name_\d+$"),
+            CallbackQueryHandler(start_edit_athlete_phone, pattern=r"^edit_phone_\d+$"),
+            CallbackQueryHandler(start_edit_athlete_medical, pattern=r"^edit_medical_\d+$"),
+        ],
+        states={
+            EDIT_ATHLETE_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit_athlete_name),
+            ],
+            EDIT_ATHLETE_PHONE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit_athlete_phone),
+            ],
+            EDIT_ATHLETE_MEDICAL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit_athlete_medical),
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(cancel_edit_athlete, pattern=r"^edit_cancel_\d+$"),
+            CommandHandler("cancel", cancel_edit_athlete_command),
+        ],
+        name="edit_athlete_conversation",
+        persistent=False,
+        allow_reentry=True,
+    )
+    registrar.register(edit_athlete_conv)
+    logger.info("✅ Зарегистрирован ConversationHandler для редактирования спортсмена")
+
     # Обработчики для списка спортсменов
     registrar.register(
         CallbackQueryHandler(handle_back_to_menu_main, pattern="^back_to_menu_main$")
@@ -1085,12 +1066,28 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(athletes_categories, pattern="^athletes_categories$")
     )
     registrar.register(
-        CallbackQueryHandler(athletes_list_filtered, pattern="^athletes_(all|active|inactive|active_children|active_adults|inactive_children|inactive_adults|children|adults)$")
+        CallbackQueryHandler(
+            athletes_list_filtered,
+            pattern=(
+                "^athletes_(all|active|inactive|active_children|active_middle|active_adults|"
+                "inactive_children|inactive_middle|inactive_adults|children|middle|adults)$"
+            ),
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(athletes_list_page, pattern=r"^alpg_[a-z]{2}_\d+$")
     )
 
     # Обработчики для карточек
     registrar.register(
         CallbackQueryHandler(show_athlete_card, pattern="^athlete_")
+    )
+    # До subscription_: иначе subscription_history_* попадает в show_subscription_card
+    registrar.register(
+        CallbackQueryHandler(show_subscription_history, pattern="^subscription_history_")
+    )
+    registrar.register(
+        CallbackQueryHandler(view_subscription_from_history, pattern="^view_sub_")
     )
     registrar.register(
         CallbackQueryHandler(show_subscription_card, pattern="^subscription_")
@@ -1116,7 +1113,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(show_restore_menu, pattern="^restore_")
     )
     registrar.register(
-        CallbackQueryHandler(show_edit_athlete_menu, pattern="^edit_")
+        CallbackQueryHandler(show_edit_athlete_menu, pattern=r"^edit_\d+$")
     )
     registrar.register(
         CallbackQueryHandler(select_subscription, pattern="^select_sub_")
@@ -1126,6 +1123,24 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
 
     # Обработчики для отметки посещения
+    registrar.register(
+        CallbackQueryHandler(handle_attendance_slot_locked, pattern="^attendance_slot_locked$")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_attendance_athletes_page, pattern=r"^attpg_\d+_\d+$")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_attendance_page_info, pattern="^attpg_info$")
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_attendance_name_column, pattern=r"^attnm_\d+_\d+$")
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            execute_mark_attendance_slot,
+            pattern=r"^atmark_\d+_\d+_[01]$",
+        )
+    )
     registrar.register(
         CallbackQueryHandler(mark_attendance_start, pattern="^mark_attendance_")
     )
@@ -1144,6 +1159,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     )
     registrar.register(
         CallbackQueryHandler(execute_mark_attendance, pattern="^(mark_present|mark_absent)$")
+    )
+    registrar.register(
+        CallbackQueryHandler(coach_statistics_callback, pattern=r"^cst")
     )
 
     # Команды быстрого доступа
@@ -1174,12 +1192,51 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         MessageHandler(filters.Regex("^(💰 Финансовая статистика)$"), handle_financial_stats)
     )
     registrar.register(
-        MessageHandler(filters.Regex("^(📅 Отметить посещение)$"), handle_attendance)
-    )
-    registrar.register(
         MessageHandler(filters.Regex("^(⚙️ Настройки)$"), handle_settings)
     )
 
+    # Быстрая запись на individual из календаря (до cal_date_, префиксы cal_ind_*)
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_individual_book_start, pattern=r"^cal_ind_book_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_individual_time_pick, pattern=r"^cal_ind_ts_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_individual_athlete_pick, pattern=r"^cal_ind_a_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_individual_athlete_page, pattern=r"^cal_ind_pg_"
+        )
+    )
+    # Быстрая запись на групповую/разовую из календаря (cal_grp_* / cal_sgl_*)
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_group_book_start, pattern=r"^cal_(grp|sgl)_book_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_group_time_pick, pattern=r"^cal_(grp|sgl)_ts_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_group_athlete_pick, pattern=r"^cal_(grp|sgl)_a_"
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(
+            handle_calendar_group_athlete_page, pattern=r"^cal_(grp|sgl)_pg_"
+        )
+    )
     # Обработчик навигации по календарю
     registrar.register(
         CallbackQueryHandler(handle_calendar_navigation, pattern="^calendar_")
@@ -1207,14 +1264,6 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(handle_athlete_back_to_menu, pattern="^athlete_back_to_menu$")
     )
 
-    # Обработчики истории абонементов
-    registrar.register(
-        CallbackQueryHandler(show_subscription_history, pattern="^subscription_history_")
-    )
-    registrar.register(
-        CallbackQueryHandler(view_subscription_from_history, pattern="^view_sub_")
-    )
-    
     # Обработчик активации абонементов (обрабатывает activate_sub_*, activate_sub_new_*, activate_sub_type_*)
     registrar.register(
         CallbackQueryHandler(handle_activate_subscription, pattern="^activate_sub_")
@@ -1222,6 +1271,15 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     # Календарь выбора даты активации (после выбора типа)
     registrar.register(CallbackQueryHandler(handle_activation_calendar_nav, pattern="^act_cal_"))
     registrar.register(CallbackQueryHandler(handle_activation_date_pick, pattern="^act_date_"))
+    registrar.register(
+        CallbackQueryHandler(
+            handle_activation_individual_shift_confirm,
+            pattern=r"^act_ishift_\d+_\d{12}$",
+        )
+    )
+    registrar.register(
+        CallbackQueryHandler(handle_activation_time_pick, pattern=r"^act_time_\d+_\d{12}$")
+    )
     registrar.register(CallbackQueryHandler(handle_activation_ignore, pattern="^act_ignore$"))
     registrar.register(
         CallbackQueryHandler(handle_activation_shift_confirm, pattern=r"^act_shift_confirm_\d+_\d{12}$")
@@ -1230,9 +1288,9 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(handle_activation_shift_cancel, pattern=r"^act_shift_cancel_\d+$")
     )
 
-    # Обработчики для заморозки абонемента
+    # Обработчики для заморозки спортсмена (все активные абонементы)
     registrar.register(
-        CallbackQueryHandler(handle_freeze_subscription_start, pattern="^freeze_sub_")
+        CallbackQueryHandler(handle_freeze_subscription_start, pattern=r"^freeze_athlete_\d+_\d+$")
     )
     registrar.register(
         CallbackQueryHandler(handle_freeze_calendar_nav, pattern="^freeze_cal_")
@@ -1244,7 +1302,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         CallbackQueryHandler(handle_freeze_ignore, pattern="^freeze_ignore$")
     )
     registrar.register(
-        CallbackQueryHandler(handle_unfreeze_subscription, pattern="^unfreeze_sub_")
+        CallbackQueryHandler(handle_unfreeze_subscription, pattern=r"^unfreeze_athlete_\d+_\d+$")
     )
 
     logger.info("✅ Все обработчики зарегистрированы")

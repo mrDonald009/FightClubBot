@@ -69,6 +69,10 @@ class SubscriptionService:
         athlete_id: int,
         subscription_type: str = None,
         sport_type: str = None,
+        *,
+        discipline_key: str = None,
+        subscription_format: str = "group",
+        responsible_coach_id: int = None,
     ) -> Subscription:
         """
         Создать новый абонемент для спортсмена.
@@ -76,8 +80,11 @@ class SubscriptionService:
         Args:
             session: Сессия базы данных
             athlete_id: ID спортсмена
-            subscription_type: Тип абонемента (monthly, single) или None (будет определен при активации)
+            subscription_type: Тип абонемента (monthly, single, individual) или None
             sport_type: Вид спорта для абонемента (если None, берется из спортсмена)
+            discipline_key: Явный ключ направления; иначе из sport_type и subscription_format
+            subscription_format: group или individual (для вычисления discipline_key)
+            responsible_coach_id: Ответственный тренер (coaches.id); иначе athletes.created_by
             
         Returns:
             Созданный абонемент
@@ -89,21 +96,25 @@ class SubscriptionService:
         athlete = AthleteService.get_athlete_or_raise(session, athlete_id)
         
         # Валидация типа абонемента (если указан)
-        if subscription_type is not None and subscription_type not in ['monthly', 'single']:
+        if subscription_type is not None and subscription_type not in [
+            "monthly",
+            "single",
+            "individual",
+        ]:
             raise ValidationError(f"Неизвестный тип абонемента: {subscription_type}")
         
         # Если sport_type не указан, берем из спортсмена
         if not sport_type:
             sport_type = athlete.sport_type
         
-        # По текущей бизнес-логике у спортсмена один абонемент (1:1),
-        # поэтому сервис просто делегирует создание в db_utils.
-        # commit выполняется внутри db_create_subscription по умолчанию.
         return db_create_subscription(
             session=session,
             athlete_id=athlete_id,
             subscription_type=subscription_type,
             sport_type=sport_type,
+            discipline_key=discipline_key,
+            subscription_format=subscription_format,
+            responsible_coach_id=responsible_coach_id,
         )
     
     @staticmethod

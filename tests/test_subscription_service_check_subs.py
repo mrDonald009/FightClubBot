@@ -1,5 +1,9 @@
 """Тесты сервиса абонементов (уровень orchestrator/service)."""
+import pytest
+
 from services.subscription_service import SubscriptionService
+
+pytestmark = pytest.mark.unit
 
 
 def test_check_and_update_subscriptions_delegates_to_subscription_checker(monkeypatch):

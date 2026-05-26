@@ -4,11 +4,13 @@
 
 Проект использует многослойную архитектуру, разработанную для легкого масштабирования и поддержки.
 
+**Доменные детали (абонементы, несколько направлений на спортсмена, заморозки):** см. `ARCHITECTURE_DESCRIPTION.md` и `doc/ARCHITECTURE.md`.
+
 ## Структура проекта
 
 ```
 FightClubBot/
-├── bot_new.py              # Точка входа приложения
+├── bot.py                  # Точка входа приложения
 ├── core/                   # Ядро приложения
 │   ├── __init__.py
 │   ├── config.py          # Конфигурация
@@ -31,10 +33,12 @@ FightClubBot/
 │   └── subscription_service.py  # Работа с абонементами
 ├── database/              # Работа с БД
 │   ├── models.py          # SQLAlchemy модели
-│   ├── db_utils.py        # Утилиты БД
+│   ├── db_utils/          # Пакет утилит БД (абонементы, посещения, заморозки)
 │   └── ...
 ├── utils/                 # Утилиты
 │   ├── subscription_checker.py
+│   ├── subscription_resolve.py  # выбор абонемента при нескольких активных
+│   ├── discipline_keys.py
 │   └── training_manager.py
 └── keyboards/             # Клавиатуры Telegram
     └── coach_kb.py
@@ -43,7 +47,7 @@ FightClubBot/
 ## Слои архитектуры
 
 ### 1. Точка входа (Entry Point)
-**Файл:** `bot_new.py`
+**Файл:** `bot.py`
 
 Минимальный файл, который:
 - Настраивает логирование
@@ -106,7 +110,7 @@ FightClubBot/
 ### 5. База данных (Database)
 
 - `models.py` - SQLAlchemy модели
-- `db_utils.py` - утилиты для работы с БД (legacy код, постепенно переносится в сервисы)
+- `db_utils/` - утилиты для работы с БД (модули по доменам; публичный API через `database.db_utils`)
 
 ## Принципы масштабирования
 

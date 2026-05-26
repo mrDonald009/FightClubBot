@@ -7,6 +7,8 @@ import pytest
 from core.exceptions import SubscriptionNotFoundError, ValidationError
 from services.subscription_service import SubscriptionService
 
+pytestmark = pytest.mark.unit
+
 
 def test_get_subscription_or_raise_raises_when_missing(monkeypatch):
     monkeypatch.setattr(SubscriptionService, "get_subscription_by_id", lambda *_a, **_k: None)

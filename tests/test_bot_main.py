@@ -6,6 +6,8 @@ import pytest
 
 import bot
 
+pytestmark = pytest.mark.flow
+
 
 def test_main_happy_path_calls_startup_setup_and_polling(monkeypatch):
     calls = []

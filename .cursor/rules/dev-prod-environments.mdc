@@ -1,0 +1,153 @@
+---
+description: Ветки dev/prod, тестовый и боевой боты, откуда брать «истинные» данные
+alwaysApply: true
+---
+
+# Окружения FightClubBot
+
+## Область правила (только этот проект)
+
+Файл лежит в **корне репозитория**: `.cursor/rules/` внутри `FightClubBot` (например workspace `D:\study\git\git_hub\FightClubBot`). Это **проектные** правила Cursor для данного клона, а не глобальные правила из профиля пользователя (`%USERPROFILE%\.cursor\...`).
+
+## Ветки и боты
+
+- **`dev`** — код для **тестового** бота (например, деплой в `FightClubBot-dev` на сервере).
+- **`prod`** — код для **боевого** бота (`origin/HEAD` указывает на `prod`).
+
+Два бота = два разных токена Telegram и, как правило, **два независимых процесса** на сервере.
+
+### Зафиксированная схема на VPS (эталон для этого проекта)
+
+Ниже — фактическая раскладка с прод-сервера (пользователь **`cat`**, домашний каталог `/home/cat`). Если инфраструктура сменится — обновить этот блок.
+
+| | **DEV (тест)** | **PROD (бой)** |
+|---|----------------|----------------|
+| **Каталог кода** | `/home/cat/FightClubBot-dev` | `/home/cat/FightClubBot` |
+| **systemd** | `fightclubbot-dev.service` | `fightclubbot.service` |
+| **Юнит** | `User=cat`, `WorkingDirectory=/home/cat/FightClubBot-dev`, `EnvironmentFile=/home/cat/FightClubBot-dev/.env.dev`, `ExecStart=…/.venv/bin/python …/bot.py` | Аналогично для prod-каталога и **`.env`** (без `.env.dev` в типичной схеме) |
+| **`DATABASE_URL`** | В **`.env.dev`**: `sqlite:///database/club_dev.db` | В **`.env`**: `sqlite:///database/club.db` |
+| **Файл SQLite** | `/home/cat/FightClubBot-dev/database/club_dev.db` | `/home/cat/FightClubBot/database/club.db` |
+
+**Важно для DEV:** в `FightClubBot-dev/database/` может лежать и **`club.db`** — проверкой `lsof` установлено, что **запущенный** `fightclubbot-dev` открывает только **`club_dev.db`**; **`club.db` в dev-каталоге ботом не используется** (скорее старый/лишний файл; не путать с prod).
+
+## Базы данных
+
+- У **тестового** и **боевого** бота должны быть **разные БД**: у каждого свой `DATABASE_URL` / свой файл SQLite (или своя схема/инстанс), иначе тесты затронут прод.
+- Локальный `database/club.db` в клоне репозитория на ПК разработчика — это **ещё одна** копия данных; она **не обязана** совпадать с dev или prod на сервере.
+- Для **тестов по сценарию dev** в репозитории есть закоммиченный снимок `tests/fixtures/global_freezes_snapshot.json` (после `git pull` он уже в клоне). Обновление с сервера: `python scripts/export_global_freezes_snapshot.py --db …/club_dev.db -o …` → заменить файл в `tests/fixtures/` → commit.
+
+### Telegram ID: где «настройки», где «факт в БД»
+
+- **Числовые ID в окружении процесса** (файл из `systemctl cat … | grep EnvironmentFile`, на эталонном VPS: **`.env.dev`** для теста, **`.env`** для прода) задают поведение при **старте бота**: в частности `ADMIN_TELEGRAM_ID`, `THAI_COACH_TELEGRAM_IDS` (тайский бокс), `MMA_COACH_TELEGRAM_IDS`, опционально `THAI_COACH_TELEGRAM_ID`. Проверка: `grep -E '^ADMIN_TELEGRAM_ID=|^THAI_COACH_TELEGRAM_IDS=|^MMA_COACH_TELEGRAM_IDS=|^DATABASE_URL=' …/.env.dev` и аналогично для prod **`.env`**.
+- **Цены абонементов при активации** задаются в SQLite в таблице **`subscription_tariffs`** (по виду спорта и типу monthly/single); переменных цен в `.env` для этого нет.
+- **Фактические роли и привязки** (кто числится админом/тренером в данных приложения) смотреть в **SQLite**, путь из `DATABASE_URL` относительно `WorkingDirectory`: **dev** — обычно `…/FightClubBot-dev/database/club_dev.db`, **prod** — `…/FightClubBot/database/club.db`. Таблицы **`admins`** и **`coaches`**, колонка **`telegram_id`**.
+- **Важно для кода на момент фиксации правила:** в `get_user_by_telegram_id` сначала ищется **`coaches`**, потом **`admins`**. Если у одного и того же `telegram_id` есть строка и в **`coaches`**, и в **`admins`**, бот отдаёт пользователя как **тренера** — меню/логика **администратора для этого аккаунта не используются**, пока не изменён порядок в коде или не убрана дублирующая строка.
+
+### Как явно проверить на сервере (уточняющий запрос)
+
+Выполнить **на сервере** в SSH (пути подставьте свои; пример: `~/FightClubBot-dev` и `~/FightClubBot`):
+
+```bash
+cd ~/FightClubBot-dev && git rev-parse --show-toplevel
+grep -h '^DATABASE_URL=' .env .env.dev 2>/dev/null || echo "DEV: нет DATABASE_URL в .env / .env.dev"
+
+cd ~/FightClubBot && git rev-parse --show-toplevel
+grep -h '^DATABASE_URL=' .env 2>/dev/null || echo "PROD: нет .env или нет DATABASE_URL"
+```
+
+У **тестового** бота на сервере часто в **systemd** указано `EnvironmentFile=.../.env.dev`, а корневой `.env` только под другие цели или пустой по `DATABASE_URL` — смотреть нужно **тот файл, который реально подключаёт сервис** (`systemctl cat … | grep EnvironmentFile`).
+
+**Запросы на сервере (скопировать в SSH, вывод прислать в чат)** — пути при необходимости заменить:
+
+```bash
+# --- DEV ---
+echo "=== DEV: $HOME/FightClubBot-dev ==="
+ls -la "$HOME/FightClubBot-dev/.env" "$HOME/FightClubBot-dev/.env.dev" 2>/dev/null
+grep -h '^DATABASE_URL=' "$HOME/FightClubBot-dev/.env" "$HOME/FightClubBot-dev/.env.dev" 2>/dev/null
+ls -la "$HOME/FightClubBot-dev/database/" 2>/dev/null
+sqlite3 "$HOME/FightClubBot-dev/database/club_dev.db" \
+  "SELECT id, title, is_active, start_date, end_date FROM global_freezes ORDER BY id;" 2>/dev/null || echo "(sqlite3 или БД недоступны)"
+
+# --- PROD ---
+echo "=== PROD: $HOME/FightClubBot ==="
+ls -la "$HOME/FightClubBot/.env" 2>/dev/null
+grep -h '^DATABASE_URL=' "$HOME/FightClubBot/.env" 2>/dev/null
+ls -la "$HOME/FightClubBot/database/" 2>/dev/null
+sqlite3 "$HOME/FightClubBot/database/club.db" \
+  "SELECT id, title, is_active, start_date, end_date FROM global_freezes ORDER BY id;" 2>/dev/null || echo "(sqlite3 или БД недоступны)"
+
+# --- systemd (имена юнитов подставьте свои) ---
+systemctl list-units --type=service --all 2>/dev/null | grep -i fight || true
+```
+
+Опционально сравнение `DATABASE_URL` скриптом из репозитория (после `git pull` в dev-клоне):
+
+```bash
+cd "$HOME/FightClubBot-dev" && git pull origin dev
+bash scripts/server_compare_database_urls.sh "$HOME/FightClubBot-dev" "$HOME/FightClubBot"
+```
+
+**Интерпретация:** если строки **разные** — обычно разные БД. Если строки **одинаковые** (например оба `sqlite:///database/club.db`), для SQLite путь **относительный**: фактический файл зависит от `WorkingDirectory` процесса; при **разных** каталогах деплоя (`FightClubBot-dev` vs `FightClubBot`) это **два разных файла** на диске — это нормально.
+
+Если `DATABASE_URL` задаётся через **systemd** / **docker-compose**, смотрите `Environment=` / блок `environment:` у соответствующего сервиса.
+
+При смене сервера или путей — обновить раздел **«Зафиксированная схема на VPS»** выше.
+
+## Git и порядок выката (зафиксировано по практике)
+
+- **Разработка** — в ветке **`dev`**: коммиты и **`git push origin dev`**.
+- **Сначала тест**, потом бой: новый функционал подтягивают в **`~/FightClubBot-dev`**, проверяют **тестового** бота; только после этого переносят на **`prod`** (merge в `origin/prod` или согласованный процесс) и обновляют **`~/FightClubBot`**.
+- **Путаница «сначала уехало на прод»** почти всегда из-за того, что **`git pull` / рестарт** сделали в **боевом** каталоге или перезапустили **`fightclubbot.service`**, а не dev; либо смотрели **другого бота** в Telegram; либо в Git сначала обновили **`prod`**, а тестовый каталог на сервере не трогали.
+- На сервере ветка **`prod`** в `~/FightClubBot` должна отслеживать **`origin/prod`** (`git branch -vv` → `[origin/prod]`). Если видно **`ahead N, behind M`** — локальный каталог на VPS **разошёлся** с GitHub; перед следующим деплоем нужно **сознательно** выровнять с `origin/prod` (merge / pull / при крайней необходимости `reset --hard` после бэкапа), иначе на бою крутится «не та» история, чем на GitHub.
+- **Не смешивать токены:** в `.env.dev` тестового процесса должен быть токен **тестового** бота, в `.env` прода — **боевого** (сравнение без публикации: `md5sum` по строкам `BOT_TOKEN=` из разных файлов — хеши должны **различаться**).
+
+### Команды обновления на сервере (эталон)
+
+**Тестовый бот (DEV):**
+
+```bash
+cd ~/FightClubBot-dev && git pull origin dev && sudo systemctl restart fightclubbot-dev
+```
+
+**Боевой бот (PROD)** — только после принятия на тесте:
+
+```bash
+cd ~/FightClubBot && git fetch origin && git pull origin prod && sudo systemctl restart fightclubbot
+```
+
+При появлении новых зависимостей в `requirements.txt` перед рестартом:  
+`.venv/bin/pip install -r requirements.txt` в **соответствующем** каталоге.
+
+### Быстрая проверка окружений
+
+```bash
+systemctl cat fightclubbot-dev.service 2>/dev/null | grep -E '^WorkingDirectory=|^EnvironmentFile=|^ExecStart='
+systemctl cat fightclubbot.service 2>/dev/null | grep -E '^WorkingDirectory=|^EnvironmentFile=|^ExecStart='
+```
+
+```bash
+(cd ~/FightClubBot-dev && git branch -vv && git log -1 --oneline)
+(cd ~/FightClubBot && git branch -vv && git log -1 --oneline)
+```
+
+## Совместимость Python
+
+На сервере или ПК может быть **Python 3.8**: в коде не использовать в аннотациях встроенные generics вида `list[int]` / `dict[str, int]` без `from __future__ import annotations` — безопаснее **`typing.List`**, **`typing.Dict`**, **`typing.Optional`** там, где это уже принято в проекте (см. `core/config.py`).
+
+## Правило для ассистента (чтобы не путать данные)
+
+1. **`git pull origin dev`** обновляет только **исходный код**, не содержимое серверной БД.
+2. Утверждения вида «какие сейчас даты активной заморозки» / «что в истории» считаются **достоверными только** если:
+   - пользователь прислал вывод с **того сервера и той БД**, где крутится нужный бот (SQL, лог, скрин бота), **или**
+   - явно сказано «смотри локальный `database/club.db` в workspace».
+3. Если пользователь пишет «прочитай с **dev**» и имеется в виду **сервер**, ассистент **не может** подключиться к серверу сам: нужно попросить пользователя выполнить запрос на сервере и прислать результат (или указать путь к БД и разрешить только локальный файл в workspace).
+
+## Кратко
+
+| Где | Что это |
+|-----|---------|
+| **`.env.dev` / `.env` на сервере** (тот файл, что в `EnvironmentFile=` у systemd) | **ID и прочие переменные для процесса** (`ADMIN_TELEGRAM_ID`, `THAI_COACH_TELEGRAM_IDS`, `MMA_COACH_TELEGRAM_IDS`, `DATABASE_URL`, …) |
+| **`club_dev.db` / `club.db`** на сервере (путь из `DATABASE_URL` + `WorkingDirectory`) | **Фактические строки** `admins` / `coaches` и остальные данные бота |
+| Сервер, тестовый бот + `DATABASE_URL` из **файла окружения процесса** (часто `.env.dev` + systemd `EnvironmentFile`) | **Истина для dev** (какой файл БД открывает процесс) |
+| Сервер, боевой бот + `DATABASE_URL` из `.env` prod | **Истина для prod** |
+| `database/club.db` в локальном клоне | **Только локальная копия**, не сервер |
