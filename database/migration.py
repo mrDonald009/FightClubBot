@@ -387,6 +387,25 @@ def migrate_database():
             cursor.execute("ALTER TABLE subscriptions ADD COLUMN frozen_training_days_total INTEGER DEFAULT 0")
             print("✅ frozen_training_days_total добавлен")
 
+        if 'last_freeze_pre_end_date' not in columns:
+            print("🔧 Добавляю last_freeze_pre_end_date в таблицу subscriptions...")
+            cursor.execute("ALTER TABLE subscriptions ADD COLUMN last_freeze_pre_end_date DATETIME")
+            print("✅ last_freeze_pre_end_date добавлен")
+
+        if 'last_freeze_credit_training_days' not in columns:
+            print("🔧 Добавляю last_freeze_credit_training_days в таблицу subscriptions...")
+            cursor.execute(
+                "ALTER TABLE subscriptions ADD COLUMN last_freeze_credit_training_days INTEGER"
+            )
+            print("✅ last_freeze_credit_training_days добавлен")
+
+        if 'last_freeze_credit_calendar_days' not in columns:
+            print("🔧 Добавляю last_freeze_credit_calendar_days в таблицу subscriptions...")
+            cursor.execute(
+                "ALTER TABLE subscriptions ADD COLUMN last_freeze_credit_calendar_days INTEGER"
+            )
+            print("✅ last_freeze_credit_calendar_days добавлен")
+
         # Добавляем created_at если его нет (без DEFAULT для SQLite)
         if 'created_at' not in columns:
             print("🔧 Добавляю created_at в таблицу subscriptions...")

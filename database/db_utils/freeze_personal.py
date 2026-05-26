@@ -139,6 +139,33 @@ def _find_freeze_end_date(selected_date: datetime, sport_type: str, age_group: s
     return training_end_time(selected_date)
 
 
+def _clear_last_freeze_revert_markers(subscription: Subscription) -> None:
+    subscription.last_freeze_pre_end_date = None
+    subscription.last_freeze_credit_training_days = None
+    subscription.last_freeze_credit_calendar_days = None
+
+
+def _revert_last_freeze_extension(subscription: Subscription) -> bool:
+    """
+    Откатить продление срока, начисленное при текущей (последней) персональной заморозке.
+    Используется при ручной разморозке до истечения frozen_until.
+    """
+    pre_end = subscription.last_freeze_pre_end_date
+    if pre_end is None:
+        return False
+    training_credit = subscription.last_freeze_credit_training_days or 0
+    calendar_credit = subscription.last_freeze_credit_calendar_days or 0
+    subscription.end_date = pre_end
+    subscription.frozen_training_days_total = max(
+        0, (subscription.frozen_training_days_total or 0) - training_credit
+    )
+    subscription.frozen_days_total = max(
+        0, (subscription.frozen_days_total or 0) - calendar_credit
+    )
+    _clear_last_freeze_revert_markers(subscription)
+    return True
+
+
 def is_training_in_athlete_personal_freeze(
     session: Session, athlete_id: int, training_datetime: datetime
 ) -> bool:
@@ -246,8 +273,12 @@ def freeze_subscription(
         f"текущая end_date={subscription.end_date.strftime('%d.%m.%Y %H:%M') if subscription.end_date else 'None'}"
     )
     
+    freeze_calendar_days = (effective_freeze_end.date() - effective_freeze_start.date()).days
+    pre_extension_end_date = subscription.end_date
+
     # Продлеваем срок действия абонемента при активации заморозки:
     # Дата окончания = следующий(е) тренировочный(е) день(дни) после текущего end_date.
+    credited_training_days = 0
     if subscription.end_date:
         schedule = TrainingManager.TRAINING_SCHEDULE.get(sport_type, {}).get(age_group)
         if schedule:
@@ -295,16 +326,20 @@ def freeze_subscription(
                     f"Найдено: {added_training_days}, дней проверено: {days_searched}, "
                     f"текущая дата окончания: {subscription.end_date}"
                 )
+            credited_training_days = added_training_days
         else:
             # Если расписание не найдено, просто добавляем календарные дни (fallback)
             subscription.end_date = subscription.end_date + timedelta(days=training_days_count)
-    
+            credited_training_days = training_days_count
+
+    subscription.last_freeze_pre_end_date = pre_extension_end_date
+    subscription.last_freeze_credit_training_days = credited_training_days
+    subscription.last_freeze_credit_calendar_days = freeze_calendar_days
+
     # Устанавливаем параметры заморозки
     subscription.is_frozen = True
     subscription.frozen_from = effective_freeze_start
     subscription.frozen_until = effective_freeze_end
-    # frozen_days_total - общее количество календарных дней заморозки (для статистики)
-    freeze_calendar_days = (effective_freeze_end.date() - effective_freeze_start.date()).days
     subscription.frozen_days_total = (subscription.frozen_days_total or 0) + freeze_calendar_days
     # frozen_training_days_total - общее количество замороженных тренировочных дней
     subscription.frozen_training_days_total = (subscription.frozen_training_days_total or 0) + training_days_count
@@ -343,18 +378,28 @@ def unfreeze_subscription(
     
     if not subscription.is_frozen:
         return {"success": False, "message": "Абонемент не заморожен"}
-    
-    # Размораживаем абонемент
+
+    now = now_moscow()
+    reverted = False
+    # Ручная разморозка до конца запланированного периода — отменяем продление этой сессии.
+    if subscription.frozen_until and now < subscription.frozen_until:
+        reverted = _revert_last_freeze_extension(subscription)
+
     subscription.is_frozen = False
     subscription.frozen_from = None
     subscription.frozen_until = None
+    if not reverted:
+        _clear_last_freeze_revert_markers(subscription)
     sync_subscription_trainings_remaining(session, subscription, reason="after_unfreeze")
     if commit:
         session.commit()
     else:
         session.flush()
 
-    return {"success": True, "message": "Абонемент разморожен"}
+    msg = "Абонемент разморожен"
+    if reverted:
+        msg += "; продление по этой заморозке отменено"
+    return {"success": True, "message": msg, "reverted_extension": reverted}
 
 
 def subscription_is_currently_frozen(
@@ -389,6 +434,7 @@ def expire_stale_subscription_freezes(
         sub.is_frozen = False
         sub.frozen_from = None
         sub.frozen_until = None
+        _clear_last_freeze_revert_markers(sub)
         sync_subscription_trainings_remaining(
             session, sub, reason="after_auto_unfreeze"
         )
