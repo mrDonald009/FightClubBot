@@ -6,8 +6,10 @@ import pytest
 
 from core.startup import (
     coach_daily_summary_send_datetime,
+    coach_training_start_reminder_send_datetime,
     format_coach_daily_summary_message,
     format_coach_training_start_reminder_message,
+    is_coach_training_start_reminder_due,
 )
 
 
@@ -93,6 +95,20 @@ def test_format_coach_daily_summary_message_with_details():
 def test_format_coach_daily_summary_message_empty():
     text = format_coach_daily_summary_message(date(2026, 5, 19), [])
     assert "нет запланированных тренировок" in text
+
+
+def test_coach_training_start_reminder_send_datetime_one_minute_after_start():
+    start = datetime(2026, 5, 19, 18, 0, 0)
+    assert coach_training_start_reminder_send_datetime(start) == datetime(2026, 5, 19, 18, 1, 0)
+
+
+def test_is_coach_training_start_reminder_due_within_window():
+    send_at = datetime(2026, 5, 19, 18, 1, 0)
+    assert is_coach_training_start_reminder_due(datetime(2026, 5, 19, 18, 0, 30), send_at)
+    assert is_coach_training_start_reminder_due(datetime(2026, 5, 19, 18, 1, 0), send_at)
+    assert is_coach_training_start_reminder_due(datetime(2026, 5, 19, 18, 1, 30), send_at)
+    assert not is_coach_training_start_reminder_due(datetime(2026, 5, 19, 17, 59, 29), send_at)
+    assert not is_coach_training_start_reminder_due(datetime(2026, 5, 19, 18, 2, 31), send_at)
 
 
 def test_format_coach_training_start_reminder_message():

@@ -28,6 +28,9 @@ THAI_COACH_SPORT_TYPE = "Тайский Бокс"
 # Ежедневный дайджест: всегда не позже 09:00; раньше — только если индивидуальная − 1 ч < 09:00.
 DEFAULT_COACH_DAILY_SUMMARY_TIME = time(9, 0, 0)
 
+# Напоминание о старте занятия: начало пары + 1 мин (окно ±1 мин при проверке job).
+COACH_TRAINING_START_REMINDER_OFFSET = timedelta(minutes=1)
+
 
 def _ensure_daily_summary_delivery_table(session) -> None:
     """Таблица отправок дайджеста (persist между рестартами)."""
@@ -126,8 +129,20 @@ def format_coach_daily_summary_message(today: date, slots: List) -> str:
     return "\n".join(lines)
 
 
+def coach_training_start_reminder_send_datetime(start_dt: datetime) -> datetime:
+    """Когда отправить напоминание тренеру: начало занятия + 1 мин."""
+    return start_dt + COACH_TRAINING_START_REMINDER_OFFSET
+
+
+def is_coach_training_start_reminder_due(now_dt: datetime, send_at: datetime) -> bool:
+    """Окно ±1 мин вокруг send_at, чтобы не пропустить из-за дрейфа таймера."""
+    left = now_dt - timedelta(minutes=1)
+    right = now_dt + timedelta(minutes=1)
+    return left <= send_at <= right
+
+
 def format_coach_training_start_reminder_message(slot) -> str:
-    """Текст напоминания тренеру в момент начала пары."""
+    """Текст напоминания тренеру после начала пары."""
     return (
         "Тренировка началась!\n\n"
         f"{_slot_summary_line(slot)}\n\n"
@@ -245,11 +260,8 @@ async def _daily_coach_schedule_summary_job(context) -> None:
 
 
 async def _coach_training_start_reminder_job(context) -> None:
-    """Напоминание тренеру в момент старта занятия."""
+    """Напоминание тренеру: начало занятия + 1 мин."""
     now_dt = now_moscow()
-    # Окно 1 мин назад и 1 мин вперед, чтобы не пропускать событие из-за дрейфа таймера.
-    left = now_dt - timedelta(minutes=1)
-    right = now_dt + timedelta(minutes=1)
 
     sent_keys: Set[str] = context.application.bot_data.setdefault(
         "coach_start_reminder_sent_keys", set()
@@ -261,7 +273,8 @@ async def _coach_training_start_reminder_job(context) -> None:
         for coach_telegram_id, slots in coach_rows:
             for slot in slots:
                 start_dt = slot.training_datetime
-                if not (left <= start_dt <= right):
+                send_at = coach_training_start_reminder_send_datetime(start_dt)
+                if not is_coach_training_start_reminder_due(now_dt, send_at):
                     continue
                 slot_key = (
                     f"{today_prefix}:{coach_telegram_id}:{slot.sport_type}:{slot.age_group}:"
@@ -464,5 +477,8 @@ def setup_scheduled_jobs(application: Application, config: Config) -> None:
         first=timedelta(seconds=50),
         name="coach_training_start_reminder",
     )
-    logger.info("🗓️ Запланированы напоминания тренерам о старте занятий (каждую минуту)")
+    logger.info(
+        "🗓️ Запланированы напоминания тренерам о старте занятий "
+        "(начало + 1 мин, проверка каждую минуту, APP_TIMEZONE)"
+    )
 
