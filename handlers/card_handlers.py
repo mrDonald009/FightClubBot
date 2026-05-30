@@ -1037,6 +1037,8 @@ async def _finalize_subscription_activation(
     subscription: Subscription,
     athlete: Athlete,
     start_date: datetime,
+    *,
+    after_nav: str = "subscription_card",
 ):
     """Сохранить активацию с выбранной первой датой тренировки."""
     sport_type = subscription.sport_type or athlete.sport_type
@@ -1140,6 +1142,37 @@ async def _finalize_subscription_activation(
         recorded_by_telegram_id=query.from_user.id,
     )
     session.commit()
+
+    if after_nav == "calendar_day":
+        from handlers.coach_handlers import render_calendar_day_view
+        from sqlalchemy.orm import joinedload
+
+        coach_user = get_user_by_telegram_id(session, query.from_user.id)
+        if isinstance(coach_user, Coach):
+            coach_user = (
+                session.query(Coach)
+                .options(joinedload(Coach.sport_type_rel))
+                .filter_by(id=coach_user.id)
+                .first()
+            )
+        if not coach_user:
+            await query.edit_message_text("❌ Пользователь не найден")
+            return
+
+        athlete_name = html.escape((athlete.full_name or "Спортсмен").strip())
+        success = (
+            f"{athlete_name} записан на "
+            f"{start_date.strftime('%d.%m.%Y %H:%M')}"
+        )
+        await render_calendar_day_view(
+            query,
+            session,
+            coach_user,
+            start_date.date(),
+            success_banner=success,
+            skip_callback_answer=True,
+        )
+        return
 
     await show_subscription_card(
         update,

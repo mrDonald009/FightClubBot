@@ -2316,6 +2316,236 @@ async def handle_calendar_empty_click(update: Update, context: ContextTypes.DEFA
     await query.answer()  # Просто отвечаем, ничего не делаем
 
 
+async def render_calendar_day_view(
+    query,
+    session,
+    user: Coach,
+    selected_date: date,
+    *,
+    success_banner: Optional[str] = None,
+    skip_callback_answer: bool = False,
+) -> None:
+    """Экран дня в календаре тренера: слоты, спортсмены, кнопки записи."""
+    from services.attendance_training_flow import (
+        build_attendance_slots_for_day,
+        fetch_athletes_for_training_slot,
+        resolve_attendance_slot_training,
+        _training_stub_from_slot,
+    )
+
+    year, month, day = selected_date.year, selected_date.month, selected_date.day
+    now = now_moscow()
+
+    slot_rows, _virtual_slots = build_attendance_slots_for_day(session, user, selected_date)
+    db_training_ids = [s.training_id for s in slot_rows if (not s.is_virtual and s.training_id)]
+    db_trainings = (
+        session.query(Training)
+        .filter(Training.id.in_(db_training_ids))
+        .all()
+        if db_training_ids
+        else []
+    )
+    training_by_id = {t.id: t for t in db_trainings}
+
+    visible_slots = []
+    for slot in slot_rows:
+        if slot.is_individual_format:
+            training = training_by_id.get(slot.training_id)
+            if not training:
+                continue
+            if not individual_slot_has_links(session, training, coach_id=user.id):
+                continue
+        visible_slots.append(slot)
+
+    date_str = selected_date.strftime("%d.%m.%Y")
+    message = f"<b>📅 {date_str}</b>\n\n"
+    if success_banner:
+        message = f"✅ {success_banner}\n\n" + message
+
+    if visible_slots:
+        rendered_slots = 0
+        for slot in visible_slots:
+            training = training_by_id.get(slot.training_id)
+            time_str = slot.training_datetime.strftime("%H:%M")
+            is_individual_slot = bool(slot.is_individual_format)
+            training_date_only = slot.training_datetime.date()
+
+            athlete_lines = []
+            athlete_count = 0
+            if is_individual_slot:
+                subs_q = (
+                    session.query(Subscription)
+                    .join(Athlete, Subscription.athlete_id == Athlete.id)
+                    .filter(
+                        Subscription.sport_type == slot.sport_type,
+                        func.date(Subscription.start_date) <= training_date_only,
+                        func.date(Subscription.end_date) >= training_date_only,
+                    )
+                )
+                slot_key = slot.training_datetime.strftime("%Y-%m-%d %H:%M")
+                subs_q = subs_q.filter(
+                    Subscription.subscription_type == "individual",
+                    func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
+                )
+                subs = subs_q.all()
+                if subs:
+                    athlete_count = len(subs)
+                    athlete_ids = [sub.athlete_id for sub in subs]
+                    athletes_map = {
+                        a.id: a
+                        for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
+                    }
+                    sub_ids = [s.id for s in subs]
+                    slot_training_ids = individual_slot_training_ids(session, training)
+                    att_by_sub = {
+                        a.subscription_id: a
+                        for a in session.query(Attendance).filter(
+                            Attendance.training_id.in_(slot_training_ids),
+                            Attendance.subscription_id.in_(sub_ids),
+                        ).all()
+                    }
+                    for sub in subs:
+                        ath = athletes_map.get(sub.athlete_id)
+                        if not ath:
+                            continue
+                        att = att_by_sub.get(sub.id)
+                        status_icon = attendance_icon_for_slot(
+                            att, slot.training_datetime, now=now
+                        )
+                        age_suffix = format_athlete_age_suffix(
+                            getattr(ath, "age_group", None)
+                        )
+                        athlete_lines.append(
+                            f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}"
+                            f"{html.escape(age_suffix)}\n"
+                        )
+                else:
+                    slot_training_ids = individual_slot_training_ids(session, training)
+                    slot_atts = (
+                        session.query(Attendance)
+                        .filter(Attendance.training_id.in_(slot_training_ids))
+                        .order_by(Attendance.created_at.asc())
+                        .all()
+                    )
+                    if slot_atts:
+                        by_athlete = {}
+                        for att in slot_atts:
+                            by_athlete[att.athlete_id] = att
+                        fallback_atts = list(by_athlete.values())
+                        athlete_count = len(fallback_atts)
+                        athlete_ids = [att.athlete_id for att in fallback_atts]
+                        athletes_map = {
+                            a.id: a
+                            for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
+                        }
+                        for att in fallback_atts:
+                            ath = athletes_map.get(att.athlete_id)
+                            if not ath:
+                                continue
+                            status_icon = attendance_icon_for_slot(
+                                att, slot.training_datetime, now=now
+                            )
+                            age_suffix = format_athlete_age_suffix(
+                                getattr(ath, "age_group", None)
+                            )
+                            athlete_lines.append(
+                                f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}"
+                                f"{html.escape(age_suffix)}\n"
+                            )
+            else:
+                slot_training = training or resolve_attendance_slot_training(
+                    session, slot, user.id
+                )
+                if slot_training is None:
+                    slot_training = _training_stub_from_slot(slot)
+                for_history = training_date_only < now.date()
+                athletes, attendance_map = fetch_athletes_for_training_slot(
+                    session,
+                    slot_training,
+                    for_history=for_history,
+                    coach_id=user.id if isinstance(user, Coach) else None,
+                )
+                athlete_count = len(athletes)
+                for athlete in athletes:
+                    attendance = attendance_map.get(athlete.id)
+                    status_icon = attendance_icon_for_slot(
+                        attendance, slot.training_datetime, now=now
+                    )
+                    athlete_lines.append(
+                        f"    {status_icon} {html.escape(_surname_initials(athlete.full_name))}\n"
+                    )
+
+            rendered_slots += 1
+            if rendered_slots == 1:
+                message += "<b>Тренировки со спортсменами:</b>\n\n"
+            message += format_coach_calendar_slot_bullet(
+                time_str,
+                slot.sport_type,
+                age_group=slot.age_group,
+                is_individual=is_individual_slot,
+            )
+            message += f"  <b>Спортсменов: {athlete_count}</b>\n"
+            for line in athlete_lines:
+                message += line
+            message += "\n"
+
+        message = message.replace(
+            "<b>📅 " + date_str + "</b>\n\n",
+            f"<b>📅 {date_str}</b>\n\n<b>Тренировок: {rendered_slots}</b>\n\n",
+            1,
+        )
+    else:
+        message += "На эту дату тренировок не запланировано.\n\n"
+
+    sport_type_name = coach_sport_type_name(user)
+    is_group_training_day = (
+        selected_date.weekday() in _coach_scheduled_weekdays(sport_type_name)
+    )
+
+    keyboard = []
+    if is_group_training_day:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"{CAL_BOOK_ADD_ICON} Групповая",
+                    callback_data=f"cal_grp_book_{year}_{month}_{day}",
+                ),
+            ]
+        )
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    f"{CAL_BOOK_ADD_ICON} Разовая",
+                    callback_data=f"cal_sgl_book_{year}_{month}_{day}",
+                ),
+            ]
+        )
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                f"{CAL_BOOK_ADD_ICON} Индивидуальная",
+                callback_data=f"cal_ind_book_{year}_{month}_{day}",
+            ),
+        ]
+    )
+    keyboard.append(
+        [
+            InlineKeyboardButton(
+                "🔙 К календарю", callback_data=f"calendar_{year}_{month}"
+            )
+        ],
+    )
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if not skip_callback_answer:
+        await query.answer()
+    await query.edit_message_text(
+        truncate_for_telegram_message(message),
+        reply_markup=reply_markup,
+        parse_mode="HTML",
+    )
+
+
 async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик клика по дате в календаре - показывает тренировки на эту дату"""
     query = update.callback_query
@@ -2333,13 +2563,10 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
             year = int(parts[2])
             month = int(parts[3])
             day = int(parts[4])
-
             selected_date = datetime(year, month, day).date()
-            date_start = datetime.combine(selected_date, datetime.min.time())
-            date_end = datetime.combine(selected_date, datetime.max.time())
 
             user = get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) != 'coach':
+            if not user or get_user_role(user) != "coach":
                 await query.answer("❌ У вас нет доступа")
                 return
 
@@ -2354,222 +2581,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
                     await query.answer("❌ Пользователь не найден")
                     return
 
-            now = now_moscow()
-            from services.attendance_training_flow import (
-                build_attendance_slots_for_day,
-                fetch_athletes_for_training_slot,
-                resolve_attendance_slot_training,
-                _training_stub_from_slot,
-            )
-            from utils.age_groups import format_age_group_label
-
-            slot_rows, _virtual_slots = build_attendance_slots_for_day(session, user, selected_date)
-            db_training_ids = [s.training_id for s in slot_rows if (not s.is_virtual and s.training_id)]
-            db_trainings = (
-                session.query(Training)
-                .filter(Training.id.in_(db_training_ids))
-                .all()
-                if db_training_ids
-                else []
-            )
-            training_by_id = {t.id: t for t in db_trainings}
-
-            visible_slots = []
-            for slot in slot_rows:
-                if slot.is_individual_format:
-                    training = training_by_id.get(slot.training_id)
-                    if not training:
-                        continue
-                    if not individual_slot_has_links(session, training, coach_id=user.id):
-                        continue
-                visible_slots.append(slot)
-
-            date_str = selected_date.strftime("%d.%m.%Y")
-            message = f"<b>📅 {date_str}</b>\n\n"
-
-            if visible_slots:
-                rendered_slots = 0
-                for slot in visible_slots:
-                    training = training_by_id.get(slot.training_id)
-                    time_str = slot.training_datetime.strftime("%H:%M")
-                    is_individual_slot = bool(slot.is_individual_format)
-                    training_date_only = slot.training_datetime.date()
-
-                    athlete_lines = []
-                    athlete_count = 0
-                    if is_individual_slot:
-                        subs_q = (
-                            session.query(Subscription)
-                            .join(Athlete, Subscription.athlete_id == Athlete.id)
-                            .filter(
-                                Subscription.sport_type == slot.sport_type,
-                                func.date(Subscription.start_date) <= training_date_only,
-                                func.date(Subscription.end_date) >= training_date_only,
-                            )
-                        )
-                        slot_key = slot.training_datetime.strftime("%Y-%m-%d %H:%M")
-                        subs_q = subs_q.filter(
-                            Subscription.subscription_type == "individual",
-                            func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
-                        )
-                        subs = subs_q.all()
-                        if subs:
-                            athlete_count = len(subs)
-                            athlete_ids = [sub.athlete_id for sub in subs]
-                            athletes_map = {
-                                a.id: a
-                                for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
-                            }
-                            sub_ids = [s.id for s in subs]
-                            slot_training_ids = individual_slot_training_ids(session, training)
-                            att_by_sub = {
-                                a.subscription_id: a
-                                for a in session.query(Attendance).filter(
-                                    Attendance.training_id.in_(slot_training_ids),
-                                    Attendance.subscription_id.in_(sub_ids),
-                                ).all()
-                            }
-                            for sub in subs:
-                                ath = athletes_map.get(sub.athlete_id)
-                                if not ath:
-                                    continue
-                                att = att_by_sub.get(sub.id)
-                                status_icon = attendance_icon_for_slot(
-                                    att, slot.training_datetime, now=now
-                                )
-                                age_suffix = ""
-                                age_suffix = format_athlete_age_suffix(
-                                    getattr(ath, "age_group", None)
-                                )
-                                athlete_lines.append(
-                                    f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}"
-                                    f"{html.escape(age_suffix)}\n"
-                                )
-                        else:
-                            # Fallback: если абонемент не найден, но есть Attendance по слоту.
-                            slot_training_ids = individual_slot_training_ids(session, training)
-                            slot_atts = (
-                                session.query(Attendance)
-                                .filter(Attendance.training_id.in_(slot_training_ids))
-                                .order_by(Attendance.created_at.asc())
-                                .all()
-                            )
-                            if slot_atts:
-                                by_athlete = {}
-                                for att in slot_atts:
-                                    by_athlete[att.athlete_id] = att
-                                fallback_atts = list(by_athlete.values())
-                                athlete_count = len(fallback_atts)
-                                athlete_ids = [att.athlete_id for att in fallback_atts]
-                                athletes_map = {
-                                    a.id: a
-                                    for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
-                                }
-                                for att in fallback_atts:
-                                    ath = athletes_map.get(att.athlete_id)
-                                    if not ath:
-                                        continue
-                                    status_icon = attendance_icon_for_slot(
-                                        att, slot.training_datetime, now=now
-                                    )
-                                    age_suffix = format_athlete_age_suffix(
-                                        getattr(ath, "age_group", None)
-                                    )
-                                    athlete_lines.append(
-                                        f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}"
-                                        f"{html.escape(age_suffix)}\n"
-                                    )
-                    else:
-                        slot_training = training or resolve_attendance_slot_training(
-                            session, slot, user.id
-                        )
-                        if slot_training is None:
-                            slot_training = _training_stub_from_slot(slot)
-                        for_history = training_date_only < now.date()
-                        athletes, attendance_map = fetch_athletes_for_training_slot(
-                            session,
-                            slot_training,
-                            for_history=for_history,
-                            coach_id=user.id if isinstance(user, Coach) else None,
-                        )
-                        athlete_count = len(athletes)
-                        for athlete in athletes:
-                            attendance = attendance_map.get(athlete.id)
-                            status_icon = attendance_icon_for_slot(
-                                attendance, slot.training_datetime, now=now
-                            )
-                            athlete_lines.append(
-                                f"    {status_icon} {html.escape(_surname_initials(athlete.full_name))}\n"
-                            )
-
-                    rendered_slots += 1
-                    if rendered_slots == 1:
-                        message += "<b>Тренировки со спортсменами:</b>\n\n"
-                    message += format_coach_calendar_slot_bullet(
-                        time_str,
-                        slot.sport_type,
-                        age_group=slot.age_group,
-                        is_individual=is_individual_slot,
-                    )
-                    message += f"  <b>Спортсменов: {athlete_count}</b>\n"
-                    for line in athlete_lines:
-                        message += line
-                    message += "\n"
-
-                message = message.replace(
-                    "<b>📅 " + date_str + "</b>\n\n",
-                    f"<b>📅 {date_str}</b>\n\n<b>Тренировок: {rendered_slots}</b>\n\n",
-                    1,
-                )
-            else:
-                message += "На эту дату тренировок не запланировано.\n\n"
-
-            sport_type_name = coach_sport_type_name(user)
-            is_group_training_day = (
-                selected_date.weekday() in _coach_scheduled_weekdays(sport_type_name)
-            )
-
-            keyboard = []
-            if is_group_training_day:
-                keyboard.append(
-                    [
-                        InlineKeyboardButton(
-                            f"{CAL_BOOK_ADD_ICON} Групповая",
-                            callback_data=f"cal_grp_book_{year}_{month}_{day}",
-                        ),
-                    ]
-                )
-                keyboard.append(
-                    [
-                        InlineKeyboardButton(
-                            f"{CAL_BOOK_ADD_ICON} Разовая",
-                            callback_data=f"cal_sgl_book_{year}_{month}_{day}",
-                        ),
-                    ]
-                )
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        f"{CAL_BOOK_ADD_ICON} Индивидуальная",
-                        callback_data=f"cal_ind_book_{year}_{month}_{day}",
-                    ),
-                ]
-            )
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        "🔙 К календарю", callback_data=f"calendar_{year}_{month}"
-                    )
-                ],
-            )
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await query.answer()
-            await query.edit_message_text(
-                truncate_for_telegram_message(message),
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
+            await render_calendar_day_view(query, session, user, selected_date)
 
     except Exception as e:
         logger.error("Ошибка при обработке клика по дате календаря: %s", e, exc_info=True)
@@ -3070,7 +3082,14 @@ async def handle_calendar_individual_athlete_pick(
             )
             session.flush()
             await _finalize_subscription_activation(
-                update, context, query, session, subscription, athlete, start_date
+                update,
+                context,
+                query,
+                session,
+                subscription,
+                athlete,
+                start_date,
+                after_nav="calendar_day",
             )
     except Exception as e:
         logger.error("cal_ind_a: %s", e, exc_info=True)
