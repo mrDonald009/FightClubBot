@@ -3795,7 +3795,14 @@ async def handle_calendar_group_athlete_pick(
 
             session.flush()
             await _finalize_subscription_activation(
-                update, context, query, session, subscription, athlete, start_date
+                update,
+                context,
+                query,
+                session,
+                subscription,
+                athlete,
+                start_date,
+                after_nav="calendar_day",
             )
     except Exception as e:
         logger.error("cal_%s_a: %s", kind, e, exc_info=True)
