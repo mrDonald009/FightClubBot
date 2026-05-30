@@ -2012,7 +2012,10 @@ async def cancel_global_freeze(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Шаг 1: список тренировок на сегодня для отметки посещений."""
-    from services.attendance_training_flow import build_today_attendance_slots
+    from services.attendance_training_flow import (
+        build_today_attendance_slots,
+        is_attendance_open_on_training_day,
+    )
 
     user_id = update.effective_user.id
     query = update.callback_query
@@ -2074,16 +2077,11 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     is_individual=slot.is_individual_format,
                 )
                 slot_start = slot.training_datetime
-                slot_end = (
-                    individual_training_end_time(slot_start)
-                    if slot.is_individual_format
-                    else training_end_time(slot_start)
-                )
-                is_live = slot_start <= now <= slot_end
-                prefix = "" if is_live else "🔒 "
+                is_open = is_attendance_open_on_training_day(slot_start, now)
+                prefix = "" if is_open else "🔒 "
                 time_str = slot.training_datetime.strftime("%H:%M")
                 button_text = f"{prefix}🕒 {time_str} - {slot_body}"
-                if is_live:
+                if is_open:
                     callback_data = (
                         f"select_mark_training_virtual_{slot.virtual_token}"
                         if slot.is_virtual

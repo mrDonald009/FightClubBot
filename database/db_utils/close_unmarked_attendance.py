@@ -33,11 +33,53 @@ from .training_slots import (
 logger = logging.getLogger(__name__)
 
 
+def lock_attendances_after_calendar_day_end(session: Session) -> int:
+    """
+    Фиксация отметок после окончания календарного дня тренировки (Москва).
+
+    Все attendances за даты строго раньше «сегодня» получают locked_at.
+    В течение дня тренировки тренер может менять «был/не был»; с полуночи — нет.
+    Для «Был» при фиксации списывается остаток абонемента (если ещё не списан).
+    """
+    now = now_moscow()
+    today = now.date()
+    rows = (
+        session.query(Attendance)
+        .join(Training, Training.id == Attendance.training_id)
+        .filter(
+            Training.is_cancelled.is_(False),
+            func.date(Training.training_date) < today,
+            Attendance.locked_at.is_(None),
+        )
+        .all()
+    )
+    n = 0
+    for att in rows:
+        att.locked_at = now
+        training = session.query(Training).filter_by(id=att.training_id).first()
+        subscription = (
+            session.query(Subscription).filter_by(id=att.subscription_id).first()
+            if att.subscription_id
+            else None
+        )
+        if training and subscription:
+            apply_trainings_remaining_on_present_after_lock(
+                session, att, training, subscription
+            )
+        n += 1
+    if n:
+        logger.info(
+            "lock_attendances_after_calendar_day_end: locked_at для %s отметок (дни до %s)",
+            n,
+            today.isoformat(),
+        )
+    return n
+
+
 def lock_attendances_for_ended_trainings(session: Session) -> int:
     """
-    Выставить locked_at у строк attendances, если пара уже закончилась.
-    До этого тренер может менять «был/не был»; после — только просмотр.
-    При фиксации: для «Был» выполняется списание trainings_remaining (после окончания пары).
+    Устаревшая фиксация по концу слота (1 ч / 90 мин). Предпочтительно
+    lock_attendances_after_calendar_day_end — фиксация в полночь после дня тренировки.
     """
     now = now_moscow()
     min_duration = min(TRAINING_DURATION, INDIVIDUAL_TRAINING_DURATION)
@@ -146,7 +188,9 @@ def apply_trainings_remaining_on_present_after_lock(
     if not attendance.attended:
         return
     athlete_id = attendance.athlete_id
-    training_in_freeze = (
+    training_in_freeze = is_training_in_global_freeze(
+        session, training.training_date
+    ) or (
         subscription.is_frozen
         and subscription.frozen_from
         and subscription.frozen_until
@@ -171,7 +215,9 @@ def _should_deduct_on_system_absence(
     training: Training,
     athlete_id: int,
 ) -> bool:
-    training_in_freeze = (
+    training_in_freeze = is_training_in_global_freeze(
+        session, training.training_date
+    ) or (
         subscription.is_frozen
         and subscription.frozen_from
         and subscription.frozen_until

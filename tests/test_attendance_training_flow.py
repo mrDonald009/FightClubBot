@@ -62,11 +62,10 @@ def test_surname_initials_button_label():
 
 def test_is_training_in_live_attendance_window():
     tr = SimpleNamespace(training_date=datetime(2026, 5, 11, 11, 30))
-    assert is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 11, 30))
-    assert is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 12, 30))
-    assert is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 13, 0))
-    assert not is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 11, 29))
-    assert not is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 13, 1))
+    assert is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 8, 0))
+    assert is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 11, 23, 59))
+    assert not is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 10, 23, 59))
+    assert not is_training_in_live_attendance_window(tr, now=datetime(2026, 5, 12, 0, 1))
 
 
 def test_coach_training_access_error_admin_unrestricted():

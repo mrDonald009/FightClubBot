@@ -25,7 +25,7 @@ from database.models import Admin, Athlete, Attendance, Coach, Subscription, Tra
 from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
 from utils.coach_sport import sport_type_label_from_user
 from utils.training_manager import TrainingManager
-from utils.time_utils import now_moscow, training_end_time
+from utils.time_utils import now_moscow
 from utils.training_slot_display import format_attendance_step2_slot_title
 
 # Размер страницы списка спортсменов на шаге 2 (inline-кнопки Telegram)
@@ -44,12 +44,18 @@ def format_today_trainings_count_ru(count: int) -> str:
     return f"{n} {word}"
 
 
-def is_training_in_live_attendance_window(training: Training, now: Optional[datetime] = None) -> bool:
-    """Идёт ли сейчас эта пара (можно открыть шаг отметки): [начало, конец] включительно."""
+def is_attendance_open_on_training_day(
+    training_start: datetime,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Отметка посещений доступна весь календарный день тренировки (APP_TIMEZONE / Москва)."""
     t_now = now if now is not None else now_moscow()
-    start = training.training_date
-    end = training_end_time(start)
-    return start <= t_now <= end
+    return training_start.date() == t_now.date()
+
+
+def is_training_in_live_attendance_window(training: Training, now: Optional[datetime] = None) -> bool:
+    """Можно ли открыть шаг отметки: весь день даты тренировки, не только окно пары."""
+    return is_attendance_open_on_training_day(training.training_date, now=now)
 
 
 @dataclass(frozen=True)

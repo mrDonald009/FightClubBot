@@ -16,7 +16,9 @@ from services.attendance_training_flow import (
 )
 from services.user_service import UserService
 from services.subscription_service import SubscriptionService
-from services.subscription_audit_service import run_subscription_audit, format_audit_report
+from database.db_utils.close_unmarked_attendance import (
+    lock_attendances_after_calendar_day_end,
+)
 from utils.age_groups import format_age_group_label
 from utils.time_utils import APP_TZ, now_moscow
 
@@ -445,6 +447,18 @@ async def _daily_subscription_audit_job(context) -> None:
         logger.error(f"❌ Ошибка daily-аудита абонементов: {e}", exc_info=True)
 
 
+async def _lock_attendances_after_calendar_day_job(context) -> None:
+    """После полуночи: locked_at для всех отметок за завершённые календарные дни."""
+    try:
+        with get_db_session() as session:
+            n = lock_attendances_after_calendar_day_end(session)
+            session.commit()
+        if n:
+            logger.info("🔒 Зафиксировано отметок (конец дня): %s", n)
+    except Exception as e:
+        logger.error("❌ Ошибка lock_attendances_after_calendar_day_end: %s", e, exc_info=True)
+
+
 def setup_scheduled_jobs(application: Application, config: Config) -> None:
     """Настроить плановые задачи приложения."""
     application.bot_data["config"] = config
@@ -480,5 +494,15 @@ def setup_scheduled_jobs(application: Application, config: Config) -> None:
     logger.info(
         "🗓️ Запланированы напоминания тренерам о старте занятий "
         "(начало + 1 мин, проверка каждую минуту, APP_TIMEZONE)"
+    )
+
+    lock_day_time = time(hour=0, minute=5, tzinfo=APP_TZ)
+    application.job_queue.run_daily(
+        _lock_attendances_after_calendar_day_job,
+        time=lock_day_time,
+        name="lock_attendances_after_calendar_day",
+    )
+    logger.info(
+        "🗓️ Запланирована фиксация отметок locked_at (00:05, дни тренировок до сегодня)"
     )
 

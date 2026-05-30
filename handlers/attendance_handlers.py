@@ -20,7 +20,7 @@ from utils.subscription_resolve import (
     subscription_for_coach_sport,
 )
 from utils.coach_sport import coach_sport_type_name
-from utils.time_utils import now_moscow, training_slot_end_time
+from utils.time_utils import now_moscow
 from utils.attendance_display import attendance_icon_for_training
 from services.attendance_training_flow import (
     build_step2_message_and_keyboard_rows,
@@ -103,9 +103,9 @@ async def select_training_for_attendance(update: Update, context: ContextTypes.D
 
             if not is_training_in_live_attendance_window(training):
                 await query.edit_message_text(
-                    "🔒 Сейчас отметить можно только <b>текущую пару</b> "
-                    "(пока идёт занятие по расписанию).\n\n"
-                    "Вернитесь в список и выберите слот <b>без замка 🔒</b> или обновите позже.",
+                    "🔒 Отметить можно только <b>в день тренировки</b> "
+                    "(сегодня по расписанию).\n\n"
+                    "Вернитесь в список и выберите слот <b>без замка 🔒</b>.",
                     parse_mode="HTML",
                 )
                 return
@@ -157,14 +157,17 @@ async def handle_attendance_page_info(update: Update, context: ContextTypes.DEFA
 async def handle_attendance_name_column(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     """Колонка «ФИО» в отметке посещения — не действие, только подсказка."""
     query = update.callback_query
-    await query.answer("Нажмите «✅ Был» или «❌ Не был». До конца пары статус можно менять.", show_alert=False)
+    await query.answer(
+        "Нажмите «✅ Был» или «❌ Не был». В течение дня тренировки статус можно менять.",
+        show_alert=False,
+    )
 
 
 async def handle_attendance_slot_locked(update: Update, _context: ContextTypes.DEFAULT_TYPE):
-    """Слот не в окне текущей пары — выбор заблокирован."""
+    """Слот не в день отметки — выбор заблокирован."""
     query = update.callback_query
     await query.answer(
-        "Сейчас доступна только тренировка, которая идёт по времени. Остальные слоты с 🔒 откроются в своё время.",
+        "Отметка доступна в день тренировки. Этот слот сейчас недоступен.",
         show_alert=True,
     )
 
@@ -211,25 +214,11 @@ async def _run_attendance_mark_query(
         return "❌ Абонемент не активен"
 
     training_start = training.training_date
-    training_end_datetime = training_slot_end_time(
-        training_start, getattr(training, "training_format", None)
-    )
     current_time = now_moscow()
-    if current_time < training_start:
+    if not is_training_in_live_attendance_window(training, now=current_time):
         await query.edit_message_text(
-            "⏳ Пара ещё не началась.\n\n"
-            f"Начало: {training_start.strftime('%d.%m.%Y %H:%M')}\n"
-            "Отметить можно <b>с начала</b> занятия до его <b>окончания</b>.",
-            parse_mode="HTML",
-        )
-        return "__handled__"
-    if current_time > training_end_datetime:
-        await query.edit_message_text(
-            "⏱ Время для ручной отметки истекло.\n\n"
-            f"Окончание пары: {training_end_datetime.strftime('%d.%m.%Y %H:%M')}\n"
-            "После окончания занятия отметки и списания фиксируются автоматически "
-            "(в т.ч. «не был», если статус не поставлен).\n\n"
-            "<i>При ошибке обратитесь к администратору.</i>",
+            "🔒 Отметить можно только <b>в день тренировки</b>.\n\n"
+            f"Дата тренировки: {training_start.strftime('%d.%m.%Y')}",
             parse_mode="HTML",
         )
         return "__handled__"
@@ -264,10 +253,10 @@ async def _run_attendance_mark_query(
         old_status = existing_attendance.attended
         if getattr(existing_attendance, "locked_at", None) is not None:
             return (
-                "❌ Пара уже завершена, статус зафиксирован. "
+                "❌ Тренировка за этот день уже зафиксирована, статус изменить нельзя. "
                 "Для исправления обратитесь к администратору."
             )
-        # Остаток абонемента не меняем до окончания пары; списание — при выставлении locked_at (фоновая задача).
+        # Списание остатка — при выставлении locked_at (полночь после дня тренировки).
         existing_attendance.attended = attended
         existing_attendance.marked_by = query.from_user.id
         attendance_row = existing_attendance

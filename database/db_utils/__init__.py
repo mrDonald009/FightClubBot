@@ -60,6 +60,7 @@ from .global_freeze import (
 from .auto_deduct import auto_deduct_daily_trainings
 from .close_unmarked_attendance import (
     close_unmarked_attendance_after_grace,
+    lock_attendances_after_calendar_day_end,
     lock_attendances_for_ended_trainings,
 )
 from .migrate import migrate_existing_subscription, migrate_subscription_by_athlete_name
@@ -124,6 +125,7 @@ __all__ = [
     "training_datetime_compact",
     "auto_deduct_daily_trainings",
     "close_unmarked_attendance_after_grace",
+    "lock_attendances_after_calendar_day_end",
     "lock_attendances_for_ended_trainings",
     "migrate_existing_subscription",
     "migrate_subscription_by_athlete_name",
