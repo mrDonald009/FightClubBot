@@ -29,6 +29,13 @@ ROLE_LABEL_RU = {
     ROLE_ATHLETE: "спортсмен",
 }
 
+# «Выберите действие в меню …» — родительный падеж
+ROLE_MENU_GENITIVE_RU = {
+    ROLE_COACH: "тренера",
+    ROLE_ADMIN: "администратора",
+    ROLE_ATHLETE: "спортсмена",
+}
+
 
 def is_coach(user: object) -> bool:
     return isinstance(user, Coach)
@@ -48,6 +55,11 @@ def is_staff(user: object) -> bool:
 
 def role_label_ru(role: str) -> str:
     return ROLE_LABEL_RU.get(role, role)
+
+
+def role_menu_genitive_ru(role: str) -> str:
+    """Подпись роли для «Выберите действие в меню …»."""
+    return ROLE_MENU_GENITIVE_RU.get(role, role)
 
 
 def can_edit_athlete(user: object, athlete: Athlete) -> bool:

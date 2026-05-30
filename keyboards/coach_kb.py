@@ -1,5 +1,21 @@
+from typing import Optional
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 # Импорты моделей больше не нужны в этом файле
+
+
+def coach_menu_text(
+    *,
+    first_name: Optional[str] = None,
+    menu_role_label: str = "тренера",
+) -> str:
+    """Текст главного меню с приветствием (menu_role_label — род. падеж: тренера, администратора)."""
+    name = (first_name or "").strip() or "Пользователь"
+    role_label = (menu_role_label or "").strip() or "тренера"
+    return (
+        f"👋 С возвращением, {name}!\n\n"
+        f"Выберите действие в меню {role_label}:"
+    )
 
 
 def get_coach_main_menu():

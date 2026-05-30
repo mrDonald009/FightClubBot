@@ -24,7 +24,7 @@ from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
 )
 from typing import List, Optional, Tuple, Union
-from services.permissions import is_staff, is_coach
+from services.permissions import is_staff, is_coach, role_menu_genitive_ru
 from utils.age_groups import AGE_GROUP_CODES, format_age_group_label, normalize_age_group
 from utils.coach_sport import coach_sport_type_name
 from utils.discipline_keys import discipline_key_for
@@ -42,7 +42,7 @@ from utils.time_utils import (
     individual_training_end_time,
     training_end_time,
 )
-from keyboards.coach_kb import get_coach_main_menu
+from keyboards.coach_kb import get_coach_main_menu, coach_menu_text
 from datetime import date, datetime, timedelta
 from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import joinedload
@@ -335,8 +335,10 @@ async def coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = get_coach_main_menu()
 
             await update.message.reply_text(
-                "🏋️‍♂️ Меню тренера:\n\n"
-                "Выберите действие.",
+                coach_menu_text(
+                    first_name=update.effective_user.first_name if update.effective_user else None,
+                    menu_role_label=role_menu_genitive_ru(get_user_role(user)),
+                ),
                 reply_markup=reply_markup
             )
 
@@ -1971,9 +1973,17 @@ async def handle_back_to_menu_main(update: Update, context: ContextTypes.DEFAULT
     await query.answer("Возвращаемся в меню...")
 
     # Отправляем новое сообщение с меню тренера
+    role_label = "тренера"
+    with get_db_session() as session:
+        user = get_user_by_telegram_id(session, query.from_user.id)
+        if user:
+            role_label = role_menu_genitive_ru(get_user_role(user))
+
     await query.message.reply_text(
-        "🏋️‍♂️ Меню тренера:\n\n"
-        "Выберите действие.",
+        coach_menu_text(
+            first_name=query.from_user.first_name if query.from_user else None,
+            menu_role_label=role_label,
+        ),
         reply_markup=get_coach_main_menu()
     )
 
