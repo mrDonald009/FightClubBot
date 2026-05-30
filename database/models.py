@@ -444,6 +444,51 @@ class AthleteFreeze(Base):
     initiated_by_coach = relationship("Coach", foreign_keys=[initiated_by_coach_id])
 
 
+class CoachAbsence(Base):
+    """Отсутствие тренера (болезнь и т.п.): только его спортсмены."""
+    __tablename__ = 'coach_absences'
+    __table_args__ = (
+        Index('ix_coach_absences_coach_active_range', 'coach_id', 'is_active', 'start_date', 'end_date'),
+        {'extend_existing': True},
+    )
+
+    id = Column(Integer, primary_key=True)
+    coach_id = Column(Integer, ForeignKey('coaches.id'), nullable=False)
+    title = Column(String(200), nullable=False)
+    start_date = Column(DateTime, nullable=False)
+    end_date = Column(DateTime, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_by = Column(Integer, nullable=True)  # telegram_id инициатора
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    coach = relationship("Coach", foreign_keys=[coach_id])
+
+
+class CoachAbsenceApplication(Base):
+    """Применение отсутствия тренера к абонементу."""
+    __tablename__ = 'coach_absence_applications'
+    __table_args__ = (
+        UniqueConstraint(
+            'coach_absence_id', 'subscription_id', name='uq_coach_absence_subscription'
+        ),
+        Index('ix_caa_subscription', 'subscription_id'),
+        {'extend_existing': True},
+    )
+
+    id = Column(Integer, primary_key=True)
+    coach_absence_id = Column(Integer, ForeignKey('coach_absences.id'), nullable=False)
+    subscription_id = Column(Integer, ForeignKey('subscriptions.id'), nullable=False)
+    training_days_added = Column(Integer, default=0)
+    old_end_date = Column(DateTime, nullable=True)
+    new_end_date = Column(DateTime, nullable=True)
+    old_start_date = Column(DateTime, nullable=True)
+    new_start_date = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    coach_absence = relationship("CoachAbsence")
+    subscription = relationship("Subscription")
+
+
 class GlobalFreeze(Base):
     """Массовая заморозка клуба (праздники/каникулы)."""
     __tablename__ = 'global_freezes'

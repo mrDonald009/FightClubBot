@@ -22,6 +22,7 @@ from database.db_utils.training_slots import (
     reconcile_group_training_to_schedule,
 )
 from database.models import Admin, Athlete, Attendance, Coach, Subscription, Training
+from services.permissions import is_admin
 from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
 from utils.coach_sport import sport_type_label_from_user
 from utils.training_manager import TrainingManager
@@ -145,7 +146,7 @@ def build_attendance_slots_for_day(
             )
         )
 
-    if isinstance(user, Admin):
+    if is_admin(user):
         db_trainings = (
             session.query(Training)
             .filter(

@@ -24,6 +24,7 @@ from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
 )
 from typing import List, Optional, Tuple, Union
+from services.permissions import is_staff, is_coach
 from utils.age_groups import AGE_GROUP_CODES, format_age_group_label, normalize_age_group
 from utils.coach_sport import coach_sport_type_name
 from utils.discipline_keys import discipline_key_for
@@ -215,6 +216,7 @@ MENU_BUTTONS = [
     "📝 Отметить посещения",
     "📅 Мой календарь",
     "🌍 Массовая заморозка",
+    "🤒 Отсутствие тренера",
     "📊 Статистика",
 ]
 
@@ -2988,7 +2990,7 @@ async def handle_calendar_individual_athlete_pick(
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ("coach", "admin"):
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 
@@ -3626,7 +3628,7 @@ async def handle_calendar_group_athlete_pick(
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ("coach", "admin"):
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 

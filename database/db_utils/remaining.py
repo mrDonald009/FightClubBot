@@ -3,10 +3,24 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, exists, not_, or_, select
-from database.models import Attendance, GlobalFreeze, Subscription, Training
+from database.models import Attendance, CoachAbsence, GlobalFreeze, Subscription, Training
 from utils.time_utils import TRAINING_DURATION, now_moscow
 
 logger = logging.getLogger(__name__)
+
+
+def _coach_absence_covers_training_exists(coach_id):
+    """EXISTS: слот в периоде активного отсутствия тренера coach_id."""
+    if not coach_id:
+        return None
+    return exists(
+        select(1).select_from(CoachAbsence).where(
+            CoachAbsence.is_active == True,
+            CoachAbsence.coach_id == coach_id,
+            CoachAbsence.start_date <= Training.training_date,
+            CoachAbsence.end_date >= Training.training_date,
+        )
+    )
 
 
 def _active_global_freeze_covers_training_exists():
@@ -75,6 +89,13 @@ def calculate_actual_trainings_remaining(session: Session, subscription: Subscri
 
     # Слоты в периоде активной массовой заморозки не должны списываться (см. auto_deduct_daily_trainings).
     filters.append(not_(_active_global_freeze_covers_training_exists()))
+
+    from .coach_absence import get_subscription_coach_id
+
+    sub_coach_id = get_subscription_coach_id(subscription)
+    ca_exists = _coach_absence_covers_training_exists(sub_coach_id)
+    if ca_exists is not None:
+        filters.append(not_(ca_exists))
 
     used_count = session.query(Attendance).join(
         Training, Attendance.training_id == Training.id

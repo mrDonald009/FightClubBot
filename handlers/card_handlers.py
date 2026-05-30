@@ -46,6 +46,7 @@ from database.db_utils.training_slots import (
 )
 from database.db_utils.visit_history import upsert_visit_history_for_training
 from typing import List, Optional, Union
+from services.permissions import is_staff, can_edit_athlete, is_admin, is_athlete, is_coach
 
 from sqlalchemy import and_, exists, func, or_, text
 from sqlalchemy.orm import joinedload
@@ -1400,7 +1401,7 @@ async def handle_activation_calendar_nav(update: Update, context: ContextTypes.D
 
     with get_db_session() as session:
         user = get_user_by_telegram_id(session, query.from_user.id)
-        if not user or get_user_role(user) not in ['coach', 'admin']:
+        if not is_staff(user):
             await query.edit_message_text("❌ У вас нет доступа")
             return
 
@@ -1441,7 +1442,7 @@ async def handle_activation_date_pick(update: Update, context: ContextTypes.DEFA
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 
@@ -1611,7 +1612,7 @@ async def handle_activation_individual_shift_confirm(
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
             subscription = session.query(Subscription).filter_by(id=subscription_id).first()
@@ -1678,7 +1679,7 @@ async def handle_activation_time_pick(update: Update, context: ContextTypes.DEFA
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
             subscription = session.query(Subscription).filter_by(id=subscription_id).first()
@@ -1791,7 +1792,7 @@ async def handle_activation_shift_confirm(update: Update, context: ContextTypes.
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 
@@ -1837,7 +1838,7 @@ async def handle_activation_shift_cancel(update: Update, context: ContextTypes.D
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await query.answer()
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
@@ -1922,7 +1923,7 @@ async def show_athlete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, user_id)
 
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 if query:
                     await query.edit_message_text("❌ У вас нет доступа")
                 else:
@@ -2055,7 +2056,7 @@ async def show_subscription_card(
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
 
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 
@@ -2828,14 +2829,9 @@ async def show_subscription_history(update: Update, context: ContextTypes.DEFAUL
                     return
 
             is_athlete_viewing_own = (
-                isinstance(user, Athlete) and athlete.telegram_id == user.telegram_id
+                is_athlete(user) and athlete.telegram_id == user.telegram_id
             )
-            is_coach_viewing_athlete = (
-                (isinstance(user, Coach) or isinstance(user, Admin))
-                and (isinstance(user, Admin) or athlete.created_by == user.id)
-            )
-
-            if not (is_athlete_viewing_own or is_coach_viewing_athlete):
+            if not (is_athlete_viewing_own or can_edit_athlete(user, athlete)):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 
@@ -3033,14 +3029,9 @@ async def view_subscription_from_history(update: Update, context: ContextTypes.D
             athlete = subscription.athlete
 
             is_athlete_viewing_own = (
-                isinstance(user, Athlete) and athlete.telegram_id == user.telegram_id
+                is_athlete(user) and athlete.telegram_id == user.telegram_id
             )
-            is_coach_viewing_athlete = (
-                (isinstance(user, Coach) or isinstance(user, Admin))
-                and (isinstance(user, Admin) or athlete.created_by == user.id)
-            )
-
-            if not (is_athlete_viewing_own or is_coach_viewing_athlete):
+            if not (is_athlete_viewing_own or can_edit_athlete(user, athlete)):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 
@@ -3090,7 +3081,7 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
         
@@ -3222,12 +3213,12 @@ async def handle_activate_subscription(update: Update, context: ContextTypes.DEF
                 # Убираем ограничение - любой тренер может создать абонемент
                 # Но проверяем, что у тренера указан вид спорта
                 sport_type_for_sub = None
-                if isinstance(user, Coach):
+                if is_coach(user):
                     sport_type_for_sub = coach_sport_type_name(user)
                     if not sport_type_for_sub:
                         await query.edit_message_text("❌ У вас не указан вид спорта. Обратитесь к администратору.")
                         return
-                elif isinstance(user, Admin):
+                elif is_admin(user):
                     # Для админа можно выбрать вид спорта из существующих абонементов или использовать из спортсмена
                     sport_type_for_sub = athlete.sport_type
             
@@ -3624,7 +3615,7 @@ async def show_athlete_visits(update: Update, context: ContextTypes.DEFAULT_TYPE
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
 
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 error_message = "❌ У вас нет доступа"
             else:
                 athlete = session.query(Athlete).filter_by(id=athlete_id).first()
@@ -3821,7 +3812,7 @@ async def show_athlete_stats(update: Update, context: ContextTypes.DEFAULT_TYPE)
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
         
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
         
@@ -3986,7 +3977,7 @@ async def show_restore_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
         
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
         
@@ -4069,7 +4060,7 @@ async def execute_restore_training(update: Update, context: ContextTypes.DEFAULT
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
         
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
         
@@ -4158,7 +4149,7 @@ async def select_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
         
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
         
@@ -4236,7 +4227,7 @@ async def view_subscription_card(update: Update, context: ContextTypes.DEFAULT_T
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
         
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
         
@@ -4402,7 +4393,7 @@ def _load_athlete_for_edit(session, user, athlete_id: int):
     Проверка доступа к редактированию.
     Возвращает (athlete, error_text) — при ошибке athlete=None.
     """
-    if not user or get_user_role(user) not in ("coach", "admin"):
+    if not is_staff(user):
         return None, "❌ У вас нет доступа"
     athlete = session.query(Athlete).filter_by(id=athlete_id).first()
     if not athlete:
@@ -4883,7 +4874,7 @@ async def handle_freeze_subscription_start(update: Update, context: ContextTypes
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 
@@ -4950,7 +4941,7 @@ async def handle_freeze_calendar_nav(update: Update, context: ContextTypes.DEFAU
 
     with get_db_session() as session:
         user = get_user_by_telegram_id(session, query.from_user.id)
-        if not user or get_user_role(user) not in ['coach', 'admin']:
+        if not is_staff(user):
             await query.edit_message_text("❌ У вас нет доступа")
             return
 
@@ -4986,7 +4977,7 @@ async def handle_freeze_date_pick(update: Update, context: ContextTypes.DEFAULT_
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 
@@ -5047,7 +5038,7 @@ async def handle_unfreeze_subscription(update: Update, context: ContextTypes.DEF
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await query.edit_message_text("❌ У вас нет доступа")
                 return
 

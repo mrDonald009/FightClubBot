@@ -1,43 +1,39 @@
 from datetime import datetime
 from typing import Optional, Union
 from sqlalchemy.orm import Session
-from database.models import Admin, Assistant, Athlete, Coach, SportType
+from database.models import Admin, Athlete, Coach, SportType
+from database.db_utils.role_policy import assert_can_assign_role
 
-def get_user_role(user: Union[Coach, Admin, Assistant, Athlete]) -> str:
-    """Определить роль пользователя"""
+def get_user_role(user: Union[Coach, Admin, Athlete]) -> str:
+    """Определить роль пользователя (coach, admin, athlete)."""
     if isinstance(user, Coach):
         return "coach"
     elif isinstance(user, Admin):
         return "admin"
-    elif isinstance(user, Assistant):
-        return "assistant"
     elif isinstance(user, Athlete):
         return "athlete"
     return "unknown"
 
 
-def get_user_by_telegram_id(session: Session, telegram_id: int) -> Optional[Union[Coach, Admin, Assistant, Athlete]]:
-    """Получить пользователя по telegram_id (проверяет все таблицы: coaches, admins, assistants, athletes)"""
-    # Проверяем тренеров
-    coach = session.query(Coach).filter_by(telegram_id=telegram_id).first()
-    if coach:
-        return coach
-    
-    # Проверяем админов
+def get_user_by_telegram_id(session: Session, telegram_id: int) -> Optional[Union[Coach, Admin, Athlete]]:
+    """
+    Пользователь по telegram_id.
+
+    Порядок: admin → coach → athlete. Роль assistant не резолвится (legacy-таблица).
+    При dual coach+admin сработает validate_staff_roles_consistency при старте.
+    """
     admin = session.query(Admin).filter_by(telegram_id=telegram_id).first()
     if admin:
         return admin
-    
-    # Проверяем ассистентов
-    assistant = session.query(Assistant).filter_by(telegram_id=telegram_id).first()
-    if assistant:
-        return assistant
-    
-    # Проверяем спортсменов
+
+    coach = session.query(Coach).filter_by(telegram_id=telegram_id).first()
+    if coach:
+        return coach
+
     athlete = session.query(Athlete).filter_by(telegram_id=telegram_id).first()
     if athlete:
         return athlete
-    
+
     return None
 
 
@@ -76,8 +72,17 @@ def get_coach_by_sport_type(session: Session, sport_type: str) -> Optional[Coach
 
 
 def create_user(session: Session, telegram_id: int, username: str, first_name: str, role: str = "athlete",
-                sport_type: str = None) -> Union[Coach, Admin, Assistant]:
-    """Создать нового пользователя в соответствующей таблице"""
+                sport_type: str = None) -> Union[Coach, Admin]:
+    """Создать staff-пользователя (coach или admin). Роли assistant не поддерживается."""
+    if role == "assistant":
+        raise ValueError(
+            "Роль assistant снята с поддержки; используйте coach, admin или athlete"
+        )
+    if role not in ("coach", "admin"):
+        raise ValueError(f"Для создания спортсмена используйте create_athlete, не role={role}")
+
+    assert_can_assign_role(session, telegram_id, role)
+
     if role == "coach":
         # Получаем sport_type_id из таблицы sport_types
         sport_type_id = None
@@ -106,29 +111,14 @@ def create_user(session: Session, telegram_id: int, username: str, first_name: s
         session.commit()
         return coach
     
-    elif role == "admin":
-        admin = Admin(
-            telegram_id=telegram_id,
-            username=username,
-            first_name=first_name
-        )
-        session.add(admin)
-        session.commit()
-        return admin
-    
-    elif role == "assistant":
-        assistant = Assistant(
-            telegram_id=telegram_id,
-            username=username,
-            first_name=first_name
-        )
-        session.add(assistant)
-        session.commit()
-        return assistant
-    
-    else:
-        # Для спортсменов не создаем запись в отдельной таблице, только в athletes
-        raise ValueError(f"Для создания спортсмена используйте create_athlete")
+    admin = Admin(
+        telegram_id=telegram_id,
+        username=username,
+        first_name=first_name
+    )
+    session.add(admin)
+    session.commit()
+    return admin
 
 
 def create_athlete(
@@ -147,6 +137,8 @@ def create_athlete(
     commit: bool = True,
 ):
     """Создать спортсмена. При commit=False только add+flush (для одной транзакции с абонементом)."""
+    if telegram_id is not None:
+        assert_can_assign_role(session, telegram_id, "athlete")
     athlete = Athlete(
         telegram_id=telegram_id,
         full_name=full_name,

@@ -1,8 +1,8 @@
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
-from database.models import Coach, Admin, Assistant, Athlete
 from core.database import get_db_session
-from database.db_utils import get_user_by_telegram_id, get_user_role, create_user
+from database.db_utils import get_user_by_telegram_id, get_user_role, create_athlete
+from services.permissions import ROLE_LABEL_RU, is_coach, is_admin
 from keyboards.coach_kb import get_coach_main_menu
 import logging
 
@@ -24,7 +24,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if not user:
                 # Для новых пользователей создаем запись спортсмена (в таблице athletes)
-                from database.db_utils import create_athlete
                 # Создаем спортсмена без тренера (created_by будет NULL)
                 user = create_athlete(
                     session=session,
@@ -43,18 +42,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 role = get_user_role(user)
                 print(f"🔍 ПОЛЬЗОВАТЕЛЬ {user_id} УЖЕ СУЩЕСТВУЕТ, роль: {role}")
+                label = ROLE_LABEL_RU.get(role, role)
                 welcome_text = f"""👋 С возвращением, {first_name}!
 
-Ваша роль: {role}"""
+Ваша роль: {label}"""
 
             await update.message.reply_text(welcome_text)
 
             # Показываем соответствующее меню
-            role = get_user_role(user)
-            if role == "coach":
+            if is_coach(user):
                 print(f"🎯 ПОКАЗЫВАЕМ МЕНЮ ТРЕНЕРА ДЛЯ {user_id}")
                 await show_coach_menu(update, context)
-            elif role == "admin":
+            elif is_admin(user):
                 print(f"👑 ПОКАЗЫВАЕМ МЕНЮ АДМИНА ДЛЯ {user_id}")
                 await show_admin_menu(update, context)
             else:

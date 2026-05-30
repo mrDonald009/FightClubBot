@@ -15,7 +15,7 @@ from telegram.ext import (
 from core.application import HandlerRegistrar
 from core.database import get_db_session
 from services.user_service import UserService
-from database.db_utils import get_user_role
+from services.permissions import is_staff
 from services.subscription_service import SubscriptionService
 from services.subscription_audit_service import run_subscription_audit, format_audit_report
 from services.global_freeze_service import (
@@ -173,7 +173,7 @@ async def check_all_subscriptions(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await update.message.reply_text("❌ У вас нет прав для этой команды")
                 return
     except Exception as e:
@@ -204,7 +204,7 @@ async def audit_subscriptions_now(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await update.message.reply_text("❌ У вас нет прав для этой команды")
                 return
     except Exception as e:
@@ -236,7 +236,7 @@ async def create_global_freeze(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await update.message.reply_text("❌ У вас нет прав для этой команды")
                 return
     except Exception as e:
@@ -354,7 +354,7 @@ async def start_global_freeze_flow(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await update.message.reply_text("❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
             status_block = _format_current_global_freezes_html(session)
@@ -390,7 +390,7 @@ async def handle_global_freeze_action_history(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
             text = _format_global_freeze_history_html(session)
@@ -412,7 +412,7 @@ async def handle_global_freeze_action_create(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ['coach', 'admin']:
+            if not is_staff(user):
                 await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
             status_block = _format_current_global_freezes_html(session)
@@ -448,7 +448,7 @@ async def handle_global_freeze_action_cancel(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
             rows = _list_active_global_freezes(session)
@@ -504,7 +504,7 @@ async def handle_gf_deact_pick(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
             from database.models import GlobalFreeze
@@ -562,7 +562,7 @@ async def handle_gf_deact_confirm(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
                 return ConversationHandler.END
             result = deactivate_global_freeze_service(session, gf_id)
@@ -807,7 +807,7 @@ async def deactivate_global_freeze(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await update.message.reply_text("❌ У вас нет прав для этой команды")
                 return
 
@@ -853,7 +853,7 @@ async def global_freeze_history(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) not in ["coach", "admin"]:
+            if not is_staff(user):
                 await update.message.reply_text("❌ У вас нет прав для этой команды")
                 return
             text = _format_global_freeze_history_html(session)
@@ -966,6 +966,25 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     ):
         registrar.register(CallbackQueryHandler(_cb, pattern=_pat))
     logger.info("✅ Зарегистрирован ConversationHandler для массовой заморозки (+ резервные callback)")
+
+    from handlers.coach_absence_flow import (
+        build_coach_absence_conversation,
+        handle_ca_confirm_apply,
+        handle_ca_deact_confirm,
+        handle_ca_deact_pick,
+        handle_ca_flow_cancel,
+    )
+
+    ca_conv = build_coach_absence_conversation()
+    registrar.register(ca_conv)
+    for _cb, _pat in (
+        (handle_ca_flow_cancel, r"^ca_cancel_flow$"),
+        (handle_ca_deact_confirm, r"^ca_deact_confirm_\d+$"),
+        (handle_ca_deact_pick, r"^ca_deact_pick_\d+$"),
+        (handle_ca_confirm_apply, r"^ca_apply_confirm$"),
+    ):
+        registrar.register(CallbackQueryHandler(_cb, pattern=_pat))
+    logger.info("✅ Зарегистрирован ConversationHandler для отсутствия тренера")
 
     logger.info("📝 Регистрируем ConversationHandler для добавления спортсмена...")
     conv_handler = ConversationHandler(

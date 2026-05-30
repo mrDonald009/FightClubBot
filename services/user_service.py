@@ -2,9 +2,10 @@
 import logging
 from typing import Optional, List, Union
 from sqlalchemy.orm import Session
-from database.models import Coach, Admin, Assistant, Athlete, Training
+from database.models import Coach, Admin, Athlete
 from database.db_utils import get_user_by_telegram_id, get_user_role, create_user as db_create_user
 from core.exceptions import UserNotFoundError, PermissionDeniedError
+from services.permissions import ACTIVE_ROLES
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,7 @@ class UserService:
     """Сервис для работы с пользователями."""
     
     @staticmethod
-    def get_user_by_telegram_id(session: Session, telegram_id: int) -> Optional[Union[Coach, Admin, Assistant, Athlete]]:
+    def get_user_by_telegram_id(session: Session, telegram_id: int) -> Optional[Union[Coach, Admin, Athlete]]:
         """
         Получить пользователя по Telegram ID.
         
@@ -22,12 +23,12 @@ class UserService:
             telegram_id: Telegram ID пользователя
             
         Returns:
-            Coach, Admin, Assistant или Athlete, или None, если не найден
+            Coach, Admin или Athlete, или None, если не найден
         """
         return get_user_by_telegram_id(session, telegram_id)
     
     @staticmethod
-    def get_user_or_raise(session: Session, telegram_id: int) -> Union[Coach, Admin, Assistant, Athlete]:
+    def get_user_or_raise(session: Session, telegram_id: int) -> Union[Coach, Admin, Athlete]:
         """
         Получить пользователя по Telegram ID или выбросить исключение.
         
@@ -36,7 +37,7 @@ class UserService:
             telegram_id: Telegram ID пользователя
             
         Returns:
-            Coach, Admin, Assistant или Athlete
+            Coach, Admin или Athlete
             
         Raises:
             UserNotFoundError: Если пользователь не найден
@@ -54,7 +55,7 @@ class UserService:
         first_name: str,
         role: str = "athlete",
         sport_type: Optional[str] = None
-    ) -> Union[Coach, Admin, Assistant]:
+    ) -> Union[Coach, Admin]:
         """
         Создать нового пользователя.
         
@@ -79,7 +80,7 @@ class UserService:
         first_name: str,
         role: str = "athlete",
         sport_type: Optional[str] = None
-    ) -> Union[Coach, Admin, Assistant, Athlete]:
+    ) -> Union[Coach, Admin, Athlete]:
         """
         Получить существующего пользователя или создать нового.
         
@@ -92,7 +93,7 @@ class UserService:
             sport_type: Тип спорта
             
         Returns:
-            Coach, Admin, Assistant или Athlete
+            Coach, Admin или Athlete
         """
         user = get_user_by_telegram_id(session, telegram_id)
         if not user:
@@ -114,13 +115,13 @@ class UserService:
         return user
     
     @staticmethod
-    def check_permission(user: Union[Coach, Admin, Assistant, Athlete], required_roles: List[str]) -> bool:
+    def check_permission(user: Union[Coach, Admin, Athlete], required_roles: List[str]) -> bool:
         """
         Проверить, имеет ли пользователь требуемую роль.
         
         Args:
             user: Пользователь
-            required_roles: Список разрешенных ролей
+            required_roles: Список разрешенных ролей (coach, admin, athlete)
             
         Returns:
             True, если имеет права
@@ -128,8 +129,9 @@ class UserService:
         Raises:
             PermissionDeniedError: Если нет прав
         """
+        allowed = [r for r in required_roles if r in ACTIVE_ROLES]
         user_role = get_user_role(user)
-        if user_role not in required_roles:
+        if user_role not in allowed:
             raise PermissionDeniedError(
                 f"Пользователь {user.telegram_id} не имеет прав. "
                 f"Требуется одна из ролей: {required_roles}, получено: {user_role}"
@@ -159,31 +161,22 @@ class UserService:
                 role="admin",
             )
         if isinstance(user, Coach):
-            athletes_cnt = (
-                session.query(Athlete).filter(Athlete.created_by == user.id).count()
+            logger.warning(
+                "ADMIN_TELEGRAM_ID=%s совпадает с тренером id=%s — админ не создан "
+                "(один telegram_id не может быть coach и admin). Уберите id из env или исправьте БД.",
+                telegram_id,
+                user.id,
             )
-            trainings_cnt = (
-                session.query(Training).filter(Training.coach_id == user.id).count()
+            return None
+        if isinstance(user, Athlete):
+            logger.warning(
+                "ADMIN_TELEGRAM_ID=%s совпадает со спортсменом id=%s — админ не создан.",
+                telegram_id,
+                user.id,
             )
-            if athletes_cnt > 0 or trainings_cnt > 0:
-                logger.warning(
-                    "ADMIN_TELEGRAM_ID=%s совпадает с тренером id=%s, у которого есть спортсмены или тренировки. "
-                    "Администратор не создан — исправьте БД или смените ADMIN_TELEGRAM_ID.",
-                    telegram_id,
-                    user.id,
-                )
-                return None
-            session.delete(user)
-            session.commit()
-            return db_create_user(
-                session=session,
-                telegram_id=telegram_id,
-                username=username,
-                first_name=first_name,
-                role="admin",
-            )
+            return None
         logger.warning(
-            "ADMIN_TELEGRAM_ID=%s уже занят ролью %s (не admin). Администратор не создан.",
+            "ADMIN_TELEGRAM_ID=%s уже занят (роль %s). Администратор не создан.",
             telegram_id,
             get_user_role(user),
         )
@@ -234,11 +227,13 @@ class UserService:
                 telegram_id,
             )
             raise ValueError("telegram_id уже занят спортсменом")
-        elif user:
-            # Ассистент и прочие: удаляем и создаём тренера
-            session.delete(user)
-            session.commit()
-        
+        if user:
+            raise ValueError(
+                "telegram_id={} уже занят ролью {}".format(
+                    telegram_id, get_user_role(user)
+                )
+            )
+
         # Создаем нового тренера
         coach = db_create_user(
             session=session,

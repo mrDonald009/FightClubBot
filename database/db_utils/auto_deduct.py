@@ -4,6 +4,7 @@ from utils.subscription_checker import SubscriptionChecker
 from utils.training_manager import TrainingManager
 from utils.time_utils import individual_training_end_time, now_moscow, training_end_time
 
+from .coach_absence import is_training_in_coach_absence_for_subscription
 from .global_freeze import is_training_in_global_freeze
 from .training_slots import (
     TRAINING_FORMAT_INDIVIDUAL,
@@ -40,8 +41,12 @@ def _deduct_individual_subscription(
     t_end = individual_training_end_time(training_row.training_date)
     if now < t_end:
         return False
-    if is_training_in_global_freeze(session, training_row.training_date):
-        return False
+        if is_training_in_global_freeze(session, training_row.training_date):
+            return False
+        if is_training_in_coach_absence_for_subscription(
+            session, training_row.training_date, subscription
+        ):
+            return False
     if training_row.training_date < subscription.start_date or t_end > subscription.end_date:
         return False
     slot_tids = individual_slot_training_ids(session, training_row)
@@ -119,7 +124,11 @@ def auto_deduct_daily_trainings(session: Session):
         # В период массовой заморозки списание не выполняем
         if is_training_in_global_freeze(session, training_datetime):
             continue
-        
+        if is_training_in_coach_absence_for_subscription(
+            session, training_datetime, subscription
+        ):
+            continue
+
         # Время окончания тренировки = время начала + 1.5 часа
         training_end_datetime = training_end_time(training_datetime)
         

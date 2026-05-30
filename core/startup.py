@@ -15,6 +15,7 @@ from services.attendance_training_flow import (
     format_today_trainings_count_ru,
 )
 from services.user_service import UserService
+from services.permissions import log_staff_roles_validation, daily_audit_recipient_ids
 from services.subscription_service import SubscriptionService
 from database.db_utils.close_unmarked_attendance import (
     lock_attendances_after_calendar_day_end,
@@ -419,6 +420,12 @@ def initialize_app(config: Config) -> None:
     ensure_admin_user(config)
     ensure_coaches_from_merged_env(config)
 
+    try:
+        with get_db_session() as session:
+            log_staff_roles_validation(session)
+    except Exception as e:
+        logger.error("❌ Ошибка проверки консистентности ролей: %s", e, exc_info=True)
+
     # Проверяем абонементы
     check_subscriptions_on_startup()
 
@@ -426,13 +433,13 @@ def initialize_app(config: Config) -> None:
 
 
 async def _daily_subscription_audit_job(context) -> None:
-    """Ежесуточный read-only аудит абонементов с отправкой отчета админу."""
+    """Ежесуточный read-only аудит абонементов с отправкой отчёта админам из БД."""
     config = context.application.bot_data.get("config")
-    admin_id = getattr(config, "ADMIN_TELEGRAM_ID", None) if config else None
 
     try:
         with get_db_session() as session:
             report = run_subscription_audit(session)
+            recipient_ids = daily_audit_recipient_ids(session, config)
         report_text = format_audit_report(report)
 
         logger.info(
@@ -441,8 +448,17 @@ async def _daily_subscription_audit_job(context) -> None:
             report.get("issues_total", 0),
         )
 
-        if admin_id:
-            await context.bot.send_message(chat_id=admin_id, text=report_text, parse_mode="HTML")
+        for chat_id in recipient_ids:
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=report_text, parse_mode="HTML"
+                )
+            except Exception as send_err:
+                logger.warning(
+                    "Не удалось отправить daily audit в chat_id=%s: %s",
+                    chat_id,
+                    send_err,
+                )
     except Exception as e:  # pragma: no cover
         logger.error(f"❌ Ошибка daily-аудита абонементов: {e}", exc_info=True)
 

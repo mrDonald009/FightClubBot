@@ -57,6 +57,15 @@ from .global_freeze import (
     parse_training_datetime_compact,
     training_datetime_compact,
 )
+from .coach_absence import (
+    apply_coach_absence,
+    deactivate_coach_absence_and_migrate,
+    get_subscription_coach_id,
+    is_training_in_coach_absence,
+    is_training_in_coach_absence_for_subscription,
+    list_active_coach_absences_overlapping_range,
+    subscription_belongs_to_coach,
+)
 from .auto_deduct import auto_deduct_daily_trainings
 from .close_unmarked_attendance import (
     close_unmarked_attendance_after_grace,
@@ -123,6 +132,13 @@ __all__ = [
     "list_active_global_freezes_overlapping_range",
     "parse_training_datetime_compact",
     "training_datetime_compact",
+    "apply_coach_absence",
+    "deactivate_coach_absence_and_migrate",
+    "get_subscription_coach_id",
+    "is_training_in_coach_absence",
+    "is_training_in_coach_absence_for_subscription",
+    "list_active_coach_absences_overlapping_range",
+    "subscription_belongs_to_coach",
     "auto_deduct_daily_trainings",
     "close_unmarked_attendance_after_grace",
     "lock_attendances_after_calendar_day_end",

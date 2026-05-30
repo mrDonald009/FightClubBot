@@ -19,7 +19,7 @@ def require_role(*allowed_roles: str):
         *allowed_roles: Разрешенные роли
         
     Example:
-        @require_role('coach', 'admin')
+        @require_role('coach', 'admin')  # staff: coach и admin
         async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ...
     """
