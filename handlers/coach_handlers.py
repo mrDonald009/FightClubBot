@@ -2885,9 +2885,11 @@ async def handle_calendar_individual_book_start(
             )
             if not time_kb:
                 await query.edit_message_text(
+                    f"{CAL_BOOK_ADD_ICON} <b>Индивидуальная тренировка</b>\n\n"
                     f"📅 <b>{day:02d}.{month:02d}.{year}</b>\n\n"
-                    "Нет свободных слотов на этот день "
-                    "(все заняты или время уже прошло).",
+                    "На этот день записаться уже нельзя: свободное время закончилось "
+                    "или все подходящие часы заняты.\n\n"
+                    "Выберите другой день в календаре.",
                     reply_markup=InlineKeyboardMarkup(
                         [
                             [
