@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from database.models import Athlete, Base, Coach, SportType, Subscription, Training
 from handlers.coach_handlers import (
+    _athlete_ids_booked_on_individual_slot,
     _build_cal_individual_athlete_keyboard,
     _build_cal_individual_time_keyboard,
 )
@@ -75,6 +76,45 @@ def test_build_cal_individual_time_keyboard_empty_when_day_full():
     engine.dispose()
     # Может остаться 0 или мало слотов — главное что функция не падает
     assert kb is None or isinstance(kb.inline_keyboard, list)
+
+
+def test_athlete_ids_booked_on_individual_slot():
+    s, coach, engine = _coach_session()
+    athlete = Athlete(
+        full_name="Уже записан",
+        sport_type="MMA",
+        age_group="adults",
+        created_by=coach.id,
+    )
+    s.add(athlete)
+    s.flush()
+    slot = datetime(2026, 5, 30, 16, 30, 0)
+    sub = create_subscription(
+        s,
+        athlete.id,
+        "individual",
+        "MMA",
+        discipline_key="mma_individual",
+        subscription_format="individual",
+        commit=False,
+    )
+    sub.is_active = True
+    sub.start_date = slot
+    sub.end_date = datetime(2026, 5, 30, 17, 30, 0)
+    s.commit()
+    booked = _athlete_ids_booked_on_individual_slot(s, slot)
+    assert athlete.id in booked
+    other = Athlete(
+        full_name="Свободен",
+        sport_type="MMA",
+        age_group="adults",
+        created_by=coach.id,
+    )
+    s.add(other)
+    s.commit()
+    assert other.id not in booked
+    s.close()
+    engine.dispose()
 
 
 def test_build_cal_individual_athlete_keyboard_pagination():

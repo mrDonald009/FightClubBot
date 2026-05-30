@@ -2620,6 +2620,23 @@ def _individual_booking_schema_error(session) -> Optional[str]:
     return None
 
 
+def _athlete_ids_booked_on_individual_slot(
+    session,
+    start_date: datetime,
+) -> set:
+    """athlete_id с активной individual-записью на точное время start_date."""
+    rows = (
+        session.query(Subscription.athlete_id)
+        .filter(
+            Subscription.subscription_type == "individual",
+            Subscription.is_active.is_(True),
+            Subscription.start_date == start_date,
+        )
+        .all()
+    )
+    return {int(r[0]) for r in rows}
+
+
 def _build_cal_individual_time_keyboard(
     session,
     coach_id: int,
@@ -2742,43 +2759,72 @@ async def _render_cal_individual_athlete_picker(
     start_date: datetime,
     *,
     page: int = 0,
+    warning_banner: Optional[str] = None,
+    skip_callback_answer: bool = False,
 ) -> None:
     athletes, _header = load_athletes_for_list(session, user)
     athletes.sort(key=lambda a: (a.full_name or "").strip().lower())
+    booked_ids = _athlete_ids_booked_on_individual_slot(session, start_date)
+    available = [a for a in athletes if a.id not in booked_ids]
     slot_compact = db_utils_pkg.training_datetime_compact(start_date)
     y, m, d = start_date.year, start_date.month, start_date.day
+    slot_label = start_date.strftime("%d.%m.%Y %H:%M")
+
+    back_to_time_row = [
+        InlineKeyboardButton(
+            "🔙 К времени",
+            callback_data=f"cal_ind_book_{y}_{m}_{d}",
+        )
+    ]
+    back_to_day_row = [
+        InlineKeyboardButton(
+            "🔙 К дню",
+            callback_data=f"cal_date_{y}_{m}_{d}",
+        )
+    ]
 
     if not athletes:
         await query.edit_message_text(
-            f"📅 <b>{start_date.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+            f"📅 <b>{slot_label}</b>\n\n"
             "У вас пока нет спортсменов для записи.\n"
             "Добавьте спортсмена через меню «👥 Добавить спортсмена».",
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "🔙 К дню",
-                            callback_data=f"cal_date_{y}_{m}_{d}",
-                        )
-                    ]
-                ]
-            ),
+            reply_markup=InlineKeyboardMarkup([back_to_day_row]),
+            parse_mode="HTML",
+        )
+        return
+
+    if not available:
+        message = (
+            f"{CAL_BOOK_ADD_ICON} <b>Индивидуальная тренировка</b>\n\n"
+            f"📅 {slot_label}\n\n"
+            "На это время уже записаны все ваши спортсмены.\n"
+            "Выберите другое время или другой день."
+        )
+        if warning_banner:
+            message = f"⚠️ {warning_banner}\n\n" + message
+        await query.edit_message_text(
+            message,
+            reply_markup=InlineKeyboardMarkup([back_to_time_row, back_to_day_row]),
             parse_mode="HTML",
         )
         return
 
     markup = _build_cal_individual_athlete_keyboard(
-        athletes,
+        available,
         slot_compact,
         y,
         m,
         d,
         page=page,
     )
+    message = f"{CAL_BOOK_ADD_ICON} <b>Индивидуальная тренировка</b>\n\n"
+    if warning_banner:
+        message += f"⚠️ {warning_banner}\n\n"
+    message += f"📅 {slot_label}\n\nВыберите спортсмена:"
+    if not skip_callback_answer:
+        await query.answer()
     await query.edit_message_text(
-        f"{CAL_BOOK_ADD_ICON} <b>Индивидуальная тренировка</b>\n\n"
-        f"📅 {start_date.strftime('%d.%m.%Y %H:%M')}\n\n"
-        "Выберите спортсмена:",
+        message,
         reply_markup=markup,
         parse_mode="HTML",
     )
@@ -2936,7 +2982,7 @@ async def handle_calendar_individual_time_pick(
                 return
 
             await _render_cal_individual_athlete_picker(
-                query, session, user, start_date, page=0
+                query, session, user, start_date, page=0, skip_callback_answer=True
             )
     except Exception as e:
         logger.error("cal_ind_ts: %s", e, exc_info=True)
@@ -2973,7 +3019,7 @@ async def handle_calendar_individual_athlete_page(
             if not user:
                 return
             await _render_cal_individual_athlete_picker(
-                query, session, user, start_date, page=page
+                query, session, user, start_date, page=page, skip_callback_answer=True
             )
     except Exception as e:
         logger.error("cal_ind_pg: %s", e, exc_info=True)
@@ -2984,7 +3030,6 @@ async def handle_calendar_individual_athlete_pick(
 ):
     """Календарь: спортсмен выбран → создать и активировать individual (cal_ind_a_{id}_{ts})."""
     query = update.callback_query
-    await query.answer()
     m = re.match(r"^cal_ind_a_(\d+)_(\d{12})$", (query.data or "").strip())
     if not m:
         await query.edit_message_text("❌ Некорректный выбор спортсмена.")
@@ -3056,16 +3101,33 @@ async def handle_calendar_individual_athlete_pick(
                 .first()
             )
             if dup:
-                await query.edit_message_text(
-                    "❌ У спортсмена уже есть запись на это время.",
-                    reply_markup=_build_cal_individual_time_keyboard(
-                        session,
-                        coach_id,
-                        sport_type,
-                        start_date.year,
-                        start_date.month,
-                        start_date.day,
-                    ),
+                slot_label = start_date.strftime("%d.%m.%Y %H:%M")
+                athlete_name = html.escape((athlete.full_name or "Спортсмен").strip())
+                await query.answer(
+                    f"У {athlete.full_name or _surname_initials(athlete.full_name)} "
+                    f"уже есть запись на {slot_label}.",
+                    show_alert=True,
+                )
+                coach_user = user
+                if isinstance(user, Coach):
+                    coach_user = (
+                        session.query(Coach)
+                        .options(joinedload(Coach.sport_type_rel))
+                        .filter_by(id=user.id)
+                        .first()
+                    )
+                warning = (
+                    f"<b>{athlete_name}</b> уже записан на {slot_label}. "
+                    "Выберите другого спортсмена или другое время."
+                )
+                await _render_cal_individual_athlete_picker(
+                    query,
+                    session,
+                    coach_user,
+                    start_date,
+                    page=0,
+                    warning_banner=warning,
+                    skip_callback_answer=True,
                 )
                 return
 
@@ -3081,6 +3143,7 @@ async def handle_calendar_individual_athlete_pick(
                 responsible_coach_id=coach_id,
             )
             session.flush()
+            await query.answer()
             await _finalize_subscription_activation(
                 update,
                 context,
