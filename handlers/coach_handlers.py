@@ -2371,85 +2371,29 @@ async def render_calendar_day_view(
             athlete_lines = []
             athlete_count = 0
             if is_individual_slot:
-                subs_q = (
-                    session.query(Subscription)
-                    .join(Athlete, Subscription.athlete_id == Athlete.id)
-                    .filter(
-                        Subscription.sport_type == slot.sport_type,
-                        func.date(Subscription.start_date) <= training_date_only,
-                        func.date(Subscription.end_date) >= training_date_only,
-                    )
+                if not training:
+                    continue
+                for_history = training_date_only < now.date()
+                athletes, attendance_map = fetch_athletes_for_training_slot(
+                    session,
+                    training,
+                    for_history=for_history,
                 )
-                slot_key = slot.training_datetime.strftime("%Y-%m-%d %H:%M")
-                subs_q = subs_q.filter(
-                    Subscription.subscription_type == "individual",
-                    func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
-                )
-                subs = subs_q.all()
-                if subs:
-                    athlete_count = len(subs)
-                    athlete_ids = [sub.athlete_id for sub in subs]
-                    athletes_map = {
-                        a.id: a
-                        for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
-                    }
-                    sub_ids = [s.id for s in subs]
-                    slot_training_ids = individual_slot_training_ids(session, training)
-                    att_by_sub = {
-                        a.subscription_id: a
-                        for a in session.query(Attendance).filter(
-                            Attendance.training_id.in_(slot_training_ids),
-                            Attendance.subscription_id.in_(sub_ids),
-                        ).all()
-                    }
-                    for sub in subs:
-                        ath = athletes_map.get(sub.athlete_id)
-                        if not ath:
-                            continue
-                        att = att_by_sub.get(sub.id)
-                        status_icon = attendance_icon_for_slot(
-                            att, slot.training_datetime, now=now
-                        )
-                        age_suffix = format_athlete_age_suffix(
-                            getattr(ath, "age_group", None)
-                        )
-                        athlete_lines.append(
-                            f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}"
-                            f"{html.escape(age_suffix)}\n"
-                        )
-                else:
-                    slot_training_ids = individual_slot_training_ids(session, training)
-                    slot_atts = (
-                        session.query(Attendance)
-                        .filter(Attendance.training_id.in_(slot_training_ids))
-                        .order_by(Attendance.created_at.asc())
-                        .all()
+                athlete_count = len(athletes)
+                for athlete in athletes[:10]:
+                    attendance = attendance_map.get(athlete.id)
+                    status_icon = attendance_icon_for_slot(
+                        attendance, slot.training_datetime, now=now
                     )
-                    if slot_atts:
-                        by_athlete = {}
-                        for att in slot_atts:
-                            by_athlete[att.athlete_id] = att
-                        fallback_atts = list(by_athlete.values())
-                        athlete_count = len(fallback_atts)
-                        athlete_ids = [att.athlete_id for att in fallback_atts]
-                        athletes_map = {
-                            a.id: a
-                            for a in session.query(Athlete).filter(Athlete.id.in_(athlete_ids)).all()
-                        }
-                        for att in fallback_atts:
-                            ath = athletes_map.get(att.athlete_id)
-                            if not ath:
-                                continue
-                            status_icon = attendance_icon_for_slot(
-                                att, slot.training_datetime, now=now
-                            )
-                            age_suffix = format_athlete_age_suffix(
-                                getattr(ath, "age_group", None)
-                            )
-                            athlete_lines.append(
-                                f"    {status_icon} {html.escape(_surname_initials(ath.full_name))}"
-                                f"{html.escape(age_suffix)}\n"
-                            )
+                    age_suffix = format_athlete_age_suffix(
+                        getattr(athlete, "age_group", None)
+                    )
+                    athlete_lines.append(
+                        f"    {status_icon} {html.escape(_surname_initials(athlete.full_name))}"
+                        f"{html.escape(age_suffix)}\n"
+                    )
+                if len(athletes) > 10:
+                    athlete_lines.append(f"    ... и еще {len(athletes) - 10}\n")
             else:
                 slot_training = training or resolve_attendance_slot_training(
                     session, slot, user.id

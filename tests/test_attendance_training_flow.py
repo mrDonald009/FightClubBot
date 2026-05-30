@@ -8,10 +8,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from database.models import Athlete, Base, Coach, SportType, Subscription, Training
+from database.models import Athlete, Attendance, Base, Coach, SportType, Subscription, Training
 from services.attendance_training_flow import (
     ATTENDANCE_LIST_PAGE_SIZE,
     _surname_initials_button_label,
+    athlete_subscription_for_attendance_slot,
     build_step2_message_and_keyboard_rows,
     coach_training_access_error,
     fetch_athletes_for_training_slot,
@@ -375,6 +376,202 @@ def test_fetch_athletes_individual_slot_lists_all_ages_same_start():
     athletes, _ = fetch_athletes_for_training_slot(session, training)
     names = {a.full_name for a in athletes}
     assert names == {"Попов Алексей Сергеевич", "Морозов Никита Иванович"}
+
+    session.close()
+
+
+@pytest.mark.db
+def test_fetch_athletes_individual_slot_fallbacks_to_existing_attendance():
+    """Если individual-абонемент не матчится, но в слоте уже есть Attendance — спортсмен показывается."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    st = SportType(name="MMA", display_name="MMA")
+    session.add(st)
+    session.flush()
+    coach = Coach(telegram_id=9003, sport_type_id=st.id, sport_type="MMA")
+    session.add(coach)
+    session.flush()
+
+    slot_start = datetime(2026, 5, 11, 15, 30, 0)
+    slot_end = slot_start + timedelta(hours=1, minutes=30)
+
+    athlete = Athlete(
+        full_name="Иванов Иван Петрович",
+        age_group="adults",
+        sport_type="MMA",
+        created_by=coach.id,
+    )
+    session.add(athlete)
+    session.flush()
+
+    # Подписка не individual и не матчится по правилам слота.
+    sub = Subscription(
+        athlete_id=athlete.id,
+        discipline_key="mma_monthly",
+        sport_type="MMA",
+        subscription_type="monthly",
+        start_date=datetime(2026, 5, 1, 0, 0, 0),
+        end_date=datetime(2026, 5, 31, 23, 59, 59),
+        is_active=True,
+        trainings_total=12,
+        trainings_remaining=9,
+    )
+    session.add(sub)
+    session.flush()
+
+    training = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=slot_start,
+        coach_id=coach.id,
+        training_format="individual",
+        is_cancelled=False,
+    )
+    session.add(training)
+    session.flush()
+
+    session.add(
+        Attendance(
+            athlete_id=athlete.id,
+            training_id=training.id,
+            subscription_id=sub.id,
+            attended=True,
+            marked_by=coach.telegram_id,
+        )
+    )
+    session.commit()
+
+    athletes, attendance_map = fetch_athletes_for_training_slot(session, training, coach_id=coach.id)
+    assert [a.full_name for a in athletes] == ["Иванов Иван Петрович"]
+    assert athlete.id in attendance_map
+    assert attendance_map[athlete.id].attended is True
+
+    session.close()
+
+
+@pytest.mark.db
+def test_fetch_individual_slot_includes_subscription_without_is_active_filter():
+    """Individual-слот: как в календаре, is_active не фильтрует бронь на точное время."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    st = SportType(name="MMA", display_name="MMA")
+    session.add(st)
+    session.flush()
+    coach = Coach(telegram_id=9004, sport_type_id=st.id, sport_type="MMA")
+    session.add(coach)
+    session.flush()
+
+    slot_start = datetime(2026, 5, 30, 15, 30, 0)
+    slot_end = slot_start + timedelta(hours=1, minutes=30)
+
+    athlete = Athlete(
+        full_name="Петров Петр Петрович",
+        age_group="adults",
+        sport_type="MMA",
+        created_by=coach.id,
+    )
+    session.add(athlete)
+    session.flush()
+
+    session.add(
+        Subscription(
+            athlete_id=athlete.id,
+            discipline_key="mma_ind_slot",
+            sport_type="MMA",
+            subscription_type="individual",
+            start_date=slot_start,
+            end_date=slot_end,
+            is_active=False,
+            trainings_total=1,
+            trainings_remaining=0,
+        )
+    )
+    session.flush()
+
+    training = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=slot_start,
+        coach_id=coach.id,
+        training_format="individual",
+        is_cancelled=False,
+    )
+    session.add(training)
+    session.commit()
+
+    athletes, _ = fetch_athletes_for_training_slot(session, training)
+    assert [a.full_name for a in athletes] == ["Петров Петр Петрович"]
+
+    session.close()
+
+
+@pytest.mark.db
+def test_athlete_subscription_for_individual_slot_uses_attendance_fallback():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+
+    st = SportType(name="MMA", display_name="MMA")
+    session.add(st)
+    session.flush()
+    coach = Coach(telegram_id=9005, sport_type_id=st.id, sport_type="MMA")
+    session.add(coach)
+    session.flush()
+
+    slot_start = datetime(2026, 5, 30, 16, 30, 0)
+
+    athlete = Athlete(
+        full_name="Сидоров Сидор Сидорович",
+        age_group="children",
+        sport_type="MMA",
+        created_by=coach.id,
+    )
+    session.add(athlete)
+    session.flush()
+
+    sub = Subscription(
+        athlete_id=athlete.id,
+        discipline_key="mma_monthly",
+        sport_type="MMA",
+        subscription_type="monthly",
+        start_date=datetime(2026, 5, 1, 0, 0, 0),
+        end_date=datetime(2026, 5, 31, 23, 59, 59),
+        is_active=True,
+        trainings_total=12,
+        trainings_remaining=8,
+    )
+    session.add(sub)
+    session.flush()
+
+    training = Training(
+        sport_type="MMA",
+        age_group="adults",
+        training_date=slot_start,
+        coach_id=coach.id,
+        training_format="individual",
+        is_cancelled=False,
+    )
+    session.add(training)
+    session.flush()
+
+    session.add(
+        Attendance(
+            athlete_id=athlete.id,
+            training_id=training.id,
+            subscription_id=sub.id,
+            attended=True,
+            marked_by=coach.telegram_id,
+        )
+    )
+    session.commit()
+
+    resolved = athlete_subscription_for_attendance_slot(session, athlete, training)
+    assert resolved is not None
+    assert resolved.id == sub.id
 
     session.close()
 

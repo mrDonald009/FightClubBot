@@ -12,7 +12,10 @@ from database.db_utils import (
     get_user_role,
     is_training_in_global_freeze,
 )
-from database.db_utils.training_slots import individual_slot_training_ids
+from database.db_utils.training_slots import (
+    TRAINING_FORMAT_INDIVIDUAL,
+    individual_slot_training_ids,
+)
 from database.db_utils.visit_history import upsert_visit_history_for_training
 from utils.subscription_resolve import (
     active_subscriptions_all,
@@ -23,6 +26,7 @@ from utils.coach_sport import coach_sport_type_name
 from utils.time_utils import now_moscow
 from utils.attendance_display import attendance_icon_for_training
 from services.attendance_training_flow import (
+    athlete_subscription_for_attendance_slot,
     build_step2_message_and_keyboard_rows,
     coach_training_access_error,
     fetch_athletes_for_training_slot,
@@ -206,11 +210,15 @@ async def _run_attendance_mark_query(
         if err_coach:
             return err_coach
 
-    subscription = active_subscription_for_training(athlete, training)
+    subscription = athlete_subscription_for_attendance_slot(session, athlete, training)
     if not subscription:
         return "❌ Нет активного абонемента для этой тренировки"
 
-    if not subscription.is_active:
+    is_individual_slot = (
+        (getattr(training, "training_format", None) or "").strip().lower()
+        == TRAINING_FORMAT_INDIVIDUAL
+    )
+    if not is_individual_slot and not subscription.is_active:
         return "❌ Абонемент не активен"
 
     training_start = training.training_date

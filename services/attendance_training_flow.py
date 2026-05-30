@@ -353,12 +353,10 @@ def fetch_athletes_for_training_slot(
             func.date(Subscription.end_date) >= training_day,
         )
     )
-    if not for_history:
-        athletes_query = athletes_query.filter(Subscription.is_active.is_(True))
-    if coach_id is not None:
+    if coach_id is not None and not is_individual_slot:
         athletes_query = athletes_query.filter(Athlete.created_by == coach_id)
-    # Как в «Мой календарь»: индивидуальный слот — только абонемент individual с тем же началом;
-    # групповой — без individual (иначе monthly попадает на все слоты дня).
+    # Как в «Мой календарь»: individual — точное время start_date, без is_active;
+    # групповой — без individual и с is_active (кроме for_history).
     if is_individual_slot:
         slot_key = training.training_date.strftime("%Y-%m-%d %H:%M")
         athletes_query = athletes_query.filter(
@@ -366,6 +364,8 @@ def fetch_athletes_for_training_slot(
             func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
         )
     else:
+        if not for_history:
+            athletes_query = athletes_query.filter(Subscription.is_active.is_(True))
         athletes_query = athletes_query.filter(
             Athlete.age_group == training.age_group,
             or_(
@@ -376,6 +376,33 @@ def fetch_athletes_for_training_slot(
     athletes_query = athletes_query.order_by(Athlete.full_name.asc())
     athletes = athletes_query.all()
     athlete_ids = [a.id for a in athletes]
+    fallback_attendances: List[Attendance] = []
+
+    if is_individual_slot and not athlete_ids and getattr(training, "id", None):
+        slot_tids = individual_slot_training_ids(session, training)
+        fallback_attendances = (
+            session.query(Attendance)
+            .filter(Attendance.training_id.in_(slot_tids))
+            .order_by(Attendance.created_at.asc())
+            .all()
+        )
+        if fallback_attendances:
+            fallback_ids: List[int] = []
+            seen_ids: Set[int] = set()
+            for att in fallback_attendances:
+                aid = att.athlete_id
+                if aid in seen_ids:
+                    continue
+                seen_ids.add(aid)
+                fallback_ids.append(aid)
+            if fallback_ids:
+                athletes = (
+                    session.query(Athlete)
+                    .filter(Athlete.id.in_(fallback_ids))
+                    .order_by(Athlete.full_name.asc())
+                    .all()
+                )
+                athlete_ids = [a.id for a in athletes]
     attendance_map: Dict[int, Attendance] = {}
     if athlete_ids:
         training_id = getattr(training, "id", None)
@@ -406,6 +433,10 @@ def fetch_athletes_for_training_slot(
         else:
             existing = []
         attendance_map = {a.athlete_id: a for a in existing}
+        if fallback_attendances:
+            for att in fallback_attendances:
+                if att.athlete_id in athlete_ids:
+                    attendance_map[att.athlete_id] = att
     return athletes, attendance_map
 
 
@@ -468,8 +499,6 @@ def athlete_subscription_for_attendance_slot(
         func.date(Subscription.start_date) <= training_day,
         func.date(Subscription.end_date) >= training_day,
     )
-    if not for_history:
-        q = q.filter(Subscription.is_active.is_(True))
     if is_individual_slot:
         slot_key = training.training_date.strftime("%Y-%m-%d %H:%M")
         q = q.filter(
@@ -477,6 +506,8 @@ def athlete_subscription_for_attendance_slot(
             func.strftime("%Y-%m-%d %H:%M", Subscription.start_date) == slot_key,
         )
     else:
+        if not for_history:
+            q = q.filter(Subscription.is_active.is_(True))
         athlete_group = (athlete.age_group or "").strip()
         training_group = (training.age_group or "").strip()
         if athlete_group != training_group:
@@ -488,6 +519,14 @@ def athlete_subscription_for_attendance_slot(
             ),
         )
     subs = q.order_by(Subscription.id.desc()).all()
+    if not subs and is_individual_slot:
+        att = _attendance_for_athlete_on_training(session, athlete.id, training)
+        if att and att.subscription_id:
+            return (
+                session.query(Subscription)
+                .filter_by(id=att.subscription_id)
+                .first()
+            )
     if not subs:
         return None
     if is_individual_slot:
