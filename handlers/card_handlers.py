@@ -46,7 +46,14 @@ from database.db_utils.training_slots import (
 )
 from database.db_utils.visit_history import upsert_visit_history_for_training
 from typing import List, Optional, Union
-from services.permissions import is_staff, can_edit_athlete, is_admin, is_athlete, is_coach
+from services.permissions import (
+    is_staff,
+    can_edit_athlete,
+    can_access_subscription_for_staff,
+    is_admin,
+    is_athlete,
+    is_coach,
+)
 
 from sqlalchemy import and_, exists, func, or_, text
 from sqlalchemy.orm import joinedload
@@ -1401,19 +1408,15 @@ async def handle_activation_calendar_nav(update: Update, context: ContextTypes.D
 
     with get_db_session() as session:
         user = get_user_by_telegram_id(session, query.from_user.id)
-        if not is_staff(user):
-            await query.edit_message_text("❌ У вас нет доступа")
-            return
-
         subscription = session.query(Subscription).filter_by(id=subscription_id).first()
         if not subscription:
             await query.edit_message_text("❌ Абонемент не найден")
             return
+        if not can_access_subscription_for_staff(user, subscription):
+            await query.edit_message_text("❌ У вас нет доступа к этому абонементу")
+            return
 
         athlete = subscription.athlete
-        if isinstance(user, Coach) and athlete.created_by != user.id:
-            await query.edit_message_text("❌ Вы не можете изменять этот абонемент")
-            return
 
         sport_type = subscription.sport_type or athlete.sport_type
         age_group = athlete.age_group
@@ -4393,12 +4396,10 @@ def _load_athlete_for_edit(session, user, athlete_id: int):
     Проверка доступа к редактированию.
     Возвращает (athlete, error_text) — при ошибке athlete=None.
     """
-    if not is_staff(user):
-        return None, "❌ У вас нет доступа"
     athlete = session.query(Athlete).filter_by(id=athlete_id).first()
     if not athlete:
         return None, "❌ Спортсмен не найден"
-    if isinstance(user, Coach) and athlete.created_by != user.id:
+    if not can_edit_athlete(user, athlete):
         return None, "❌ Вы не можете редактировать этого спортсмена"
     return athlete, None
 

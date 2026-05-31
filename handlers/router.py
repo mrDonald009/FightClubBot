@@ -15,7 +15,15 @@ from telegram.ext import (
 from core.application import HandlerRegistrar
 from core.database import get_db_session
 from services.user_service import UserService
-from services.permissions import is_staff
+from services.permissions import (
+    is_staff,
+    is_coach,
+    can_manage_global_freeze,
+    can_use_coach_operational_tools,
+    GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE,
+    COACH_ONLY_MESSAGE,
+)
+from keyboards.admin_kb import ADMIN_MENU_BUTTONS
 from services.subscription_service import SubscriptionService
 from services.subscription_audit_service import run_subscription_audit, format_audit_report
 from services.global_freeze_service import (
@@ -28,7 +36,7 @@ from services.global_freeze_service import (
     overlapping_global_freeze_ids,
     parse_ui_date as _parse_ui_date,
 )
-from handlers.start import start
+from handlers.start import start, show_role_menu
 from handlers.coach_handlers import (
     coach_menu,
     add_athlete_start,
@@ -169,19 +177,17 @@ async def check_all_subscriptions(update, context):
     """
     user_id = update.effective_user.id
 
-    # Проверяем права (только админ или тренер)
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await update.message.reply_text("❌ У вас нет прав для этой команды")
+            if not can_use_coach_operational_tools(user):
+                await update.message.reply_text(COACH_ONLY_MESSAGE)
                 return
     except Exception as e:
         logger.error(f"Ошибка при проверке прав пользователя {user_id}: {e}", exc_info=True)
         await update.message.reply_text("❌ Произошла ошибка при проверке прав")
         return
 
-    # Выполняем проверку
     try:
         updated_count = SubscriptionService.check_and_update_subscriptions()
         await update.message.reply_text(
@@ -196,16 +202,17 @@ async def check_all_subscriptions(update, context):
 
 async def audit_subscriptions_now(update, context):
     """
-    Ручной запуск read-only аудита абонементов.
-    Требует права тренера или администратора.
+    Ручной запуск read-only аудита абонементов (только администратор).
     """
     user_id = update.effective_user.id
 
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await update.message.reply_text("❌ У вас нет прав для этой команды")
+            if not can_manage_global_freeze(user):
+                await update.message.reply_text(
+                    "❌ Аудит абонементов клуба доступен только администратору."
+                )
                 return
     except Exception as e:
         logger.error(f"Ошибка при проверке прав пользователя {user_id}: {e}", exc_info=True)
@@ -236,8 +243,8 @@ async def create_global_freeze(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await update.message.reply_text("❌ У вас нет прав для этой команды")
+            if not can_manage_global_freeze(user):
+                await update.message.reply_text(GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE)
                 return
     except Exception as e:
         logger.error(f"Ошибка при проверке прав пользователя {user_id}: {e}", exc_info=True)
@@ -354,8 +361,8 @@ async def start_global_freeze_flow(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await update.message.reply_text("❌ У вас нет прав для этой функции")
+            if not can_manage_global_freeze(user):
+                await update.message.reply_text(GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE)
                 return ConversationHandler.END
             status_block = _format_current_global_freezes_html(session)
     except Exception as e:
@@ -390,8 +397,10 @@ async def handle_global_freeze_action_history(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
+            if not can_manage_global_freeze(user):
+                await _gf_safe_edit(
+                    update, context, GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE
+                )
                 return ConversationHandler.END
             text = _format_global_freeze_history_html(session)
     except Exception as e:
@@ -412,8 +421,10 @@ async def handle_global_freeze_action_create(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
+            if not can_manage_global_freeze(user):
+                await _gf_safe_edit(
+                    update, context, GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE
+                )
                 return ConversationHandler.END
             status_block = _format_current_global_freezes_html(session)
     except Exception as e:
@@ -448,8 +459,10 @@ async def handle_global_freeze_action_cancel(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
+            if not can_manage_global_freeze(user):
+                await _gf_safe_edit(
+                    update, context, GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE
+                )
                 return ConversationHandler.END
             rows = _list_active_global_freezes(session)
             # Важно: после выхода из `with` ORM-объекты могут стать detached.
@@ -504,8 +517,10 @@ async def handle_gf_deact_pick(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
+            if not can_manage_global_freeze(user):
+                await _gf_safe_edit(
+                    update, context, GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE
+                )
                 return ConversationHandler.END
             from database.models import GlobalFreeze
 
@@ -562,8 +577,10 @@ async def handle_gf_deact_confirm(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await _gf_safe_edit(update, context, "❌ У вас нет прав для этой функции")
+            if not can_manage_global_freeze(user):
+                await _gf_safe_edit(
+                    update, context, GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE
+                )
                 return ConversationHandler.END
             result = deactivate_global_freeze_service(session, gf_id)
     except Exception as e:
@@ -807,8 +824,8 @@ async def deactivate_global_freeze(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await update.message.reply_text("❌ У вас нет прав для этой команды")
+            if not can_manage_global_freeze(user):
+                await update.message.reply_text(GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE)
                 return
 
             result = deactivate_global_freeze_service(session, gf_id)
@@ -853,8 +870,8 @@ async def global_freeze_history(update, context):
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await update.message.reply_text("❌ У вас нет прав для этой команды")
+            if not can_manage_global_freeze(user):
+                await update.message.reply_text(GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE)
                 return
             text = _format_global_freeze_history_html(session)
             await update.message.reply_text(text, parse_mode="HTML")
@@ -1191,7 +1208,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
     registrar.register(CommandHandler("start", start))
 
     # Обработчик команды /menu
-    registrar.register(CommandHandler("menu", coach_menu))
+    registrar.register(CommandHandler("menu", show_role_menu))
 
     # Команда для проверки абонементов
     registrar.register(CommandHandler("check_subs", check_all_subscriptions))

@@ -28,7 +28,11 @@ from services.coach_absence_service import (
     parse_ui_date,
 )
 from services.user_service import UserService
-from services.permissions import is_staff, is_coach, is_admin
+from services.permissions import (
+    can_manage_coach_absence_flow,
+    is_coach,
+    COACH_ABSENCE_DENIED_MESSAGE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +66,8 @@ async def start_coach_absence_flow(update: Update, context: ContextTypes.DEFAULT
     try:
         with get_db_session() as session:
             user = UserService.get_user_by_telegram_id(session, user_id)
-            if not is_staff(user):
-                await update.message.reply_text("❌ У вас нет доступа")
+            if not can_manage_coach_absence_flow(user):
+                await update.message.reply_text(COACH_ABSENCE_DENIED_MESSAGE)
                 return ConversationHandler.END
             if is_coach(user):
                 coach = session.query(Coach).filter_by(telegram_id=user_id).first()

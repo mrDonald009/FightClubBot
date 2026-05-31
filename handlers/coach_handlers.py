@@ -24,7 +24,14 @@ from database.db_utils.subscription_activation_payment import (
     record_payment_on_subscription_activation,
 )
 from typing import List, Optional, Tuple, Union
-from services.permissions import is_staff, is_coach, role_menu_genitive_ru
+from services.permissions import (
+    is_coach,
+    can_edit_athlete,
+    can_access_coach_menu,
+    COACH_ONLY_MESSAGE,
+    role_menu_genitive_ru,
+)
+from keyboards.coach_kb import COACH_MENU_BUTTONS
 from utils.age_groups import AGE_GROUP_CODES, format_age_group_label, normalize_age_group
 from utils.coach_sport import coach_sport_type_name
 from utils.discipline_keys import discipline_key_for
@@ -209,16 +216,8 @@ def load_athletes_for_list(session, user) -> Tuple[List[Athlete], str]:
     ATHLETE_TRAINING_DATE   # выбор первой даты тренировки (inline-календарь)
 ) = range(8)
 
-# Список кнопок меню для проверки прерывания
-MENU_BUTTONS = [
-    "👥 Добавить спортсмена",
-    "📋 Список спортсменов",
-    "📝 Отметить посещения",
-    "📅 Мой календарь",
-    "🌍 Массовая заморозка",
-    "🤒 Отсутствие тренера",
-    "📊 Статистика",
-]
+# Список кнопок меню для проверки прерывания (см. keyboards.coach_kb.COACH_MENU_BUTTONS)
+MENU_BUTTONS = COACH_MENU_BUTTONS
 
 
 def is_phone_number(text):
@@ -327,9 +326,9 @@ async def coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, user_id)
 
-            if not user or get_user_role(user) != "coach":
+            if not can_access_coach_menu(user):
                 print(f"❌ У ПОЛЬЗОВАТЕЛЬ {user_id} НЕТ ДОСТУПА К МЕНЮ ТРЕНЕРА")
-                await update.message.reply_text("❌ У вас нет доступа к этому меню")
+                await update.message.reply_text(COACH_ONLY_MESSAGE)
                 return
 
             reply_markup = get_coach_main_menu()
@@ -365,14 +364,13 @@ async def add_athlete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Пользователь не найден в базе данных. Используйте /start для регистрации.")
                 return ConversationHandler.END
 
-            user_role = get_user_role(user)
-            logger.debug("add_athlete_start user_id=%s role=%s", user_id, user_role)
-
-            if user_role != "coach":
-                logger.info("add_athlete_start denied: wrong role user_id=%s role=%s", user_id, user_role)
-                await update.message.reply_text(
-                    "❌ Добавление спортсменов доступно только тренерам. Администратор использует своё меню."
+            if not is_coach(user):
+                logger.info(
+                    "add_athlete_start denied: not coach user_id=%s role=%s",
+                    user_id,
+                    get_user_role(user),
                 )
+                await update.message.reply_text(COACH_ONLY_MESSAGE)
                 return ConversationHandler.END
 
             if not isinstance(user, Coach):
@@ -1530,7 +1528,7 @@ async def athletes_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 type(user).__name__ if user else None,
             )
 
-            if not user or get_user_role(user) != 'coach':
+            if not user or not is_coach(user):
                 callback_alert = "❌ У вас нет доступа"
                 error_reply = "❌ У вас нет доступа к этому меню"
             else:
@@ -1687,7 +1685,7 @@ async def show_active_inactive_submenu(update: Update, context: ContextTypes.DEF
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, user_id)
 
-            if not user or get_user_role(user) != 'coach':
+            if not user or not is_coach(user):
                 if update.callback_query:
                     await update.callback_query.answer("❌ У вас нет доступа")
                 return
@@ -1783,7 +1781,7 @@ async def show_athletes_list_by_filter(
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, user_id)
 
-            if not user or get_user_role(user) != 'coach':
+            if not user or not is_coach(user):
                 if update.callback_query:
                     await update.callback_query.answer("❌ У вас нет доступа")
                 else:
@@ -2039,7 +2037,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, user_id)
 
-            if not user or get_user_role(user) != 'coach':
+            if not user or not is_coach(user):
                 if query:
                     await query.edit_message_text("❌ У вас нет доступа к этому меню")
                 else:
@@ -2153,7 +2151,7 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, user_id)
 
-            if not user or get_user_role(user) != 'coach':
+            if not user or not is_coach(user):
                 callback_alert = "❌ У вас нет доступа"
                 error_reply = "❌ У вас нет доступа к этому меню"
             else:
@@ -2182,7 +2180,7 @@ async def show_coach_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE
                         current_year = year
 
                     sport_type_name = coach_sport_type_name(user)
-                    if get_user_role(user) == "coach" and not sport_type_name:
+                    if is_coach(user) and not sport_type_name:
                         callback_alert = "❌ У вас не указан вид спорта"
                         error_reply = (
                             "❌ У вас не указан вид спорта. Обратитесь к администратору."
@@ -2520,7 +2518,7 @@ async def handle_calendar_date_click(update: Update, context: ContextTypes.DEFAU
             selected_date = datetime(year, month, day).date()
 
             user = get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) != "coach":
+            if not user or not is_coach(user):
                 await query.answer("❌ У вас нет доступа")
                 return
 
@@ -2801,7 +2799,7 @@ async def handle_calendar_individual_book_start(
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) != "coach":
+            if not user or not is_coach(user):
                 await query.edit_message_text("❌ Доступно только тренерам")
                 return
             if isinstance(user, Coach):
@@ -2898,7 +2896,7 @@ async def handle_calendar_individual_time_pick(
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, user_id)
-            if not user or get_user_role(user) != "coach":
+            if not user or not is_coach(user):
                 await query.edit_message_text("❌ Доступно только тренерам")
                 return
             if isinstance(user, Coach):
@@ -2967,7 +2965,7 @@ async def handle_calendar_individual_athlete_page(
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not user or get_user_role(user) != "coach":
+            if not user or not is_coach(user):
                 await query.edit_message_text("❌ Доступно только тренерам")
                 return
             if isinstance(user, Coach):
@@ -3000,19 +2998,15 @@ async def handle_calendar_individual_athlete_pick(
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not is_staff(user):
-                await query.edit_message_text("❌ У вас нет доступа")
-                return
-
             athlete = session.query(Athlete).filter_by(id=athlete_id).first()
             if not athlete:
                 await query.edit_message_text("❌ Спортсмен не найден")
                 return
-            if isinstance(user, Coach) and athlete.created_by != user.id:
-                await query.edit_message_text("❌ Это не ваш спортсмен")
+            if not can_edit_athlete(user, athlete):
+                await query.edit_message_text("❌ У вас нет доступа к этому спортсмену")
                 return
 
-            coach_id = user.id if isinstance(user, Coach) else athlete.created_by
+            coach_id = user.id if is_coach(user) else athlete.created_by
             sport_type = coach_sport_type_name(user) if isinstance(user, Coach) else athlete.sport_type
             if not sport_type:
                 sport_type = (athlete.sport_type or "").strip()
@@ -3153,7 +3147,7 @@ def _parse_cal_group_slot_token(token: str) -> Tuple[Optional[datetime], Optiona
 
 def _calendar_load_coach(session, user_id: int) -> Tuple[Optional[Coach], Optional[str]]:
     user = get_user_by_telegram_id(session, user_id)
-    if not user or get_user_role(user) != "coach":
+    if not user or not is_coach(user):
         return None, "❌ Доступно только тренерам"
     if isinstance(user, Coach):
         user = (
@@ -3638,19 +3632,15 @@ async def handle_calendar_group_athlete_pick(
     try:
         with get_db_session() as session:
             user = get_user_by_telegram_id(session, query.from_user.id)
-            if not is_staff(user):
-                await query.edit_message_text("❌ У вас нет доступа")
-                return
-
             athlete = session.query(Athlete).filter_by(id=athlete_id).first()
             if not athlete:
                 await query.edit_message_text("❌ Спортсмен не найден")
                 return
-            if isinstance(user, Coach) and athlete.created_by != user.id:
-                await query.edit_message_text("❌ Это не ваш спортсмен")
+            if not can_edit_athlete(user, athlete):
+                await query.edit_message_text("❌ У вас нет доступа к этому спортсмену")
                 return
 
-            coach_id = user.id if isinstance(user, Coach) else athlete.created_by
+            coach_id = user.id if is_coach(user) else athlete.created_by
             sport_type = coach_sport_type_name(user) if isinstance(user, Coach) else athlete.sport_type
             if not sport_type:
                 sport_type = (athlete.sport_type or "").strip()

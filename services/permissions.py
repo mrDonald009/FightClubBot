@@ -53,6 +53,53 @@ def is_staff(user: object) -> bool:
     return is_coach(user) or is_admin(user)
 
 
+def can_manage_global_freeze(user: object) -> bool:
+    """Массовая заморозка клуба — только администратор."""
+    return is_admin(user)
+
+
+GLOBAL_FREEZE_ADMIN_ONLY_MESSAGE = (
+    "❌ Массовая заморозка клуба доступна только администратору.\n\n"
+    "Для своей группы: «🤒 Отсутствие тренера» или заморозка в карточке спортсмена."
+)
+
+COACH_ONLY_MESSAGE = (
+    "❌ Эта функция доступна только тренерам. "
+    "Администратор использует своё меню (кнопки клуба)."
+)
+
+COACH_ABSENCE_DENIED_MESSAGE = (
+    "❌ Отсутствие тренера настраивают тренер (своя группа) или администратор клуба."
+)
+
+
+def can_access_coach_menu(user: object) -> bool:
+    """Главное меню тренера и /menu для операционки."""
+    return is_coach(user)
+
+
+def can_use_coach_operational_tools(user: object) -> bool:
+    """Добавление спортсменов, посещения, календарь, статистика."""
+    return is_coach(user)
+
+
+def can_manage_coach_absence_flow(user: object) -> bool:
+    """Тренер — своё отсутствие; админ — выбор тренера."""
+    return is_coach(user) or is_admin(user)
+
+
+def can_access_subscription_for_staff(
+    user: object, subscription: object
+) -> bool:
+    """Карточка/календарь абонемента: тренер — свои спортсмены, админ — любые."""
+    if subscription is None:
+        return False
+    athlete = getattr(subscription, "athlete", None)
+    if athlete is None:
+        return is_staff(user)
+    return can_edit_athlete(user, athlete)
+
+
 def role_label_ru(role: str) -> str:
     return ROLE_LABEL_RU.get(role, role)
 

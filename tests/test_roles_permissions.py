@@ -7,7 +7,11 @@ from database.models import Admin, Athlete, Base, Coach, SportType
 from database.db_utils.users import create_user, get_user_by_telegram_id, get_user_role
 from database.db_utils.role_policy import assert_can_assign_role, validate_staff_roles_consistency
 from services.permissions import (
+    can_access_coach_menu,
     can_edit_athlete,
+    can_manage_coach_absence_flow,
+    can_manage_global_freeze,
+    can_use_coach_operational_tools,
     has_dual_staff_role,
     is_admin,
     is_coach,
@@ -26,6 +30,24 @@ def session():
     sess.commit()
     yield sess
     sess.close()
+
+
+def test_coach_operational_tools(session):
+    coach = Coach(telegram_id=1, first_name="C", sport_type="MMA", sport_type_id=1)
+    admin = Admin(telegram_id=2, first_name="A")
+    assert can_use_coach_operational_tools(coach)
+    assert can_access_coach_menu(coach)
+    assert not can_use_coach_operational_tools(admin)
+    assert not can_access_coach_menu(admin)
+    assert can_manage_coach_absence_flow(coach)
+    assert can_manage_coach_absence_flow(admin)
+
+
+def test_global_freeze_admin_only(session):
+    coach = Coach(telegram_id=1, first_name="C", sport_type="MMA", sport_type_id=1)
+    admin = Admin(telegram_id=2, first_name="A")
+    assert not can_manage_global_freeze(coach)
+    assert can_manage_global_freeze(admin)
 
 
 def test_is_staff_coach_and_admin(session):

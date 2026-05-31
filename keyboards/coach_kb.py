@@ -1,7 +1,16 @@
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-# Импорты моделей больше не нужны в этом файле
+
+# Кнопки меню тренера (прерывание диалогов, регистрация handlers)
+COACH_MENU_BUTTONS = [
+    "👥 Добавить спортсмена",
+    "📋 Список спортсменов",
+    "📝 Отметить посещения",
+    "📅 Мой календарь",
+    "🤒 Отсутствие тренера",
+    "📊 Статистика",
+]
 
 
 def coach_menu_text(
@@ -14,7 +23,9 @@ def coach_menu_text(
     role_label = (menu_role_label or "").strip() or "тренера"
     return (
         f"👋 С возвращением, {name}!\n\n"
-        f"Выберите действие в меню {role_label}:"
+        f"Меню {role_label}: ваши спортсмены, посещения, календарь, "
+        f"отсутствие (болезнь), заморозка в карточке спортсмена.\n\n"
+        f"Выберите действие:"
     )
 
 
@@ -23,10 +34,7 @@ def get_coach_main_menu():
     keyboard = [
         [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
         [KeyboardButton("📝 Отметить посещения"), KeyboardButton("📅 Мой календарь")],
-        [
-            KeyboardButton("🌍 Массовая заморозка"),
-            KeyboardButton("🤒 Отсутствие тренера"),
-        ],
+        [KeyboardButton("🤒 Отсутствие тренера")],
         [KeyboardButton("📊 Статистика")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)

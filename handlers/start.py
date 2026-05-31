@@ -4,6 +4,7 @@ from core.database import get_db_session
 from database.db_utils import get_user_by_telegram_id, get_user_role, create_athlete
 from services.permissions import ROLE_LABEL_RU, is_coach, is_admin, role_menu_genitive_ru
 from keyboards.coach_kb import get_coach_main_menu, coach_menu_text
+from keyboards.admin_kb import get_admin_main_menu
 import logging
 
 logger = logging.getLogger(__name__)
@@ -108,17 +109,31 @@ async def show_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     print(f"📋 ПОКАЗ МЕНЮ АДМИНА ДЛЯ {user_id}")
 
-    keyboard = [
-        [KeyboardButton("👥 Тренеры"), KeyboardButton("📊 Общая статистика")],
-        [KeyboardButton("💰 Финансы"), KeyboardButton("⚙️ Настройки")]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
     await update.message.reply_text(
-        "👑 Меню администратора",
-        reply_markup=reply_markup
+        "👑 Меню администратора\n\n"
+        "Массовая заморозка клуба — кнопка «🌍 Массовая заморозка».",
+        reply_markup=get_admin_main_menu(),
     )
     print(f"✅ МЕНЮ АДМИНА ОТОБРАЖЕНО ДЛЯ {user_id}")
+
+
+async def show_role_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /menu: меню по роли (тренер или администратор)."""
+    user_id = update.effective_user.id
+    try:
+        with get_db_session() as session:
+            user = get_user_by_telegram_id(session, user_id)
+            if is_coach(user):
+                await show_coach_menu(update, context)
+                return
+            if is_admin(user):
+                await show_admin_menu(update, context)
+                return
+    except Exception as e:
+        logger.error("Ошибка show_role_menu: %s", e, exc_info=True)
+    await update.message.reply_text(
+        "❌ Меню доступно тренерам и администраторам. Спортсменам — /start."
+    )
 
 
 async def show_athlete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
