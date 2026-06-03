@@ -1,12 +1,16 @@
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 
+# Кнопка меню и заголовок раздела (логика в coach_absence — без переименования БД)
+TRAINING_CANCELLATION_BUTTON = "🚫 Отмена тренировки"
+TRAINING_CANCELLATION_TITLE = "Отмена тренировки"
+
 
 def get_coach_main_menu():
     """Главное меню тренера"""
     keyboard = [
         [KeyboardButton("👥 Добавить спортсмена"), KeyboardButton("📋 Список спортсменов")],
         [KeyboardButton("📝 Отметить посещения"), KeyboardButton("📅 Мой календарь")],
-        [KeyboardButton("🤒 Отсутствие тренера"), KeyboardButton("📊 Статистика")],
+        [KeyboardButton(TRAINING_CANCELLATION_BUTTON), KeyboardButton("📊 Статистика")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 

@@ -214,13 +214,15 @@ def load_athletes_for_list(session, user) -> Tuple[List[Athlete], str]:
     ATHLETE_TRAINING_DATE   # выбор первой даты тренировки (inline-календарь)
 ) = range(8)
 
+from keyboards.coach_kb import TRAINING_CANCELLATION_BUTTON
+
 # Список кнопок меню для проверки прерывания (должен совпадать с get_coach_main_menu)
 MENU_BUTTONS = [
     "👥 Добавить спортсмена",
     "📋 Список спортсменов",
     "📝 Отметить посещения",
     "📅 Мой календарь",
-    "🤒 Отсутствие тренера",
+    TRAINING_CANCELLATION_BUTTON,
     "📊 Статистика",
 ]
 

@@ -1001,7 +1001,7 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
         (handle_ca_confirm_apply, r"^ca_apply_confirm$"),
     ):
         registrar.register(CallbackQueryHandler(_cb, pattern=_pat))
-    logger.info("✅ Зарегистрирован ConversationHandler для отсутствия тренера")
+    logger.info("✅ Зарегистрирован ConversationHandler для отмены тренировок")
 
     logger.info("📝 Регистрируем ConversationHandler для добавления спортсмена...")
     conv_handler = ConversationHandler(

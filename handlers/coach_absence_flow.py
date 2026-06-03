@@ -1,6 +1,7 @@
-"""Диалог «Отсутствие тренера» (болезнь): только абонементы этого тренера."""
+"""Диалог «Отмена тренировки»: только абонементы выбранного тренера."""
 import html
 import logging
+import re
 from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -16,6 +17,7 @@ from telegram.ext import (
 from core.database import get_db_session
 from database.models import Coach
 from handlers.coach_handlers import MENU_BUTTONS, cancel_global_freeze
+from keyboards.coach_kb import TRAINING_CANCELLATION_BUTTON, TRAINING_CANCELLATION_TITLE
 from services.coach_absence_service import (
     apply_coach_absence_service,
     ca_button_label,
@@ -77,7 +79,7 @@ async def start_coach_absence_flow(update: Update, context: ContextTypes.DEFAULT
                 context.user_data["ca_coach_id"] = coach.id
                 status = format_coach_absence_status_html(session, coach.id)
                 name = html.escape((coach.first_name or "").strip() or f"ID {coach.id}")
-                header = f"🤒 <b>Отсутствие тренера</b>\n👤 {name}\n\n{status}\n\n"
+                header = f"🚫 <b>{TRAINING_CANCELLATION_TITLE}</b>\n👤 {name}\n\n{status}\n\n"
             else:
                 coaches = list_active_coaches(session)
                 if not coaches:
@@ -96,7 +98,7 @@ async def start_coach_absence_flow(update: Update, context: ContextTypes.DEFAULT
                     [InlineKeyboardButton("❌ Отмена", callback_data="ca_cancel_flow")]
                 )
                 await update.message.reply_text(
-                    "🤒 <b>Отсутствие тренера</b>\n\nВыберите тренера:",
+                    f"🚫 <b>{TRAINING_CANCELLATION_TITLE}</b>\n\nВыберите тренера:",
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode="HTML",
                 )
@@ -107,8 +109,8 @@ async def start_coach_absence_flow(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END
 
     keyboard = [
-        [InlineKeyboardButton("➕ Зарегистрировать", callback_data="ca_action_create")],
-        [InlineKeyboardButton("❌ Отменить действующее", callback_data="ca_action_cancel")],
+        [InlineKeyboardButton("➕ Зарегистрировать отмену", callback_data="ca_action_create")],
+        [InlineKeyboardButton("↩️ Откатить действующую", callback_data="ca_action_cancel")],
         [InlineKeyboardButton("📚 История", callback_data="ca_action_history")],
         [InlineKeyboardButton("🔙 Закрыть", callback_data="ca_cancel_flow")],
     ]
@@ -130,13 +132,13 @@ async def handle_ca_pick_coach(update: Update, context: ContextTypes.DEFAULT_TYP
         status = format_coach_absence_status_html(session, cid)
         name = html.escape((coach.first_name or "").strip() if coach else f"ID {cid}")
     keyboard = [
-        [InlineKeyboardButton("➕ Зарегистрировать", callback_data="ca_action_create")],
-        [InlineKeyboardButton("❌ Отменить действующее", callback_data="ca_action_cancel")],
+        [InlineKeyboardButton("➕ Зарегистрировать отмену", callback_data="ca_action_create")],
+        [InlineKeyboardButton("↩️ Откатить действующую", callback_data="ca_action_cancel")],
         [InlineKeyboardButton("📚 История", callback_data="ca_action_history")],
         [InlineKeyboardButton("🔙 Закрыть", callback_data="ca_cancel_flow")],
     ]
     await query.edit_message_text(
-        f"🤒 <b>Отсутствие тренера</b>\n👤 {name}\n\n{status}\n\nВыберите действие:",
+        f"🚫 <b>{TRAINING_CANCELLATION_TITLE}</b>\n👤 {name}\n\n{status}\n\nВыберите действие:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="HTML",
     )
@@ -178,13 +180,13 @@ async def handle_ca_back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         coach = session.query(Coach).filter_by(id=coach_id).first()
         name = html.escape((coach.first_name or "").strip() if coach else "")
     keyboard = [
-        [InlineKeyboardButton("➕ Зарегистрировать", callback_data="ca_action_create")],
-        [InlineKeyboardButton("❌ Отменить действующее", callback_data="ca_action_cancel")],
+        [InlineKeyboardButton("➕ Зарегистрировать отмену", callback_data="ca_action_create")],
+        [InlineKeyboardButton("↩️ Откатить действующую", callback_data="ca_action_cancel")],
         [InlineKeyboardButton("📚 История", callback_data="ca_action_history")],
         [InlineKeyboardButton("🔙 Закрыть", callback_data="ca_cancel_flow")],
     ]
     await query.edit_message_text(
-        f"🤒 <b>Отсутствие тренера</b>\n👤 {name}\n\n{status}\n\nВыберите действие:",
+        f"🚫 <b>{TRAINING_CANCELLATION_TITLE}</b>\n👤 {name}\n\n{status}\n\nВыберите действие:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="HTML",
     )
@@ -197,7 +199,7 @@ async def handle_ca_action_create(update: Update, context: ContextTypes.DEFAULT_
     if not _resolve_coach_id(context):
         return ConversationHandler.END
     await query.edit_message_text(
-        "📅 Введите <b>дату начала</b> отсутствия (ДД.ММ.ГГГГ):",
+        "📅 Введите <b>дату начала</b> периода (ДД.ММ.ГГГГ):",
         parse_mode="HTML",
     )
     return CA_START
@@ -222,7 +224,7 @@ async def handle_ca_end_date(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return CA_END
     start = context.user_data.get("ca_start")
     if not start:
-        await update.message.reply_text("❌ Начните снова: 🤒 Отсутствие тренера")
+        await update.message.reply_text(f"❌ Начните снова: {TRAINING_CANCELLATION_BUTTON}")
         return ConversationHandler.END
     if dt < start:
         await update.message.reply_text("❌ Окончание раньше начала")
@@ -235,7 +237,7 @@ async def handle_ca_end_date(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def handle_ca_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    title = (update.message.text or "").strip() or "Отсутствие тренера"
+    title = (update.message.text or "").strip() or TRAINING_CANCELLATION_TITLE
     coach_id = _resolve_coach_id(context)
     start = context.user_data.get("ca_start")
     end = context.user_data.get("ca_end")
@@ -248,8 +250,8 @@ async def handle_ca_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         oids = overlapping_coach_absence_ids(session, coach_id, start, end_norm)
         if oids:
             warn = (
-                f"\n\n⚠️ Пересечение с отсутствием ID: {oids}. "
-                "Подтверждение всё равно возможно только без пересечений при apply."
+                f"\n\n⚠️ Пересечение с периодом ID: {oids}. "
+                "Подтверждение возможно только без пересечений."
             )
     context.user_data["ca_title"] = title
     keyboard = [
@@ -259,7 +261,7 @@ async def handle_ca_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     await update.message.reply_text(
-        f"🤒 <b>Подтверждение</b>\n"
+        f"🚫 <b>Подтверждение</b>\n"
         f"Период: {start.strftime('%d.%m.%Y')} — {end.strftime('%d.%m.%Y')}\n"
         f"Причина: {html.escape(title)}{warn}",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -274,7 +276,7 @@ async def handle_ca_confirm_apply(update: Update, context: ContextTypes.DEFAULT_
     coach_id = _resolve_coach_id(context)
     start = context.user_data.get("ca_start")
     end = context.user_data.get("ca_end")
-    title = context.user_data.get("ca_title", "Отсутствие тренера")
+    title = context.user_data.get("ca_title", TRAINING_CANCELLATION_TITLE)
     if not coach_id or not start or not end:
         await _ca_safe_edit(update, context, "❌ Сессия истекла.")
         return ConversationHandler.END
@@ -286,7 +288,7 @@ async def handle_ca_confirm_apply(update: Update, context: ContextTypes.DEFAULT_
                 await _ca_safe_edit(
                     update,
                     context,
-                    f"❌ Пересечение с действующим отсутствием (ID: {oids}).",
+                    f"❌ Пересечение с действующим периодом (ID: {oids}).",
                 )
                 return ConversationHandler.END
             result = apply_coach_absence_service(
@@ -303,7 +305,7 @@ async def handle_ca_confirm_apply(update: Update, context: ContextTypes.DEFAULT_
         await _ca_safe_edit(
             update,
             context,
-            f"✅ <b>Отсутствие зарегистрировано</b>\n\n"
+            f"✅ <b>Отмена тренировок зарегистрирована</b>\n\n"
             f"• Тренер: {html.escape(result.get('coach_name', ''))}\n"
             f"• ID: {result['coach_absence_id']}\n"
             f"• Проверено абонементов: {result.get('updated_subscriptions', 0) + result.get('skipped_subscriptions', 0)}\n"
@@ -336,7 +338,7 @@ async def handle_ca_action_cancel(update: Update, context: ContextTypes.DEFAULT_
         rows = list_active_coach_absences(session, coach_id)
     if not rows:
         await query.edit_message_text(
-            "📭 Нет активных отсутствий для отмены.",
+            "📭 Нет активных периодов для отката.",
             parse_mode="HTML",
         )
         return CA_MENU
@@ -346,7 +348,7 @@ async def handle_ca_action_cancel(update: Update, context: ContextTypes.DEFAULT_
     ]
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="ca_back_menu")])
     await query.edit_message_text(
-        "Выберите отсутствие для <b>отмены</b>:",
+        "Выберите период для <b>отката</b>:",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="HTML",
     )
@@ -364,7 +366,7 @@ async def handle_ca_deact_pick(update: Update, context: ContextTypes.DEFAULT_TYP
         ]
     ]
     await query.edit_message_text(
-        f"Отменить отсутствие <b>#{ca_id}</b>? Продления по нему будут пересчитаны.",
+        f"Откатить период <b>#{ca_id}</b>? Продления по нему будут пересчитаны.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="HTML",
     )
@@ -384,7 +386,7 @@ async def handle_ca_deact_confirm(update: Update, context: ContextTypes.DEFAULT_
         await _ca_safe_edit(
             update,
             context,
-            f"✅ <b>Отсутствие отменено</b> (#{ca_id})\n"
+            f"✅ <b>Период отмены отключён</b> (#{ca_id})\n"
             f"Проверено: {result.get('checked', 0)}\n"
             f"Обновлено: {result.get('updated_subscriptions', 0)}",
         )
@@ -401,7 +403,8 @@ def build_coach_absence_conversation() -> ConversationHandler:
     return ConversationHandler(
         entry_points=[
             MessageHandler(
-                filters.Regex("^(🤒 Отсутствие тренера)$"), start_coach_absence_flow
+                filters.Regex(f"^({re.escape(TRAINING_CANCELLATION_BUTTON)})$"),
+                start_coach_absence_flow,
             )
         ],
         states={

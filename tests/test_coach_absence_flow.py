@@ -1,4 +1,4 @@
-"""Отсутствие тренера: только абонементы этого тренера."""
+"""Отмена тренировки: только абонементы этого тренера."""
 from contextlib import contextmanager
 from datetime import datetime
 from unittest.mock import patch

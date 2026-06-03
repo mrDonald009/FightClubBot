@@ -210,14 +210,14 @@ def apply_coach_absence(
         return {
             "success": False,
             "message": (
-                "Период пересекается с уже действующим отсутствием этого тренера "
+                "Период пересекается с уже зарегистрированной отменой тренировок "
                 f"(ID: {ids})."
             ),
         }
 
     absence = CoachAbsence(
         coach_id=coach_id,
-        title=title.strip() or "Отсутствие тренера",
+        title=title.strip() or "Отмена тренировки",
         start_date=freeze_start,
         end_date=freeze_end,
         is_active=True,
@@ -346,7 +346,7 @@ def apply_coach_absence(
     )
     return {
         "success": True,
-        "message": "Отсутствие тренера зарегистрировано",
+        "message": "Отмена тренировок зарегистрирована",
         "coach_absence_id": absence.id,
         "coach_name": coach_label,
         "updated_subscriptions": updated,
@@ -380,7 +380,7 @@ def deactivate_coach_absence_and_migrate(session: Session, ca_id: int) -> dict:
     if not ca:
         return {
             "success": False,
-            "message": f"Отсутствие с ID={ca_id} не найдено",
+            "message": f"Период отмены с ID={ca_id} не найден",
             "migrated": 0,
         }
 
@@ -388,7 +388,7 @@ def deactivate_coach_absence_and_migrate(session: Session, ca_id: int) -> dict:
         return {
             "success": True,
             "already_inactive": True,
-            "message": f"Отсутствие #{ca_id} уже отключено",
+            "message": f"Период отмены #{ca_id} уже отключён",
             "migrated": 0,
             "checked": 0,
             "synced": 0,
@@ -400,7 +400,7 @@ def deactivate_coach_absence_and_migrate(session: Session, ca_id: int) -> dict:
         return {
             "success": False,
             "message": (
-                f"Отсутствие #{ca_id} завершилось более 30 дней назад. "
+                f"Период отмены #{ca_id} завершился более 30 дней назад. "
                 "Используйте ручной регламент."
             ),
             "migrated": 0,

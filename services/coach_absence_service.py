@@ -1,4 +1,4 @@
-"""Отсутствие тренера: UI и обёртки доменной логики."""
+"""Отмена тренировки: UI и обёртки доменной логики (таблицы coach_absences)."""
 import html
 from datetime import datetime
 from typing import List, Optional
@@ -22,7 +22,7 @@ def parse_ui_date(text: str) -> Optional[datetime]:
 
 
 def format_coach_absence_status_html(session: Session, coach_id: int) -> str:
-    """Активные отсутствия тренера, действующие сейчас."""
+    """Действующие периоды отмены тренировок тренера."""
     now = now_moscow()
     rows = (
         session.query(CoachAbsence)
@@ -36,8 +36,8 @@ def format_coach_absence_status_html(session: Session, coach_id: int) -> str:
         .all()
     )
     if not rows:
-        return "📭 <b>Сейчас активного отсутствия нет.</b>"
-    lines = ["📌 <b>Сейчас действует отсутствие:</b>"]
+        return "📭 <b>Сейчас нет действующей отмены тренировок.</b>"
+    lines = ["📌 <b>Действует отмена тренировок:</b>"]
     for ca in rows:
         title = html.escape((ca.title or "").strip() or "без названия")
         ds = ca.start_date.strftime("%d.%m.%Y")
@@ -74,8 +74,8 @@ def format_coach_absence_history_html(session: Session, coach_id: int, limit: in
         .all()
     )
     if not rows:
-        return "📭 <b>История отсутствий пуста.</b>"
-    lines = [f"📚 <b>История отсутствий</b> (последние {len(rows)}):"]
+        return "📭 <b>История отмен тренировок пуста.</b>"
+    lines = [f"📚 <b>История отмен тренировок</b> (последние {len(rows)}):"]
     for ca in rows:
         status = "🟢 Действует" if ca.is_active else "⚪ Отключено"
         title = html.escape((ca.title or "").strip() or "без названия")
