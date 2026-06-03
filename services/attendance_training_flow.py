@@ -27,7 +27,7 @@ from utils.age_groups import AGE_GROUP_CODES, format_age_group_label
 from utils.coach_sport import sport_type_label_from_user
 from utils.training_manager import TrainingManager
 from utils.time_utils import now_moscow
-from utils.training_slot_display import format_attendance_step2_slot_title
+from utils.training_slot_display import format_attendance_step2_slot_title, format_training_slot_body
 
 # Размер страницы списка спортсменов на шаге 2 (inline-кнопки Telegram)
 ATTENDANCE_LIST_PAGE_SIZE = 20
@@ -70,6 +70,42 @@ class TodaySlotDisplay:
     age_group: str
     training_datetime: datetime
     is_individual_format: bool = False
+
+
+TELEGRAM_INLINE_BUTTON_TEXT_MAX_LEN = 64
+
+
+def attendance_mark_callback_for_slot(slot: TodaySlotDisplay) -> str:
+    """Callback шага 2 для слота из списка «Отметить посещения»."""
+    if slot.is_virtual and slot.virtual_token:
+        return f"select_mark_training_virtual_{slot.virtual_token}"
+    if slot.training_id is not None:
+        return f"select_mark_training_{slot.training_id}"
+    raise ValueError("slot has no callback identity")
+
+
+def attendance_mark_button_label_for_slot(
+    slot: TodaySlotDisplay,
+    *,
+    prefix: str = "📝 Отметить",
+    max_len: int = TELEGRAM_INLINE_BUTTON_TEXT_MAX_LEN,
+) -> str:
+    """Подпись кнопки: «📝 Отметить — ЧЧ:ММ | …» (лимит Telegram 64 символа)."""
+    time_str = slot.training_datetime.strftime("%H:%M")
+    body = format_training_slot_body(
+        slot.sport_type,
+        age_group=slot.age_group,
+        is_individual=slot.is_individual_format,
+    )
+    head = f"{prefix} — {time_str} | "
+    if len(head) >= max_len:
+        return prefix[:max_len]
+    room = max_len - len(head)
+    if len(body) <= room:
+        return head + body
+    if room <= 1:
+        return head.rstrip()[:max_len]
+    return head + body[: room - 1] + "…"
 
 
 def coach_training_access_error(user: Any, training: Training) -> Optional[str]:

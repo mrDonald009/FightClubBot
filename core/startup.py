@@ -11,6 +11,8 @@ from core.config import Config
 from core.database import get_db_session
 from database.models import Coach
 from services.attendance_training_flow import (
+    attendance_mark_button_label_for_slot,
+    attendance_mark_callback_for_slot,
     build_today_attendance_slots,
     format_today_trainings_count_ru,
 )
@@ -149,8 +151,27 @@ def format_coach_training_start_reminder_message(slot) -> str:
     return (
         "Тренировка началась!\n\n"
         f"{_slot_summary_line(slot)}\n\n"
-        "Пожалуйста, откройте раздел «📝 Отметить посещения» "
-        "и выберите присутствующих спортсменов."
+        "Нажмите кнопку ниже, чтобы отметить присутствующих спортсменов."
+    )
+
+
+def build_coach_training_start_reminder_keyboard(slot) -> InlineKeyboardMarkup:
+    """Главная кнопка — сразу шаг 2; вторая — список всех тренировок на сегодня."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    attendance_mark_button_label_for_slot(slot),
+                    callback_data=attendance_mark_callback_for_slot(slot),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "📋 Все тренировки на сегодня",
+                    callback_data="attendance_training_list",
+                )
+            ],
+        ]
     )
 
 
@@ -287,9 +308,7 @@ async def _coach_training_start_reminder_job(context) -> None:
                     continue
 
                 text = format_coach_training_start_reminder_message(slot)
-                keyboard = InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("📝 Открыть «Отметить посещения»", callback_data="attendance_training_list")]]
-                )
+                keyboard = build_coach_training_start_reminder_keyboard(slot)
                 await context.bot.send_message(
                     chat_id=coach_telegram_id,
                     text=text,

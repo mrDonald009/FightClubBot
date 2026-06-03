@@ -5,12 +5,14 @@ from types import SimpleNamespace
 import pytest
 
 from core.startup import (
+    build_coach_training_start_reminder_keyboard,
     coach_daily_summary_send_datetime,
     coach_training_start_reminder_send_datetime,
     format_coach_daily_summary_message,
     format_coach_training_start_reminder_message,
     is_coach_training_start_reminder_due,
 )
+from services.attendance_training_flow import TodaySlotDisplay
 
 
 def _slot(hour, minute, individual=False):
@@ -121,4 +123,23 @@ def test_format_coach_training_start_reminder_message():
     text = format_coach_training_start_reminder_message(slot)
     assert text.startswith("Тренировка началась!")
     assert "🕒 09:00 - MMA | Индивидуальная" in text
-    assert "выберите присутствующих спортсменов" in text
+    assert "Нажмите кнопку ниже" in text
+
+
+def test_build_coach_training_start_reminder_keyboard_combo():
+    slot = TodaySlotDisplay(
+        is_virtual=False,
+        training_id=42,
+        virtual_token=None,
+        sport_type="MMA",
+        age_group="children",
+        training_datetime=datetime(2026, 5, 19, 17, 0, 0),
+        is_individual_format=False,
+    )
+    keyboard = build_coach_training_start_reminder_keyboard(slot)
+    assert len(keyboard.inline_keyboard) == 2
+    mark_row, list_row = keyboard.inline_keyboard
+    assert mark_row[0].callback_data == "select_mark_training_42"
+    assert mark_row[0].text == "📝 Отметить — 17:00 | MMA | Групповая — Детская"
+    assert list_row[0].callback_data == "attendance_training_list"
+    assert "Все тренировки на сегодня" in list_row[0].text

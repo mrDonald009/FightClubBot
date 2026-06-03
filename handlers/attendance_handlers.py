@@ -28,6 +28,7 @@ from utils.attendance_display import attendance_icon_for_training
 from services.attendance_training_flow import (
     athlete_subscription_for_attendance_slot,
     build_step2_message_and_keyboard_rows,
+    build_today_attendance_slots,
     coach_training_access_error,
     fetch_athletes_for_training_slot,
     is_training_in_live_attendance_window,
@@ -90,6 +91,12 @@ async def select_training_for_attendance(update: Update, context: ContextTypes.D
 
             data = query.data or ""
             virtual_slots = context.user_data.get("attendance_virtual_slots", {})
+            if data.startswith("select_mark_training_virtual_"):
+                token = data.replace("select_mark_training_virtual_", "")
+                if token not in virtual_slots:
+                    now = now_moscow()
+                    _slot_rows, virtual_slots = build_today_attendance_slots(session, user, now)
+                    context.user_data["attendance_virtual_slots"] = virtual_slots
             training, created_new, err = resolve_training_from_attendance_callback(
                 session, data, virtual_slots
             )
