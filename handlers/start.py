@@ -2,8 +2,8 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
 from core.database import get_db_session
 from database.db_utils import get_user_by_telegram_id, get_user_role, create_athlete
-from services.permissions import ROLE_LABEL_RU, is_coach, is_admin, role_menu_genitive_ru
-from keyboards.coach_kb import get_coach_main_menu, coach_menu_text
+from services.permissions import ROLE_LABEL_RU, is_coach, is_admin
+from keyboards.coach_kb import get_coach_main_menu
 from keyboards.admin_kb import get_admin_main_menu
 import logging
 
@@ -43,30 +43,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 role = get_user_role(user)
                 print(f"🔍 ПОЛЬЗОВАТЕЛЬ {user_id} УЖЕ СУЩЕСТВУЕТ, роль: {role}")
-                if is_coach(user):
-                    await show_coach_menu(
-                        update,
-                        context,
-                        first_name=first_name,
-                        menu_role_label=role_menu_genitive_ru(get_user_role(user)),
-                    )
-                else:
-                    label = ROLE_LABEL_RU.get(role, role)
-                    welcome_text = f"""👋 С возвращением, {first_name}!
+                label = ROLE_LABEL_RU.get(role, role)
+                welcome_text = f"""👋 С возвращением, {first_name}!
 
 Ваша роль: {label}"""
-                    await update.message.reply_text(welcome_text)
-                    if is_admin(user):
-                        print(f"👑 ПОКАЗЫВАЕМ МЕНЮ АДМИНА ДЛЯ {user_id}")
-                        await show_admin_menu(update, context)
-                    else:
-                        print(f"💪 ПОКАЗЫВАЕМ МЕНЮ СПОРТСМЕНА ДЛЯ {user_id}")
-                        await show_athlete_menu(update, context)
-                return
 
             await update.message.reply_text(welcome_text)
 
-            # Показываем соответствующее меню (новый спортсмен)
+            # Показываем соответствующее меню
             if is_coach(user):
                 print(f"🎯 ПОКАЗЫВАЕМ МЕНЮ ТРЕНЕРА ДЛЯ {user_id}")
                 await show_coach_menu(update, context)
@@ -83,22 +67,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"🔚 ЗАВЕРШЕНА ОБРАБОТКА /start ДЛЯ {user_id}")
 
 
-async def show_coach_menu(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    *,
-    first_name: str = None,
-    menu_role_label: str = "тренера",
-):
+async def show_coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает меню тренера"""
     user_id = update.effective_user.id
     print(f"📋 ПОКАЗ МЕНЮ ТРЕНЕРА ДЛЯ {user_id}")
 
-    if first_name is None and update.effective_user:
-        first_name = update.effective_user.first_name
-
     await update.message.reply_text(
-        coach_menu_text(first_name=first_name, menu_role_label=menu_role_label),
+        "🏋️‍♂️ Меню тренера:\n\n"
+        "Выберите действие.",
         reply_markup=get_coach_main_menu(),
     )
     print(f"✅ МЕНЮ ТРЕНЕРА ОТОБРАЖЕНО ДЛЯ {user_id}")

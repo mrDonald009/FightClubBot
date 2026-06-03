@@ -1,32 +1,4 @@
-from typing import Optional
-
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-
-# Кнопки меню тренера (прерывание диалогов, регистрация handlers)
-COACH_MENU_BUTTONS = [
-    "👥 Добавить спортсмена",
-    "📋 Список спортсменов",
-    "📝 Отметить посещения",
-    "📅 Мой календарь",
-    "🤒 Отсутствие тренера",
-    "📊 Статистика",
-]
-
-
-def coach_menu_text(
-    *,
-    first_name: Optional[str] = None,
-    menu_role_label: str = "тренера",
-) -> str:
-    """Текст главного меню с приветствием (menu_role_label — род. падеж: тренера, администратора)."""
-    name = (first_name or "").strip() or "Пользователь"
-    role_label = (menu_role_label or "").strip() or "тренера"
-    return (
-        f"👋 С возвращением, {name}!\n\n"
-        f"Меню {role_label}: ваши спортсмены, посещения, календарь, "
-        f"отсутствие (болезнь), заморозка в карточке спортсмена.\n\n"
-        f"Выберите действие:"
-    )
 
 
 def get_coach_main_menu():

@@ -29,9 +29,7 @@ from services.permissions import (
     can_edit_athlete,
     can_access_coach_menu,
     COACH_ONLY_MESSAGE,
-    role_menu_genitive_ru,
 )
-from keyboards.coach_kb import COACH_MENU_BUTTONS
 from utils.age_groups import AGE_GROUP_CODES, format_age_group_label, normalize_age_group
 from utils.coach_sport import coach_sport_type_name
 from utils.discipline_keys import discipline_key_for
@@ -49,7 +47,7 @@ from utils.time_utils import (
     individual_training_end_time,
     training_end_time,
 )
-from keyboards.coach_kb import get_coach_main_menu, coach_menu_text
+from keyboards.coach_kb import get_coach_main_menu
 from datetime import date, datetime, timedelta
 from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import joinedload
@@ -216,8 +214,15 @@ def load_athletes_for_list(session, user) -> Tuple[List[Athlete], str]:
     ATHLETE_TRAINING_DATE   # выбор первой даты тренировки (inline-календарь)
 ) = range(8)
 
-# Список кнопок меню для проверки прерывания (см. keyboards.coach_kb.COACH_MENU_BUTTONS)
-MENU_BUTTONS = COACH_MENU_BUTTONS
+# Список кнопок меню для проверки прерывания (должен совпадать с get_coach_main_menu)
+MENU_BUTTONS = [
+    "👥 Добавить спортсмена",
+    "📋 Список спортсменов",
+    "📝 Отметить посещения",
+    "📅 Мой календарь",
+    "🤒 Отсутствие тренера",
+    "📊 Статистика",
+]
 
 
 def is_phone_number(text):
@@ -334,11 +339,9 @@ async def coach_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = get_coach_main_menu()
 
             await update.message.reply_text(
-                coach_menu_text(
-                    first_name=update.effective_user.first_name if update.effective_user else None,
-                    menu_role_label=role_menu_genitive_ru(get_user_role(user)),
-                ),
-                reply_markup=reply_markup
+                "🏋️‍♂️ Меню тренера:\n\n"
+                "Выберите действие.",
+                reply_markup=reply_markup,
             )
 
     except Exception as e:
@@ -1971,18 +1974,10 @@ async def handle_back_to_menu_main(update: Update, context: ContextTypes.DEFAULT
     await query.answer("Возвращаемся в меню...")
 
     # Отправляем новое сообщение с меню тренера
-    role_label = "тренера"
-    with get_db_session() as session:
-        user = get_user_by_telegram_id(session, query.from_user.id)
-        if user:
-            role_label = role_menu_genitive_ru(get_user_role(user))
-
     await query.message.reply_text(
-        coach_menu_text(
-            first_name=query.from_user.first_name if query.from_user else None,
-            menu_role_label=role_label,
-        ),
-        reply_markup=get_coach_main_menu()
+        "🏋️‍♂️ Меню тренера:\n\n"
+        "Выберите действие.",
+        reply_markup=get_coach_main_menu(),
     )
 
 async def cancel_athlete_creation(update: Update, context: ContextTypes.DEFAULT_TYPE):
