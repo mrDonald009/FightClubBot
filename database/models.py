@@ -489,6 +489,31 @@ class CoachAbsenceApplication(Base):
     subscription = relationship("Subscription")
 
 
+class GroupTrainingCancellationApplication(Base):
+    """Продление абонемента при отмене одного группового занятия (для отката)."""
+    __tablename__ = 'group_training_cancellation_applications'
+    __table_args__ = (
+        UniqueConstraint(
+            'training_id', 'subscription_id', name='uq_gtc_training_subscription'
+        ),
+        Index('ix_gtca_subscription', 'subscription_id'),
+        {'extend_existing': True},
+    )
+
+    id = Column(Integer, primary_key=True)
+    training_id = Column(Integer, ForeignKey('trainings.id'), nullable=False)
+    subscription_id = Column(Integer, ForeignKey('subscriptions.id'), nullable=False)
+    training_days_added = Column(Integer, default=0)
+    old_end_date = Column(DateTime, nullable=True)
+    new_end_date = Column(DateTime, nullable=True)
+    old_start_date = Column(DateTime, nullable=True)
+    new_start_date = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    training = relationship("Training")
+    subscription = relationship("Subscription")
+
+
 class GlobalFreeze(Base):
     """Массовая заморозка клуба (праздники/каникулы)."""
     __tablename__ = 'global_freezes'

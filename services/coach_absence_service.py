@@ -36,8 +36,8 @@ def format_coach_absence_status_html(session: Session, coach_id: int) -> str:
         .all()
     )
     if not rows:
-        return "📭 <b>Сейчас нет действующей отмены тренировок.</b>"
-    lines = ["📌 <b>Действует отмена тренировок:</b>"]
+        return "📭 <b>Сейчас нет действующей отмены на период.</b>"
+    lines = ["📌 <b>Действует отмена на период:</b>"]
     for ca in rows:
         title = html.escape((ca.title or "").strip() or "без названия")
         ds = ca.start_date.strftime("%d.%m.%Y")

@@ -3,6 +3,10 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMa
 # Кнопка меню и заголовок раздела (логика в coach_absence — без переименования БД)
 TRAINING_CANCELLATION_BUTTON = "🚫 Отмена тренировки"
 TRAINING_CANCELLATION_TITLE = "Отмена тренировки"
+TRAINING_CANCELLATION_SCOPE_HTML = (
+    "<i>Групповые занятия: одно занятие (день и время) или период (праздники). "
+    "Месячные абонементы продлеваются, как при заморозке.</i>"
+)
 
 
 def get_coach_main_menu():

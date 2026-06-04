@@ -986,19 +986,21 @@ def register_all_handlers(registrar: HandlerRegistrar) -> None:
 
     from handlers.coach_absence_flow import (
         build_coach_absence_conversation,
-        handle_ca_confirm_apply,
+        handle_ca_back_to_menu_main,
         handle_ca_deact_confirm,
-        handle_ca_deact_pick,
-        handle_ca_flow_cancel,
+        handle_ca_period_apply,
+        handle_ca_slot_apply,
+        handle_ca_slot_deact_confirm,
     )
 
     ca_conv = build_coach_absence_conversation()
     registrar.register(ca_conv)
     for _cb, _pat in (
-        (handle_ca_flow_cancel, r"^ca_cancel_flow$"),
+        (handle_ca_back_to_menu_main, r"^back_to_menu_main$"),
+        (handle_ca_slot_apply, r"^ca_slot_apply$"),
+        (handle_ca_period_apply, r"^ca_period_apply$"),
         (handle_ca_deact_confirm, r"^ca_deact_confirm_\d+$"),
-        (handle_ca_deact_pick, r"^ca_deact_pick_\d+$"),
-        (handle_ca_confirm_apply, r"^ca_apply_confirm$"),
+        (handle_ca_slot_deact_confirm, r"^ca_slot_deact_confirm_\d+$"),
     ):
         registrar.register(CallbackQueryHandler(_cb, pattern=_pat))
     logger.info("✅ Зарегистрирован ConversationHandler для отмены тренировок")

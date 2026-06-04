@@ -66,6 +66,11 @@ def subscription_belongs_to_coach(subscription: Subscription, coach_id: int) -> 
     return sub_coach is not None and sub_coach == coach_id
 
 
+def is_group_monthly_subscription(subscription: Subscription) -> bool:
+    """Отмена на период сейчас только для месячных групповых абонементов."""
+    return (subscription.subscription_type or "").strip().lower() == "monthly"
+
+
 def is_training_in_coach_absence(
     session: Session, training_datetime: datetime, coach_id: int
 ) -> bool:
@@ -189,7 +194,7 @@ def apply_coach_absence(
     title: str,
     created_by: int = None,
 ) -> dict:
-    """Отсутствие тренера: продление абонементов его спортсменов на пропущенные трен. дни."""
+    """Отмена групповых занятий на период: продление месячных абонементов его спортсменов."""
     if end_date < start_date:
         return {"success": False, "message": "Дата окончания меньше даты начала"}
 
@@ -237,6 +242,10 @@ def apply_coach_absence(
 
     for subscription in active_subscriptions:
         if not subscription_belongs_to_coach(subscription, coach_id):
+            continue
+
+        if not is_group_monthly_subscription(subscription):
+            skipped += 1
             continue
 
         existing = session.query(CoachAbsenceApplication).filter_by(
@@ -346,7 +355,7 @@ def apply_coach_absence(
     )
     return {
         "success": True,
-        "message": "Отмена тренировок зарегистрирована",
+        "message": "Отмена групповых занятий на период зарегистрирована",
         "coach_absence_id": absence.id,
         "coach_name": coach_label,
         "updated_subscriptions": updated,

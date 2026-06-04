@@ -650,6 +650,24 @@ def migrate_database():
         """)
         print("✅ Таблица coach_absence_applications создана")
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS group_training_cancellation_applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                training_id INTEGER NOT NULL,
+                subscription_id INTEGER NOT NULL,
+                training_days_added INTEGER DEFAULT 0,
+                old_end_date DATETIME,
+                new_end_date DATETIME,
+                old_start_date DATETIME,
+                new_start_date DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (training_id) REFERENCES trainings(id),
+                FOREIGN KEY (subscription_id) REFERENCES subscriptions(id),
+                UNIQUE(training_id, subscription_id)
+            )
+        """)
+        print("✅ Таблица group_training_cancellation_applications создана")
+
         # Персональная заморозка спортсмена (все направления)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS athlete_freezes (

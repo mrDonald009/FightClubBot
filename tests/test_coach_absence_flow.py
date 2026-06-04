@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from database.db_utils.coach_absence import (
     apply_coach_absence,
     deactivate_coach_absence_and_migrate,
+    is_group_monthly_subscription,
     is_training_in_coach_absence_for_subscription,
     subscription_belongs_to_coach,
 )
@@ -115,6 +116,49 @@ def test_coach_absence_blocks_deduct_for_that_coach(two_coaches_two_athletes):
         )
     assert is_training_in_coach_absence_for_subscription(s, slot, sub1)
     assert not is_training_in_coach_absence_for_subscription(s, slot, sub2)
+
+
+def test_apply_coach_absence_skips_single_and_individual(two_coaches_two_athletes):
+    s, c1, _, sub1, _ = two_coaches_two_athletes
+    a1 = sub1.athlete
+    single = Subscription(
+        athlete_id=a1.id,
+        discipline_key="mma_single",
+        sport_type="MMA",
+        subscription_type="single",
+        start_date=datetime(2026, 3, 25, 18, 0),
+        end_date=datetime(2026, 3, 25, 19, 30),
+        trainings_total=1,
+        trainings_remaining=1,
+        is_active=True,
+        responsible_coach_id=c1.id,
+    )
+    individual = Subscription(
+        athlete_id=a1.id,
+        discipline_key="mma_ind",
+        sport_type="MMA",
+        subscription_type="individual",
+        start_date=datetime(2026, 3, 26, 10, 0),
+        end_date=datetime(2026, 3, 26, 11, 0),
+        trainings_total=1,
+        trainings_remaining=1,
+        is_active=True,
+        responsible_coach_id=c1.id,
+    )
+    s.add_all([single, individual])
+    s.commit()
+    single_end = single.end_date
+    ind_start = individual.start_date
+    with _freeze_now(datetime(2026, 3, 20, 10, 0, 0)):
+        apply_coach_absence(
+            s, c1.id, datetime(2026, 3, 24), datetime(2026, 3, 28), "Каникулы", 1
+        )
+    s.refresh(single)
+    s.refresh(individual)
+    assert is_group_monthly_subscription(sub1)
+    assert not is_group_monthly_subscription(single)
+    assert single.end_date == single_end
+    assert individual.start_date == ind_start
 
 
 def test_early_deactivate_reverts_coach_absence_extension(two_coaches_two_athletes):
