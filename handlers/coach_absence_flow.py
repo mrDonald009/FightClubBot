@@ -18,8 +18,12 @@ from core.database import get_db_session
 from database.models import Coach
 from handlers.coach_handlers import MENU_BUTTONS, cancel_global_freeze
 from keyboards.coach_kb import (
+    CA_MENU_BTN_ARCHIVE,
+    CA_MENU_BTN_PERIOD,
+    CA_MENU_BTN_PERIOD_ROLLBACK,
+    CA_MENU_BTN_SLOT,
+    CA_MENU_BTN_SLOT_ROLLBACK,
     TRAINING_CANCELLATION_BUTTON,
-    TRAINING_CANCELLATION_SCOPE_HTML,
     TRAINING_CANCELLATION_TITLE,
 )
 from services.coach_absence_service import (
@@ -91,27 +95,21 @@ def _resolve_pick_day(context) -> date:
 
 
 def _ca_menu_message(status: str) -> str:
-    return (
-        f"🚫 <b>{TRAINING_CANCELLATION_TITLE}</b>\n"
-        f"{TRAINING_CANCELLATION_SCOPE_HTML}\n\n"
-        f"{status}\n\n"
-        f"Выберите действие:"
-    )
+    parts = [f"🚫 <b>{TRAINING_CANCELLATION_TITLE}</b>"]
+    if status and status.strip():
+        parts.append(status.strip())
+    parts.append("Выберите действие:")
+    return "\n\n".join(parts)
 
 
 def _ca_action_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("➕ Отменить одно занятие", callback_data="ca_action_create")],
-            [InlineKeyboardButton("📅 Отмена на период", callback_data="ca_action_period")],
-            [InlineKeyboardButton("↩️ Откатить период", callback_data="ca_action_period_cancel")],
-            [
-                InlineKeyboardButton(
-                    "↩️ Откатить отменённое занятие",
-                    callback_data="ca_action_slot_cancel",
-                )
-            ],
-            [InlineKeyboardButton("📚 История", callback_data="ca_action_history")],
+            [InlineKeyboardButton(CA_MENU_BTN_SLOT, callback_data="ca_action_create")],
+            [InlineKeyboardButton(CA_MENU_BTN_PERIOD, callback_data="ca_action_period")],
+            [InlineKeyboardButton(CA_MENU_BTN_PERIOD_ROLLBACK, callback_data="ca_action_period_cancel")],
+            [InlineKeyboardButton(CA_MENU_BTN_SLOT_ROLLBACK, callback_data="ca_action_slot_cancel")],
+            [InlineKeyboardButton(CA_MENU_BTN_ARCHIVE, callback_data="ca_action_history")],
             [InlineKeyboardButton("🏠 В меню", callback_data="back_to_menu_main")],
         ]
     )

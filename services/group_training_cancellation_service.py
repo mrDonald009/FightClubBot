@@ -41,8 +41,8 @@ def format_unified_cancellation_history_html(session: Session, coach_id: int) ->
     period_empty = "пуста" in period
     slots_empty = "пуста" in slots
     if period_empty and slots_empty:
-        return "📭 <b>История отмен пуста.</b>"
-    lines = ["📚 <b>История отмен</b>"]
+        return "📭 <b>Архив отмен пуст.</b>"
+    lines = ["📜 <b>Архив отмен</b>"]
     if not period_empty:
         lines.append("")
         lines.append("📅 <b>Периоды (праздники):</b>")
@@ -102,8 +102,8 @@ def format_cancellation_history_html(session: Session, coach_id: int, limit: int
         != TRAINING_FORMAT_INDIVIDUAL
     ]
     if not group_rows:
-        return "📭 <b>История отмен групповых занятий пуста.</b>"
-    lines = [f"📚 <b>История</b> (последние {len(group_rows)}):"]
+        return "📭 <b>Архив отмен групповых занятий пуст.</b>"
+    lines = [f"📜 <b>Архив</b> (последние {len(group_rows)}):"]
     for t in group_rows:
         line = format_training_slot_line(
             t.training_date,

@@ -74,8 +74,8 @@ def format_coach_absence_history_html(session: Session, coach_id: int, limit: in
         .all()
     )
     if not rows:
-        return "📭 <b>История отмен тренировок пуста.</b>"
-    lines = [f"📚 <b>История отмен тренировок</b> (последние {len(rows)}):"]
+        return "📭 <b>Архив отмен тренировок пуст.</b>"
+    lines = [f"📜 <b>Архив отмен тренировок</b> (последние {len(rows)}):"]
     for ca in rows:
         status = "🟢 Действует" if ca.is_active else "⚪ Отключено"
         title = html.escape((ca.title or "").strip() or "без названия")
